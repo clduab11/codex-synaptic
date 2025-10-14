@@ -12,6 +12,23 @@ export enum AgentType {
   CODE_WORKER = 'code_worker',
   DATA_WORKER = 'data_worker', 
   VALIDATION_WORKER = 'validation_worker',
+  RESEARCH_WORKER = 'research_worker',
+  ARCHITECT_WORKER = 'architect_worker',
+  KNOWLEDGE_WORKER = 'knowledge_worker',
+  ANALYST_WORKER = 'analyst_worker',
+  SECURITY_WORKER = 'security_worker',
+  OPS_WORKER = 'ops_worker',
+  PERFORMANCE_WORKER = 'performance_worker',
+  INTEGRATION_WORKER = 'integration_worker',
+  SIMULATION_WORKER = 'simulation_worker',
+  MEMORY_WORKER = 'memory_worker',
+  PLANNING_WORKER = 'planning_worker',
+  REVIEW_WORKER = 'review_worker',
+  COMMUNICATION_WORKER = 'communication_worker',
+  AUTOMATION_WORKER = 'automation_worker',
+  OBSERVABILITY_WORKER = 'observability_worker',
+  COMPLIANCE_WORKER = 'compliance_worker',
+  RELIABILITY_WORKER = 'reliability_worker',
   SWARM_COORDINATOR = 'swarm_coordinator',
   CONSENSUS_COORDINATOR = 'consensus_coordinator',
   TOPOLOGY_COORDINATOR = 'topology_coordinator',
@@ -112,6 +129,11 @@ export interface ConsensusProposal {
   data: any;
   timestamp: Date;
   requiredVotes: number;
+  mechanism?: string;
+  stakeThreshold?: number;
+  requiredStake?: number;
+  quorumFactor?: number;
+  metadata?: Record<string, any>;
 }
 
 export interface ConsensusVote {

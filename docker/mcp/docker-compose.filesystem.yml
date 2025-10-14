@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  mcp-filesystem:
+    image: ghcr.io/context-labs/filesystem-mcp:latest
+    container_name: codex-mcp-filesystem
+    restart: unless-stopped
+    volumes:
+      - ../../:/workspace:ro
+    ports:
+      - "7040:7040"
+    command: ["--port", "7040", "--root", "/workspace"]

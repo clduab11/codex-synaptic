@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  mcp-tavily:
+    image: ghcr.io/context-labs/tavily-mcp:latest
+    container_name: codex-mcp-tavily
+    restart: unless-stopped
+    environment:
+      - TAVILY_API_KEY=
+    ports:
+      - "7050:7050"
+    command: ["--port", "7050"]

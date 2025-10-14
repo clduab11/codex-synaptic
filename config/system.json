@@ -3,7 +3,12 @@
     "logLevel": "info",
     "maxAgents": 100,
     "heartbeatInterval": 30000,
-    "taskTimeout": 300000
+    "taskTimeout": 300000,
+    "selfHealing": {
+      "enabled": true,
+      "redeployOnFailure": true,
+      "cooldownMs": 15000
+    }
   },
   "networking": {
     "defaultPort": 8080,
@@ -17,10 +22,32 @@
       "authRequired": true
     }
   },
+  "api": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 4242,
+    "cors": {
+      "enabled": true,
+      "origins": [
+        "*"
+      ]
+    }
+  },
   "mesh": {
     "maxConnections": 10,
     "updateInterval": 5000,
     "topology": "mesh",
+    "supportedTopologies": [
+      "mesh",
+      "ring",
+      "star",
+      "tree",
+      "hybrid"
+    ],
+    "selfHealing": {
+      "enabled": true,
+      "intervalMs": 15000
+    },
     "maxRunDurationMs": 3600000
   },
   "swarm": {
@@ -32,7 +59,19 @@
   "consensus": {
     "mechanism": "raft",
     "timeout": 10000,
-    "minVotes": 3
+    "minVotes": 3,
+    "quorumFactor": 0.5,
+    "stakeThreshold": 0.67,
+    "fallbackMechanism": "raft",
+    "stakeTable": {}
+  },
+  "scaling": {
+    "enabled": true,
+    "minAgents": 4,
+    "maxAgents": 40,
+    "scaleUpThreshold": 0.75,
+    "scaleDownThreshold": 0.35,
+    "cooldownMs": 45000
   },
   "gpu": {
     "probeCacheTtlMs": 300000,
@@ -49,5 +88,24 @@
       "enabled": true,
       "discoveryInterval": 60000
     }
+  },
+  "vector": {
+    "enabled": false,
+    "engine": "local",
+    "dimensions": 32,
+    "collection": "codex-synaptic",
+    "qdrant": {
+      "url": "http://localhost:6333"
+    },
+    "redis": {
+      "host": "127.0.0.1",
+      "port": 6379,
+      "prefix": "codex:vector"
+    }
+  },
+  "environment": {
+    "autoStartProfiles": [
+      "observability"
+    ]
   }
 }

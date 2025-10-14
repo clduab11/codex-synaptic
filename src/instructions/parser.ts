@@ -41,6 +41,24 @@ export interface InstructionCacheEntry {
   ttl: number;
 }
 
+export interface InstructionCacheStatusEntry {
+  id: string;
+  rootPath: string;
+  contextHash: string;
+  createdAt: Date;
+  expiresAt: Date;
+  ttlSeconds: number;
+  sizeBytes: number;
+  isExpired: boolean;
+}
+
+export interface InstructionCacheStatus {
+  entries: InstructionCacheStatusEntry[];
+  totalEntries: number;
+  totalSizeBytes: number;
+  rootCount: number;
+}
+
 /**
  * Enhanced instruction parser with precedence handling and SQLite caching
  */
@@ -434,6 +452,61 @@ export class InstructionParser {
           }
         }
       );
+    });
+  }
+
+  /**
+   * Retrieve cache summary for diagnostics and CLI display
+   */
+  async getCacheStatus(rootPath?: string): Promise<InstructionCacheStatus> {
+    return new Promise((resolve, reject) => {
+      const query = rootPath
+        ? `SELECT id, root_path, context_hash, context_data, created_at, ttl
+            FROM instruction_cache
+            WHERE root_path = ?
+            ORDER BY datetime(created_at) DESC`
+        : `SELECT id, root_path, context_hash, context_data, created_at, ttl
+            FROM instruction_cache
+            ORDER BY datetime(created_at) DESC`;
+
+      const params = rootPath ? [rootPath] : [];
+
+      this.db.all(query, params, (err: Error | null, rows: Array<Record<string, any>>) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        const entries: InstructionCacheStatusEntry[] = (rows || []).map((row) => {
+          const createdAt = row.created_at ? new Date(row.created_at) : new Date();
+          const ttlSeconds = typeof row.ttl === 'number' ? row.ttl : 0;
+          const expiresAt = new Date(createdAt.getTime() + ttlSeconds * 1000);
+          const contextData = typeof row.context_data === 'string' ? row.context_data : '';
+          const sizeBytes = Buffer.byteLength(contextData, 'utf8');
+          const isExpired = Date.now() > expiresAt.getTime();
+
+          return {
+            id: row.id,
+            rootPath: row.root_path,
+            contextHash: row.context_hash,
+            createdAt,
+            expiresAt,
+            ttlSeconds,
+            sizeBytes,
+            isExpired
+          };
+        });
+
+        const totalSizeBytes = entries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
+        const rootCount = new Set(entries.map((entry) => entry.rootPath)).size;
+
+        resolve({
+          entries,
+          totalEntries: entries.length,
+          totalSizeBytes,
+          rootCount
+        });
+      });
     });
   }
 

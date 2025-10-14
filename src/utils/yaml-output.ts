@@ -361,6 +361,7 @@ export class HiveMindYamlFormatter {
       results: {
         summary: result.summary || 'Task completed successfully',
         artifacts: result.artifacts || {},
+        tot_plan: result.totPlan || null,
         performance: {
           agents_deployed: result.agentCount || 0,
           tasks_completed: result.taskCount || 0,

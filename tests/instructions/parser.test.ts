@@ -147,6 +147,27 @@ describe('InstructionParser', () => {
     expect(context2.agentDirectives).toContain('Modified Instructions');
   });
 
+  it('reports cache status with entry metadata', async () => {
+    writeFile(join(tempRoot, 'AGENTS.md'), '# Status Instructions\n\n- Entry details');
+
+    parser = new InstructionParser(join(tempRoot, '.cache'));
+    await parser.parseInstructions(tempRoot, true);
+
+    const status = await parser.getCacheStatus();
+    expect(status.totalEntries).toBe(1);
+    expect(status.totalSizeBytes).toBeGreaterThan(0);
+    expect(status.rootCount).toBe(1);
+
+    const entry = status.entries[0];
+    expect(entry.rootPath).toContain(tempRoot);
+    expect(entry.contextHash).toHaveLength(64);
+    expect(entry.sizeBytes).toBeGreaterThan(0);
+    expect(entry.isExpired).toBe(false);
+
+    const scopedStatus = await parser.getCacheStatus(tempRoot);
+    expect(scopedStatus.totalEntries).toBe(1);
+  });
+
   it('validates individual file syntax correctly', async () => {
     const validFile = join(tempRoot, 'valid.md');
     const invalidFile = join(tempRoot, 'invalid.md');

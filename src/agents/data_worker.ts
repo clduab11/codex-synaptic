@@ -1,6 +1,7 @@
 
 import { Agent } from './agent.js';
 import { AgentCapability, AgentType, Task } from '../core/types.js';
+import { totEngine } from '../thought/tot-engine.js';
 
 export class DataWorker extends Agent {
   constructor() {
@@ -31,6 +32,16 @@ export class DataWorker extends Agent {
         version: '1.0.0',
         parameters: {
           data: 'any',
+          objective: 'string'
+        }
+      },
+      {
+        name: 'react_plan',
+        description: 'Synthesizes Reason-Act-Test plans with actionable steps and verification gates',
+        version: '1.0.0',
+        parameters: {
+          prompt: 'string',
+          analysis: 'any',
           objective: 'string'
         }
       }
@@ -70,6 +81,19 @@ export class DataWorker extends Agent {
           type: task.type,
           objective,
           summary: this.buildSummary(data, objective)
+        };
+      }
+
+      case 'react_plan': {
+        const prompt: string = String(payload.prompt ?? '');
+        const analysis = payload.analysis ?? null;
+        const objective: string = payload.objective || 'Derive ReAcT loop';
+        const plan = this.buildReactPlan(prompt, analysis, objective);
+        return {
+          type: task.type,
+          objective,
+          plan,
+          summary: plan.summary
         };
       }
 
@@ -139,5 +163,20 @@ export class DataWorker extends Agent {
       return `Processed structured payload with fields: ${keys.join(', ')} to support ${objective}.`;
     }
     return `Received scalar input for ${objective}; no transformation required.`;
+  }
+
+  private buildReactPlan(prompt: string, analysis: any, objective: string) {
+    const plan = totEngine.generatePlan(prompt, { branches: 5, iterations: 500 });
+
+    if (analysis?.insights && Array.isArray(analysis.insights) && analysis.insights.length) {
+      plan.reasoning.unshift(...analysis.insights.map((insight: string) => `Insight: ${insight}`));
+    } else if (analysis?.statistics) {
+      plan.reasoning.unshift('Leverage computed statistics to prioritise remediation targets.');
+    }
+
+    plan.reasoning.unshift(`Objective: ${objective}`);
+    plan.reasoning.push(`Prompt focus: ${prompt.slice(0, 240)}`);
+
+    return plan;
   }
 }

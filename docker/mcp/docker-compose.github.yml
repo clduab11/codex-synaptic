@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  mcp-github:
+    image: ghcr.io/context-labs/github-mcp:latest
+    container_name: codex-mcp-github
+    restart: unless-stopped
+    environment:
+      - GITHUB_TOKEN=
+    ports:
+      - "7010:7010"
+    command: ["--port", "7010"]

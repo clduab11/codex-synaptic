@@ -8,6 +8,8 @@ import {
   type RoutingRule 
 } from '../../src/router/index.js';
 import { AgentType } from '../../src/core/types.js';
+import { CodexMemorySystem } from '../../src/memory/memory-system.js';
+import { ToolOptimizer } from '../../src/tools/optimizer/index.js';
 
 describe('RoutingPolicyService', () => {
   let tempDir: string;
@@ -117,6 +119,38 @@ describe('RoutingPolicyService', () => {
     expect(evaluation.agentType).toBe(AgentType.VALIDATION_WORKER);
     expect(evaluation.confidence).toBe(0.95);
     expect(evaluation.reasoning).toContain('Custom Code Rule');
+  });
+
+  it('enriches evaluation with tool recommendations when optimizer configured', async () => {
+    const memoryBase = join(tempDir, 'workspace');
+    fs.mkdirSync(memoryBase, { recursive: true });
+    const memory = new CodexMemorySystem(memoryBase);
+    const optimizer = new ToolOptimizer(memory);
+
+    try {
+      await optimizer.recordToolOutcome({
+        toolId: 'code-generator',
+        agentType: AgentType.CODE_WORKER,
+        success: true,
+        latencyMs: 150
+      });
+
+      router = new RoutingPolicyService(tempDir, { toolOptimizer: optimizer });
+
+      const request: RoutingRequest = {
+        prompt: 'implement a new service endpoint',
+        toolCandidates: [
+          { id: 'code-generator', agentType: AgentType.CODE_WORKER }
+        ]
+      };
+
+      const evaluation = await router.evaluateRouting(request);
+
+      expect(evaluation.toolRecommendations).toBeDefined();
+      expect(evaluation.toolRecommendations?.[0]?.toolId).toBe('code-generator');
+    } finally {
+      await memory.close();
+    }
   });
 
   it('adds and manages routing rules', async () => {

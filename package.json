@@ -16,7 +16,8 @@
     "format": "prettier --write src/**/*.ts",
     "cli": "ts-node src/cli/index.ts",
     "prepare": "npm run build",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "export:metrics": "ts-node scripts/observability/exporter.ts"
   },
   "keywords": [
     "codex-synaptic",

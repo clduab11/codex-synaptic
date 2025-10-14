@@ -1,0 +1,10 @@
+apiVersion: 1
+dashboardProviders:
+  - name: default
+    orgId: 1
+    folder: Codex-Synaptic
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

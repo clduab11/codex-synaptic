@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  mcp-context7:
+    image: ghcr.io/context-labs/context7-mcp:latest
+    container_name: codex-mcp-context7
+    restart: unless-stopped
+    environment:
+      - CONTEXT7_API_KEY=
+    ports:
+      - "7020:7020"
+    command: ["--port", "7020"]

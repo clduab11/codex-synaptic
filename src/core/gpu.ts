@@ -178,23 +178,80 @@ export class GPUManager extends EventEmitter {
     }
 
     const stdout = profiler.stdout;
-    if (!/Metal:\s+Supported/i.test(stdout)) {
-      diagnostics.push('MPS detection: Metal not reported as supported.');
+    const devices: GPUDevice[] = [];
+    const lines = stdout.split('\n');
+
+    interface PendingDevice {
+      headerName: string;
+      chipset?: string;
+      memoryMB?: number;
+    }
+
+    const flush = (pending: PendingDevice | null) => {
+      if (!pending) return;
+      const name = pending.chipset ?? pending.headerName ?? `${os.hostname()} GPU`;
+      devices.push({
+        backend: 'mps',
+        name,
+        memoryMB: pending.memoryMB
+      });
+    };
+
+    let pending: PendingDevice | null = null;
+    let metalSupported = false;
+
+    for (const rawLine of lines) {
+      const indent = rawLine.match(/^(\s*)/)?.[1].length ?? 0;
+      const line = rawLine.trim();
+      if (!line) {
+        continue;
+      }
+
+      if (indent === 4 && line.endsWith(':')) {
+        flush(pending);
+        pending = { headerName: line.slice(0, -1).trim() };
+        continue;
+      }
+
+      if (!pending) {
+        continue;
+      }
+
+      if (indent >= 6 && line.includes(':')) {
+        const [keyRaw, valueRaw] = line.split(':', 2);
+        const key = keyRaw.trim();
+        const value = (valueRaw ?? '').trim();
+
+        if (/^Chipset Model$/i.test(key)) {
+          pending.chipset = value;
+        } else if (/^VRAM/i.test(key) || /Memory:/i.test(key)) {
+          const match = value.match(/([0-9.]+)\s*(GB|MB)/i);
+          if (match) {
+            const size = Number.parseFloat(match[1]);
+            if (!Number.isNaN(size)) {
+              pending.memoryMB = match[2].toUpperCase() === 'GB' ? size * 1024 : size;
+            }
+          }
+        } else if (/^Metal(\s+Support)?$/i.test(key)) {
+          if (!/not\s+supported/i.test(value)) {
+            if (/supported/i.test(value) || /metal\s+\d+/i.test(value) || /family/i.test(value)) {
+              metalSupported = true;
+            }
+          }
+        }
+      }
+    }
+
+    flush(pending);
+
+    if (!devices.length) {
+      diagnostics.push('MPS detection: no GPU devices reported by system_profiler.');
       return { available: false, devices: [], diagnostics };
     }
 
-    const devices: GPUDevice[] = [];
-    const chipRegex = /Chipset Model:\s+(.+)/gi;
-    let match: RegExpExecArray | null;
-    while ((match = chipRegex.exec(stdout)) !== null) {
-      devices.push({
-        backend: 'mps',
-        name: match[1].trim()
-      });
-    }
-
-    if (!devices.length) {
-      devices.push({ backend: 'mps', name: os.hostname() + ' GPU' });
+    if (!metalSupported) {
+      diagnostics.push('MPS detection: Metal support not reported as available.');
+      return { available: false, devices, diagnostics };
     }
 
     return { available: true, devices, diagnostics };

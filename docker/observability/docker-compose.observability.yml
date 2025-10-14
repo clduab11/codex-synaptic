@@ -1,0 +1,76 @@
+version: '3.8'
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    container_name: codex-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+      - /tmp/codex-synaptic-metrics:/var/lib/codex-synaptic-metrics:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-lifecycle
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    container_name: codex-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../docs/observability/dashboard-template.yaml:/var/lib/grafana/dashboards/codex-dashboard-template.yaml:ro
+    depends_on:
+      - prometheus
+      - loki
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    container_name: codex-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki-data:/loki
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    container_name: codex-promtail
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+  node_exporter:
+    image: prom/node-exporter:latest
+    restart: unless-stopped
+    container_name: codex-node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /:/host:ro,rslave
+      - /tmp/codex-synaptic-metrics:/var/lib/node_exporter:ro
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.textfile.directory=/var/lib/node_exporter'
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    restart: unless-stopped
+    container_name: codex-cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:

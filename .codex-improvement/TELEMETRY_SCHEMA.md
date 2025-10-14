@@ -189,6 +189,12 @@ Cumulative counts of events over time.
 #### Memory Operations
 - **`memory.bridge.operations`**: Memory bridge operations with success/failure tracking
   - Labels: `operation_type`, `namespace`, `success`
+- **`tool.usage.total`**: Count of tool invocations captured by the optimiser telemetry
+  - Labels: `tool_id`, `agent_type`, `success`
+- **`reasoning.runs.total`**: Count of reasoning plans executed
+  - Labels: `plan_type`, `status`
+- **`reasoning.checkpoints.total`**: Number of checkpoints persisted per reasoning plan
+  - Labels: `plan_id`, `status`
 
 ### Histogram Metrics
 
@@ -203,6 +209,14 @@ Distribution of measured values over time.
   - Buckets: [100, 500, 1000, 5000, 10000, 30000, 60000]
 - **`memory.bridge.query_latency_ms`**: Memory bridge query response time distribution
   - Buckets: [1, 5, 10, 25, 50, 100, 250, 500]
+- **`tool.latency_ms`**: Execution latency for tool calls captured in telemetry
+  - Buckets: [10, 25, 50, 100, 250, 500, 1000, 5000]
+- **`reasoning.plan_duration_ms`**: Duration from plan creation to completion (or failure)
+  - Buckets: [100, 250, 500, 1000, 5000, 15000, 60000]
+
+### Gauge Metrics (Derived)
+- **`tool.usage.success_ratio`**: Success ratio for a tool windowed over recent runs (0.0-1.0)
+  - Labels: `tool_id`, `agent_type`
 
 ## Implementation Guidelines
 

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { Logger } from '../core/logger.js';
 import { AgentType } from '../core/types.js';
+import { ToolOptimizer, type ToolCandidate, type ToolScore } from '../tools/optimizer/index.js';
 
 /**
  * Routing evaluation result with confidence scoring
@@ -22,6 +23,7 @@ export interface RoutingEvaluation {
     processingTimeMs: number;
     rulesApplied: string[];
   };
+  toolRecommendations?: ToolScore[];
 }
 
 /**
@@ -56,6 +58,8 @@ export interface RoutingRule {
  */
 export interface RoutingRequest {
   prompt: string;
+  toolPrompt?: string;
+  toolCandidates?: ToolCandidate[];
   context?: {
     agentDirectives?: string;
     fileContext?: string;
@@ -73,6 +77,10 @@ export interface RoutingRequest {
   };
 }
 
+interface RoutingPolicyServiceOptions {
+  toolOptimizer?: ToolOptimizer;
+}
+
 /**
  * Persona-aligned routing policy service
  */
@@ -82,11 +90,14 @@ export class RoutingPolicyService {
   private configPath: string;
   private historyPath: string;
   private evaluationHistory: Map<string, RoutingEvaluation> = new Map();
+  private toolOptimizer?: ToolOptimizer;
 
-  constructor(configDir?: string) {
+  constructor(configDir?: string, options?: RoutingPolicyServiceOptions) {
     const baseDir = configDir || path.join(process.cwd(), 'config', 'routing');
     this.configPath = path.join(baseDir, 'policies.json');
     this.historyPath = path.join(process.cwd(), 'memory', 'routing');
+
+    this.toolOptimizer = options?.toolOptimizer;
     
     // Ensure directories exist
     fs.mkdirSync(path.dirname(this.configPath), { recursive: true });
@@ -127,6 +138,8 @@ export class RoutingPolicyService {
         processingTimeMs: Date.now() - startTime,
         rulesApplied
       };
+
+      await this.attachToolRecommendations(request, evaluation);
 
       // Store evaluation history
       this.evaluationHistory.set(evaluationId, evaluation);
@@ -242,6 +255,21 @@ export class RoutingPolicyService {
     return Array.from(this.evaluationHistory.values())
       .sort((a, b) => b.metadata.timestamp.getTime() - a.metadata.timestamp.getTime())
       .slice(0, limit);
+  }
+
+  private async attachToolRecommendations(request: RoutingRequest, evaluation: RoutingEvaluation): Promise<void> {
+    if (!this.toolOptimizer || !request.toolCandidates || request.toolCandidates.length === 0) {
+      return;
+    }
+
+    try {
+      const prompt = request.toolPrompt ?? request.prompt;
+      const scores = await this.toolOptimizer.evaluateTools(prompt, request.toolCandidates);
+      evaluation.toolRecommendations = scores;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn('router', 'Failed to generate tool recommendations', { message });
+    }
   }
 
   /**

@@ -14,7 +14,7 @@ import { AgentRegistry } from '../agents/registry.js';
 import { TaskScheduler } from './scheduler.js';
 import { NeuralMesh } from '../mesh/neural-mesh.js';
 import { SwarmCoordinator } from '../swarm/coordinator.js';
-import { ConsensusManager } from '../consensus/manager.js';
+import { ConsensusManager, type ConsensusModeConfig } from '../consensus/manager.js';
 import { MCPBridge } from '../bridging/mcp-bridge.js';
 import { A2ABridge } from '../bridging/a2a-bridge.js';
 import { ConfigurationManager, SystemConfiguration } from './config.js';
@@ -22,6 +22,23 @@ import { AgentType, AgentId, AgentStatus, Task, SwarmConfiguration } from './typ
 import { CodeWorker } from '../agents/code_worker.js';
 import { DataWorker } from '../agents/data_worker.js';
 import { ValidationWorker } from '../agents/validation_worker.js';
+import { ResearchWorker } from '../agents/research_worker.js';
+import { ArchitectWorker } from '../agents/architect_worker.js';
+import { KnowledgeWorker } from '../agents/knowledge_worker.js';
+import { AnalystWorker } from '../agents/analyst_worker.js';
+import { SecurityWorker } from '../agents/security_worker.js';
+import { OpsWorker } from '../agents/ops_worker.js';
+import { PerformanceWorker } from '../agents/performance_worker.js';
+import { IntegrationWorker } from '../agents/integration_worker.js';
+import { SimulationWorker } from '../agents/simulation_worker.js';
+import { MemoryWorker } from '../agents/memory_worker.js';
+import { PlanningWorker } from '../agents/planning_worker.js';
+import { ReviewWorker } from '../agents/review_worker.js';
+import { CommunicationWorker } from '../agents/communication_worker.js';
+import { AutomationWorker } from '../agents/automation_worker.js';
+import { ObservabilityWorker } from '../agents/observability_worker.js';
+import { ComplianceWorker } from '../agents/compliance_worker.js';
+import { ReliabilityWorker } from '../agents/reliability_worker.js';
 import { SwarmCoordinator as SwarmCoordinatorAgent } from '../agents/swarm_coordinator.js';
 import { TopologyCoordinator } from '../agents/topology_coordinator.js';
 import { ConsensusCoordinator } from '../agents/consensus_coordinator.js';
@@ -29,6 +46,23 @@ import { MCPBridgeAgent } from '../agents/mcp_bridge_agent.js';
 import { A2ABridgeAgent } from '../agents/a2a_bridge_agent.js';
 import { Agent } from '../agents/agent.js';
 import type { CodexContext, CodexPromptEnvelope, FileTreeNode } from '../types/codex-context.js';
+import { CodexMemorySystem, type ReasoningRunRecord, type ToolUsageRecord } from '../memory/memory-system.js';
+import type { TotPlanResult } from '../thought/tot-engine.js';
+import { ToolOptimizer, type ToolCandidate, type ToolScore } from '../tools/optimizer/index.js';
+import {
+  LocalVectorClient,
+  QdrantVectorClient,
+  buildVectorRecordFromText,
+  type VectorClient
+} from '../vector/vector-client.js';
+import { ApiServer } from './api-server.js';
+import {
+  ReasoningPlanner,
+  type ReasoningPlanOptions,
+  type ReasoningPlanCreationResult,
+  type ReasoningCheckpointInput,
+  type ReasoningCompletionOptions
+} from '../reasoning/planner.js';
 
 interface WorkflowStage {
   id: string;
@@ -103,7 +137,13 @@ export class CodexSynapticSystem extends EventEmitter {
   private mcpBridge: MCPBridge;
   private a2aBridge: A2ABridge;
   private configManager: ConfigurationManager;
+  private memorySystem: CodexMemorySystem;
+  private vectorClient?: VectorClient;
+  private toolOptimizer: ToolOptimizer;
+  private apiServer?: ApiServer;
+  private reasoningPlanner: ReasoningPlanner;
   private config?: SystemConfiguration;
+  private scalingConfig?: SystemConfiguration['scaling'];
   private isInitialized = false;
   private isShuttingDown = false;
   private taskPromises: Map<string, TaskPromiseTracker> = new Map();
@@ -112,6 +152,7 @@ export class CodexSynapticSystem extends EventEmitter {
     envelope: CodexPromptEnvelope;
     primedAt: Date;
   };
+  private selfHealingCooldowns: Map<string, number> = new Map();
   private readonly onTaskAssigned = (agentId: AgentId, task: Task): void => {
     this.handleTaskAssignment(agentId, task).catch((error) => {
       this.logger.error('system', 'Agent task execution failed', {
@@ -171,8 +212,30 @@ export class CodexSynapticSystem extends EventEmitter {
     this.mcpBridge = new MCPBridge();
     this.a2aBridge = new A2ABridge(this.agentRegistry);
     this.healthMonitor = new HealthMonitor(this);
+    this.memorySystem = new CodexMemorySystem();
+    this.toolOptimizer = new ToolOptimizer(this.memorySystem);
+    this.reasoningPlanner = new ReasoningPlanner({
+      memory: this.memorySystem,
+      proposeConsensus: async (data) => this.proposeConsensus('reasoning_plan', data),
+      logger: this.logger
+    });
     
     this.setupEventHandlers();
+
+    this.autoScaler.on('scaleUp', (payload) => this.handleScaleUp(payload));
+    this.autoScaler.on('scaleDown', (payload) => this.handleScaleDown(payload));
+    this.agentRegistry.on('agentStatusChanged', (agentId: AgentId, status: AgentStatus, oldStatus?: AgentStatus) => {
+      this.handleAgentStatusChange(agentId, status, oldStatus);
+    });
+    this.agentRegistry.on('agentUnregistered', (agentId: AgentId) => {
+      this.handleAgentUnregistered(agentId);
+    });
+    this.neuralMesh.on('selfHealingApplied', (event) => {
+      this.memorySystem.store('mesh_events', `self-healing-${Date.now()}`, {
+        ...event,
+        storedAt: new Date().toISOString()
+      }).catch(() => {});
+    });
   }
 
   async initialize(): Promise<void> {
@@ -191,6 +254,16 @@ export class CodexSynapticSystem extends EventEmitter {
       await this.configManager.load();
       this.config = this.configManager.get();
       this.applyLoggerSettings();
+      this.scalingConfig = this.config?.scaling;
+      if (this.scalingConfig?.enabled) {
+        this.autoScaler.updateConfig({
+          minAgents: this.scalingConfig.minAgents,
+          maxAgents: this.scalingConfig.maxAgents,
+          scaleUpThreshold: this.scalingConfig.scaleUpThreshold,
+          scaleDownThreshold: this.scalingConfig.scaleDownThreshold,
+          cooldownMs: this.scalingConfig.cooldownMs
+        });
+      }
 
       const meshRunDuration = this.config?.mesh?.maxRunDurationMs ?? 60 * 60 * 1000;
       const swarmRunDuration = this.config?.swarm?.maxRunDurationMs ?? 60 * 60 * 1000;
@@ -228,13 +301,25 @@ export class CodexSynapticSystem extends EventEmitter {
         await this.a2aBridge.initialize();
       });
 
+      if (this.config?.mesh) {
+        this.neuralMesh.configure({
+          supportedTopologies: this.config.mesh.supportedTopologies,
+          selfHealing: this.config.mesh.selfHealing
+        });
+      }
+
+      if (this.config?.consensus) {
+        this.consensusManager.updateConfig(this.config.consensus as ConsensusModeConfig);
+      }
+
       this.isInitialized = true;
-      
+
       // Start health monitoring
       this.healthMonitor.startPeriodicHealthChecks();
       
       await this.connectConfiguredBridges();
       await this.bootstrapDefaultAgents();
+      await this.startApiServerIfEnabled();
       this.emit('initialized');
       
       this.logger.info('system', 'Codex-Synaptic System initialized successfully');
@@ -266,6 +351,8 @@ export class CodexSynapticSystem extends EventEmitter {
       await this.neuralMesh.shutdown();
       await this.taskScheduler.shutdown();
       await this.agentRegistry.shutdown();
+      await this.apiServer?.stop();
+      this.apiServer = undefined;
       
       // Shutdown infrastructure
       await this.storageManager.shutdown();
@@ -363,7 +450,18 @@ export class CodexSynapticSystem extends EventEmitter {
     this.consensusManager.on('consensusReached', (result) => {
       const proposalId = result?.proposal?.id ?? 'unknown';
       this.logger.info('system', 'Consensus reached', { proposalId, accepted: result?.accepted });
+      this.reasoningPlanner.handleConsensusResult(result).catch((error) => {
+        this.logger.warn('system', 'Failed to update reasoning planner from consensus result', {
+          proposalId,
+          reason: (error as Error).message
+        });
+      });
       this.emit('consensusReached', result);
+    });
+    this.consensusManager.on('consensusTelemetry', (payload) => {
+      this.handleConsensusTelemetry(payload).catch((error) => {
+        this.logger.warn('system', 'Failed to persist consensus telemetry', { reason: (error as Error).message });
+      });
     });
 
     // Error handling
@@ -399,12 +497,80 @@ export class CodexSynapticSystem extends EventEmitter {
     return this.consensusManager;
   }
 
+  getConfigManager(): ConfigurationManager {
+    return this.configManager;
+  }
+
+  private async initializeVectorClient(): Promise<void> {
+    const vectorConfig = this.configManager.getVectorConfig();
+    if (!vectorConfig?.enabled) {
+      this.vectorClient = undefined;
+      return;
+    }
+
+    if (vectorConfig.engine === 'local') {
+      this.vectorClient = new LocalVectorClient();
+    } else if (vectorConfig.engine === 'qdrant') {
+      this.vectorClient = new QdrantVectorClient(vectorConfig.qdrant?.url ?? 'http://localhost:6333', vectorConfig.qdrant?.apiKey);
+    } else {
+      this.logger.warn('system', `Vector engine ${vectorConfig.engine} not implemented; falling back to local.`);
+      this.vectorClient = new LocalVectorClient();
+    }
+
+    await this.vectorClient.ensureCollection(vectorConfig.collection, vectorConfig.dimensions);
+  }
+
+  getVectorClient(): VectorClient | undefined {
+    return this.vectorClient;
+  }
+
+
   getMCPBridge(): MCPBridge {
     return this.mcpBridge;
   }
 
   getA2ABridge(): A2ABridge {
     return this.a2aBridge;
+  }
+
+  getMemorySystem(): CodexMemorySystem {
+    return this.memorySystem;
+  }
+
+  getToolOptimizer(): ToolOptimizer {
+    return this.toolOptimizer;
+  }
+
+  getApiServer(): ApiServer | undefined {
+    return this.apiServer;
+  }
+
+  async evaluateToolsForPrompt(prompt: string, candidates: ToolCandidate[]): Promise<ToolScore[]> {
+    return this.toolOptimizer.evaluateTools(prompt, candidates);
+  }
+
+  async recordToolOutcome(record: ToolUsageRecord): Promise<number> {
+    return this.toolOptimizer.recordToolOutcome(record);
+  }
+
+  async createReasoningPlan(prompt: string, options?: ReasoningPlanOptions): Promise<ReasoningPlanCreationResult> {
+    return this.reasoningPlanner.createPlan(prompt, options);
+  }
+
+  async checkpointReasoningPlan(planId: string, input: ReasoningCheckpointInput): Promise<ReasoningRunRecord> {
+    return this.reasoningPlanner.checkpoint(planId, input);
+  }
+
+  async completeReasoningPlan(planId: string, options: ReasoningCompletionOptions): Promise<ReasoningRunRecord> {
+    return this.reasoningPlanner.complete(planId, options);
+  }
+
+  async resumeReasoningPlan(planId: string): Promise<ReasoningRunRecord | null> {
+    return this.reasoningPlanner.resume(planId);
+  }
+
+  async listReasoningPlans(limit = 10): Promise<ReasoningRunRecord[]> {
+    return this.reasoningPlanner.list(limit);
   }
 
   getHealthMonitor(): HealthMonitor {
@@ -511,7 +677,14 @@ export class CodexSynapticSystem extends EventEmitter {
     }
 
     this.logger.info('system', 'Configuring neural mesh', { topology, nodes });
-    this.neuralMesh.configure({ topology, desiredNodeCount: nodes });
+    const meshConfig = this.config?.mesh;
+    this.neuralMesh.configure({
+      topology,
+      desiredNodeCount: nodes,
+      maxConnections: meshConfig?.maxConnections,
+      supportedTopologies: meshConfig?.supportedTopologies,
+      selfHealing: meshConfig?.selfHealing
+    });
     this.logger.info('system', 'Neural mesh configuration applied');
   }
 
@@ -592,6 +765,7 @@ export class CodexSynapticSystem extends EventEmitter {
     }
 
     const outcome = this.buildWorkflowOutcome(prompt, context, stageOutputs);
+    await this.persistWorkflowArtifacts(prompt, outcome);
     this.logger.info('system', 'Workflow completed', { summary: outcome.summary });
     return outcome;
   }
@@ -659,11 +833,49 @@ export class CodexSynapticSystem extends EventEmitter {
     }
   }
 
+  private async startApiServerIfEnabled(): Promise<void> {
+    const apiConfig = this.config?.api;
+    const enabled = apiConfig?.enabled ?? true;
+    if (!enabled) {
+      this.logger.info('system', 'API server disabled via configuration');
+      return;
+    }
+
+    if (!this.apiServer) {
+      this.apiServer = new ApiServer(
+        {
+          evaluateTools: (prompt, candidates) => this.toolOptimizer.evaluateTools(prompt, candidates),
+          recordToolOutcome: (record) => this.toolOptimizer.recordToolOutcome(record)
+        },
+        this.logger
+      );
+    }
+
+    const host = apiConfig?.host ?? '0.0.0.0';
+    const port = apiConfig?.port ?? 4242;
+    const cors = apiConfig?.cors;
+
+    try {
+      await this.apiServer.start({ host, port, cors });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+        this.logger.warn('system', 'API port in use; retrying with ephemeral port', { host, port });
+        await this.apiServer.start({ host, port: 0, cors });
+      } else {
+        throw error;
+      }
+    }
+  }
+
   private async bootstrapDefaultAgents(): Promise<void> {
     const defaults: Array<{ type: AgentType; count: number }> = [
       { type: AgentType.CODE_WORKER, count: 2 },
       { type: AgentType.DATA_WORKER, count: 1 },
       { type: AgentType.VALIDATION_WORKER, count: 1 },
+      { type: AgentType.RESEARCH_WORKER, count: 1 },
+      { type: AgentType.ANALYST_WORKER, count: 1 },
+      { type: AgentType.ARCHITECT_WORKER, count: 1 },
+      { type: AgentType.KNOWLEDGE_WORKER, count: 1 },
       { type: AgentType.SWARM_COORDINATOR, count: 1 },
       { type: AgentType.TOPOLOGY_COORDINATOR, count: 1 },
       { type: AgentType.CONSENSUS_COORDINATOR, count: 1 },
@@ -688,6 +900,40 @@ export class CodexSynapticSystem extends EventEmitter {
         return new DataWorker();
       case AgentType.VALIDATION_WORKER:
         return new ValidationWorker();
+      case AgentType.RESEARCH_WORKER:
+        return new ResearchWorker();
+      case AgentType.ARCHITECT_WORKER:
+        return new ArchitectWorker();
+      case AgentType.KNOWLEDGE_WORKER:
+        return new KnowledgeWorker();
+      case AgentType.ANALYST_WORKER:
+        return new AnalystWorker();
+      case AgentType.SECURITY_WORKER:
+        return new SecurityWorker();
+      case AgentType.OPS_WORKER:
+        return new OpsWorker();
+      case AgentType.PERFORMANCE_WORKER:
+        return new PerformanceWorker();
+      case AgentType.INTEGRATION_WORKER:
+        return new IntegrationWorker();
+      case AgentType.SIMULATION_WORKER:
+        return new SimulationWorker();
+      case AgentType.MEMORY_WORKER:
+        return new MemoryWorker();
+      case AgentType.PLANNING_WORKER:
+        return new PlanningWorker();
+      case AgentType.REVIEW_WORKER:
+        return new ReviewWorker();
+      case AgentType.COMMUNICATION_WORKER:
+        return new CommunicationWorker();
+      case AgentType.AUTOMATION_WORKER:
+        return new AutomationWorker();
+      case AgentType.OBSERVABILITY_WORKER:
+        return new ObservabilityWorker();
+      case AgentType.COMPLIANCE_WORKER:
+        return new ComplianceWorker();
+      case AgentType.RELIABILITY_WORKER:
+        return new ReliabilityWorker();
       case AgentType.SWARM_COORDINATOR:
         return new SwarmCoordinatorAgent();
       case AgentType.TOPOLOGY_COORDINATOR:
@@ -782,8 +1028,45 @@ export class CodexSynapticSystem extends EventEmitter {
     const lower = prompt.toLowerCase();
     const stages: WorkflowStage[] = [];
 
-    const requiresDataAnalysis = /(analy|metric|data|stat|insight|learn)/.test(lower);
-    const requiresCode = /(code|build|implement|function|api|service|module|component)/.test(lower);
+    const mentionsRepository = /(repo|repository|codebase|pull request|self-improv|refactor|optim|bug|fix|issue|feature|patch)/.test(lower);
+    const mentionsDocs = /(readme|agents\.md|documentation|docset|docs\/)/.test(lower);
+    const requiresTesting = /(test|qa|validate|verification|ci|lint|coverage)/.test(lower);
+    const wantsReAct = /(re-?act|plan\/apply\/test|reason\s*and\s*act|react methodology)/.test(lower);
+    const requiresResearch =
+      /(research|recon|discover|investig|intel|survey|learn|context)/.test(lower) ||
+      wantsReAct ||
+      mentionsDocs;
+    const requiresArchitecture =
+      /(architect|design|topology|mesh|blueprint|pipeline|infrastructure|consensus)/.test(lower) ||
+      wantsReAct;
+    const requiresKnowledge =
+      mentionsDocs ||
+      /(knowledge|documentation|brief|report|update|memory)/.test(lower) ||
+      wantsReAct;
+    const requiresDataAnalysis =
+      /(analy|metric|data|stat|insight|learn|context|requirement|plan|evaluate)/.test(lower)
+      || mentionsRepository
+      || mentionsDocs
+      || wantsReAct;
+    const requiresCode =
+      /(code|build|implement|function|api|service|module|component|scaffold|engineer)/.test(lower)
+      || mentionsRepository
+      || wantsReAct;
+
+    if (requiresResearch) {
+      stages.push({
+        id: 'research-scan',
+        label: 'Knowledge Reconnaissance',
+        taskType: 'research_scan',
+        requiredCapabilities: ['conduct_research'],
+        priority: 12,
+        payloadBuilder: (ctx) => ({
+          prompt: ctx.prompt,
+          focusAreas: mentionsDocs ? ['documentation', 'agents'] : [],
+          context: ctx.stageResults['data-analysis']?.result ?? null
+        })
+      });
+    }
 
     if (requiresDataAnalysis) {
       stages.push({
@@ -795,6 +1078,36 @@ export class CodexSynapticSystem extends EventEmitter {
         payloadBuilder: (ctx) => ({
           data: ctx.prompt.split(/[\.;\n]/).map((item) => item.trim()).filter(Boolean),
           objective: 'Extract actionable insights and requirements'
+        })
+      });
+    }
+
+    if (wantsReAct) {
+      stages.push({
+        id: 'react-plan',
+        label: 'ReAcT Plan Synthesis',
+        taskType: 'react_plan',
+        requiredCapabilities: ['react_plan'],
+        priority: 9,
+        payloadBuilder: (ctx) => ({
+          prompt: ctx.prompt,
+          analysis: ctx.stageResults['data-analysis']?.result ?? null,
+          objective: 'Construct a Reasoning + Action + Test loop aligned with ReAcT best practices'
+        })
+      });
+    }
+
+    if (requiresArchitecture) {
+      stages.push({
+        id: 'architecture-blueprint',
+        label: 'Architecture Blueprint',
+        taskType: 'architecture_plan',
+        requiredCapabilities: ['design_architecture'],
+        priority: 8,
+        payloadBuilder: (ctx) => ({
+          prompt: ctx.prompt,
+          requirements: ctx.stageResults['react-plan']?.result?.actions ?? [],
+          constraints: ctx.stageResults['data-analysis']?.result?.insights ?? []
         })
       });
     }
@@ -836,6 +1149,21 @@ export class CodexSynapticSystem extends EventEmitter {
       });
     }
 
+    if (requiresKnowledge) {
+      stages.push({
+        id: 'knowledge-distillation',
+        label: 'Knowledge Distillation',
+        taskType: 'knowledge_distillation',
+        requiredCapabilities: ['synthesize_knowledge'],
+        priority: 4,
+        payloadBuilder: (ctx) => ({
+          totPlan: ctx.stageResults['react-plan']?.result?.tot ?? null,
+          research: ctx.stageResults['research-scan']?.result ?? null,
+          architecture: ctx.stageResults['architecture-blueprint']?.result ?? null
+        })
+      });
+    }
+
     stages.push({
       id: 'insight-summary',
       label: 'Insight Synthesis',
@@ -845,9 +1173,13 @@ export class CodexSynapticSystem extends EventEmitter {
       payloadBuilder: (ctx) => ({
         data: {
           prompt: ctx.prompt,
+          research: ctx.stageResults['research-scan']?.result ?? null,
           analysis: ctx.stageResults['data-analysis']?.result ?? null,
+          reactPlan: ctx.stageResults['react-plan']?.result ?? null,
+          architecture: ctx.stageResults['architecture-blueprint']?.result ?? null,
           code: ctx.stageResults['code-generation']?.result ?? null,
-          validation: ctx.stageResults['validation']?.result ?? null
+          validation: ctx.stageResults['validation']?.result ?? null,
+          knowledge: ctx.stageResults['knowledge-distillation']?.result ?? null
         },
         objective: 'Produce executive summary'
       })
@@ -875,15 +1207,23 @@ export class CodexSynapticSystem extends EventEmitter {
     context: WorkflowContext,
     stageOutputs: Array<{ stage: string; taskId: string; result: any }>
   ): any {
+    const research = context.stageResults['research-scan']?.result ?? null;
+    const reactPlan = context.stageResults['react-plan']?.result ?? null;
+    const architecture = context.stageResults['architecture-blueprint']?.result ?? null;
     const code = context.stageResults['code-generation']?.result?.generatedCode ?? null;
     const lintIssues = context.stageResults['code-lint']?.result?.issues ?? [];
     const validation = context.stageResults['validation']?.result ?? null;
     const insight = context.stageResults['insight-summary']?.result ?? null;
+    const knowledge = context.stageResults['knowledge-distillation']?.result ?? null;
 
     const summaryParts: string[] = [];
+    if (research?.summary) summaryParts.push(research.summary);
+    if (reactPlan?.summary) summaryParts.push(reactPlan.summary);
+    if (architecture?.summary) summaryParts.push(architecture.summary);
     if (code) summaryParts.push('Generated implementation scaffold.');
     if (lintIssues.length === 0) summaryParts.push('Code lint checks passed.');
     if (validation?.passed) summaryParts.push('Validation gates satisfied.');
+    if (knowledge?.summary) summaryParts.push(knowledge.summary);
     if (insight?.summary) summaryParts.push(insight.summary);
 
     if (summaryParts.length === 0) {
@@ -895,14 +1235,275 @@ export class CodexSynapticSystem extends EventEmitter {
       summary: summaryParts.join(' '),
       stages: stageOutputs,
       artifacts: {
+        research,
+        reactPlan,
+        architecture,
         code,
         lintIssues,
         validation,
-        insight
+        insight,
+        knowledge
       },
       mesh: this.neuralMesh.getStatus(),
       swarm: this.swarmCoordinator.getStatus(),
       consensus: this.consensusManager.getStatus()
     };
+  }
+
+  private async persistKnowledgeVectors(knowledge: any): Promise<void> {
+    if (!knowledge || !Array.isArray(knowledge.knowledgeUpdates) || !this.vectorClient) {
+      return;
+    }
+    const vectorConfig = this.configManager.getVectorConfig();
+    if (!vectorConfig?.enabled) {
+      return;
+    }
+    const updates = knowledge.knowledgeUpdates.filter((item: string) => typeof item === 'string' && item.trim());
+    if (!updates.length) {
+      return;
+    }
+    const records = updates.map((item: string, index: number) => buildVectorRecordFromText(`knowledge-${Date.now()}-${index}`, item, { source: 'knowledge_worker' }, vectorConfig.dimensions));
+    await this.vectorClient.upsert(vectorConfig.collection, records);
+  }
+
+  private async persistWorkflowArtifacts(prompt: string, outcome: any): Promise<void> {
+    try {
+      const reactPlan = outcome?.artifacts?.reactPlan;
+      const tot = reactPlan?.tot;
+      if (tot) {
+        const entryId = await this.memorySystem.store('tot_runs', tot.bestBranch.id, {
+          prompt,
+          summary: tot.summary,
+          bestBranch: {
+            label: tot.bestBranch.label,
+            focus: tot.bestBranch.focus,
+            score: tot.bestBranch.score,
+            confidence: tot.bestBranch.confidence
+          },
+          backlog: tot.priorityBacklog,
+          verificationSuite: tot.verificationSuite,
+          knowledgeUpdates: tot.knowledgeUpdates,
+          monteCarlo: tot.monteCarlo,
+          storedAt: new Date().toISOString()
+        });
+        await this.queueTotFollowUps(tot, entryId);
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.warn('system', 'Failed to persist workflow artifacts', { reason: err.message });
+    }
+  }
+
+  private async handleConsensusTelemetry(payload: any): Promise<void> {
+    try {
+      const key = payload?.proposal?.id ?? `consensus-${Date.now()}`;
+      await this.memorySystem.store('consensus_events', key, {
+        ...payload,
+        storedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  private async handleScaleUp(payload: { currentAgents: number; recommendedAgents: number; reason: string; utilization: number }): Promise<void> {
+    const increment = payload.recommendedAgents - payload.currentAgents;
+    if (increment <= 0) {
+      return;
+    }
+    this.logger.info('system', 'Autoscaler scale-up recommendation accepted', payload);
+    await this.deployBalancedWorkers(increment);
+    this.resourceManager.updateAgentCount(this.agentRegistry.getAgentCount());
+    await this.memorySystem.store('autoscaler_events', `scale-up-${Date.now()}`, {
+      ...payload,
+      appliedIncrement: increment,
+      storedAt: new Date().toISOString()
+    }).catch(() => {});
+  }
+
+  private handleScaleDown(payload: { currentAgents: number; recommendedAgents: number; reason: string; utilization: number }): void {
+    const reduction = payload.currentAgents - payload.recommendedAgents;
+    if (reduction <= 0) {
+      return;
+    }
+    const removed = this.retireIdleWorkers(reduction);
+    if (removed < reduction) {
+      this.logger.warn('system', 'Unable to retire requested number of agents during scale down', {
+        requested: reduction,
+        removed
+      });
+    } else {
+      this.logger.info('system', 'Autoscaler scale-down applied', { removed });
+    }
+    this.resourceManager.updateAgentCount(this.agentRegistry.getAgentCount());
+    this.memorySystem.store('autoscaler_events', `scale-down-${Date.now()}`, {
+      ...payload,
+      appliedReduction: removed,
+      storedAt: new Date().toISOString()
+    }).catch(() => {});
+  }
+
+  private async deployBalancedWorkers(count: number): Promise<void> {
+    if (count <= 0) return;
+    const workerRotation: AgentType[] = [
+      AgentType.RESEARCH_WORKER,
+      AgentType.ARCHITECT_WORKER,
+      AgentType.ANALYST_WORKER,
+      AgentType.SECURITY_WORKER,
+      AgentType.CODE_WORKER,
+      AgentType.VALIDATION_WORKER,
+      AgentType.KNOWLEDGE_WORKER,
+      AgentType.DATA_WORKER,
+      AgentType.PERFORMANCE_WORKER,
+      AgentType.OBSERVABILITY_WORKER,
+      AgentType.AUTOMATION_WORKER,
+      AgentType.REVIEW_WORKER,
+      AgentType.COMMUNICATION_WORKER,
+      AgentType.MEMORY_WORKER,
+      AgentType.PLANNING_WORKER,
+      AgentType.RELIABILITY_WORKER,
+      AgentType.OPS_WORKER,
+      AgentType.INTEGRATION_WORKER,
+      AgentType.SIMULATION_WORKER,
+      AgentType.COMPLIANCE_WORKER
+    ];
+
+    for (let i = 0; i < count; i += 1) {
+      const type = workerRotation[i % workerRotation.length];
+      try {
+        await this.deployAgent(type, 1);
+      } catch (error) {
+        this.logger.warn('system', 'Autoscaler failed to deploy agent', {
+          type,
+          reason: (error as Error).message
+        });
+      }
+    }
+  }
+
+  private retireIdleWorkers(count: number): number {
+    if (count <= 0) return 0;
+    const candidateTypes: AgentType[] = [
+      AgentType.KNOWLEDGE_WORKER,
+      AgentType.COMMUNICATION_WORKER,
+      AgentType.REVIEW_WORKER,
+      AgentType.ANALYST_WORKER,
+      AgentType.AUTOMATION_WORKER,
+      AgentType.SIMULATION_WORKER,
+      AgentType.PERFORMANCE_WORKER,
+      AgentType.MEMORY_WORKER
+    ];
+
+    let removed = 0;
+    for (const type of candidateTypes) {
+      if (removed >= count) break;
+      const agents = this.agentRegistry
+        .getAgentsByType(type)
+        .filter((agent) => agent.status === AgentStatus.IDLE);
+      for (const agent of agents) {
+        if (removed >= count) break;
+        this.agentRegistry.unregisterAgent(agent.id);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  private handleAgentStatusChange(agentId: AgentId, status: AgentStatus, oldStatus?: AgentStatus): void {
+    const healingConfig = this.config?.system.selfHealing;
+    if (!healingConfig?.enabled || !healingConfig.redeployOnFailure) {
+      return;
+    }
+
+    if (status === AgentStatus.ERROR || status === AgentStatus.OFFLINE) {
+      const cooldownMs = healingConfig.cooldownMs ?? 15000;
+      const key = `${agentId.type}`;
+      const now = Date.now();
+      const nextAllowed = this.selfHealingCooldowns.get(key) ?? 0;
+      if (nextAllowed > now) {
+        return;
+      }
+      this.selfHealingCooldowns.set(key, now + cooldownMs);
+      setTimeout(() => {
+        this.deployAgent(agentId.type as AgentType, 1).catch((error) => {
+          this.logger.warn('system', 'Self-healing redeploy failed', {
+            agentType: agentId.type,
+            reason: (error as Error).message
+          });
+        });
+      }, cooldownMs);
+    } else if (oldStatus === AgentStatus.ERROR && status === AgentStatus.IDLE) {
+      this.selfHealingCooldowns.delete(agentId.type);
+    }
+  }
+
+  private handleAgentUnregistered(agentId: AgentId): void {
+    const healingConfig = this.config?.system.selfHealing;
+    if (!healingConfig?.enabled || !healingConfig.redeployOnFailure) {
+      return;
+    }
+    const currentAgents = this.agentRegistry.getAgentCount();
+    const minAgents = this.scalingConfig?.minAgents ?? 2;
+    if (currentAgents < minAgents) {
+      this.deployAgent(agentId.type as AgentType, 1).catch((error) => {
+        this.logger.warn('system', 'Self-healing replenish failed', {
+          agentType: agentId.type,
+          reason: (error as Error).message
+        });
+      });
+    }
+  }
+
+  private async queueTotFollowUps(tot: TotPlanResult, totEntryId: number): Promise<void> {
+    const backlog = Array.isArray(tot.priorityBacklog) ? tot.priorityBacklog.slice(0, 3) : [];
+    if (!backlog.length) {
+      return;
+    }
+
+    for (let index = 0; index < backlog.length; index += 1) {
+      const item = backlog[index];
+      try {
+        await this.memorySystem.store('tot_followups', `${tot.bestBranch.id}#${index + 1}`, {
+          totEntryId,
+          backlogIndex: index + 1,
+          item,
+          summary: tot.summary,
+          createdAt: new Date().toISOString()
+        });
+      } catch (error) {
+        const err = error as Error;
+        this.logger.warn('system', 'Failed to enqueue ToT follow-up task', {
+          reason: err.message,
+          item
+        });
+      }
+    }
+
+    try {
+      const consensusAgents = this.agentRegistry.getAgentsByType(AgentType.CONSENSUS_COORDINATOR);
+      if (!consensusAgents.length) {
+        this.logger.warn('system', 'No consensus coordinators available to propose ToT follow-up.');
+        return;
+      }
+
+      const proposalId = this.consensusManager.proposeConsensus(
+        'tot_backlog_followup',
+        {
+          totEntryId,
+          bestBranch: tot.bestBranch,
+          backlogItem: backlog[0],
+          createdAt: new Date().toISOString()
+        },
+        consensusAgents[0].id
+      );
+
+      this.logger.info('system', 'ToT backlog follow-up consensus proposed', {
+        proposalId,
+        backlogItem: backlog[0]
+      });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.warn('system', 'Failed to propose ToT backlog consensus', { reason: err.message });
+    }
   }
 }

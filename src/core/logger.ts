@@ -26,6 +26,7 @@ export class Logger {
   private static instance: Logger;
   private writers: Map<string, NodeJS.WritableStream> = new Map();
   private logLevel: LogLevel = LogLevel.INFO;
+  private consoleLevel: LogLevel = LogLevel.INFO;
   private logDir = join(process.cwd(), 'logs');
 
   private constructor() {
@@ -44,6 +45,14 @@ export class Logger {
 
   setLogLevel(level: LogLevel): void {
     this.logLevel = level;
+  }
+
+  setConsoleLevel(level: LogLevel): void {
+    this.consoleLevel = level;
+  }
+
+  getConsoleLevel(): LogLevel {
+    return this.consoleLevel;
   }
 
   private getWriter(component: string): NodeJS.WritableStream {
@@ -103,6 +112,10 @@ export class Logger {
   }
 
   private outputToConsole(level: LogLevel, message: string): void {
+    if (level < this.consoleLevel) {
+      return;
+    }
+
     switch (level) {
       case LogLevel.DEBUG:
         console.debug(message);

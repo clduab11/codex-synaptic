@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  mcp-firecrawl:
+    image: ghcr.io/firecrawl/firecrawl-mcp:latest
+    container_name: codex-mcp-firecrawl
+    restart: unless-stopped
+    environment:
+      - FIRECRAWL_API_KEY=
+    ports:
+      - "7060:7060"
+    command: ["--port", "7060"]

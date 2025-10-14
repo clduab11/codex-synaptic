@@ -27,6 +27,118 @@ Base execution units that perform specific computational tasks.
 - **Interface**: CI/CD integration, testing frameworks
 - **Deployment**: Pipeline integration, on-demand validation
 
+#### ResearchWorker
+- **Purpose**: Repository reconnaissance and intelligence gathering for Tree-of-Thought planning
+- **Capabilities**: Contextual research, insight synthesis, knowledge gap detection
+- **Interface**: Documentation corpus, memory system, telemetry feeds
+- **Deployment**: Paired with CodeWorkers to keep implementation grounded in latest findings
+
+#### ArchitectWorker
+- **Purpose**: Design resilient swarm architectures and rollout strategies
+- **Capabilities**: Topology assessment, constraint modelling, phased rollout design
+- **Interface**: Neural mesh topology, consensus records, swarm coordinator telemetry
+- **Deployment**: Activated upfront for major platform upgrades and backlog governance loops
+
+#### KnowledgeWorker
+- **Purpose**: Distil swarm artefacts into documentation and broadcast updates
+- **Capabilities**: Knowledge synthesis, documentation drafting, communication packaging
+- **Interface**: Persistent memory, docs/, operator channels
+- **Deployment**: Runs after ReAcT/ToT cycles to keep humans and agents aligned
+
+#### AnalystWorker
+- **Purpose**: Generate heatmaps, scorecards, and analytical briefs to prioritise work
+- **Capabilities**: Metric synthesis, risk diagnostics, hotspot reporting
+- **Interface**: Telemetry streams, workflow artefacts
+- **Deployment**: Activated before planning to sharpen backlog focus
+
+#### SecurityWorker
+- **Purpose**: Safeguard the platform with static reviews and threat modelling
+- **Capabilities**: Security diagnostics, mitigation planning, guardrail definition
+- **Interface**: Code diffs, automation scripts, consensus history
+- **Deployment**: Required for high-risk or external-facing changes
+
+#### OpsWorker
+- **Purpose**: Produce operational runbooks and snapshots for sustained reliability
+- **Capabilities**: Incident playbooks, escalation matrices, ops telemetry curation
+- **Interface**: Mesh health metrics, consensus alerts, CLI automation
+- **Deployment**: Ensures human operators have actionable guidance during swarms
+
+#### PerformanceWorker
+- **Purpose**: Uncover performance hotspots and define optimisation benchmarks
+- **Capabilities**: Profiling plans, benchmark design, hotspot recommendation
+- **Interface**: Profilers, observability dashboards, automation traces
+- **Deployment**: Run before scaling swarms or rolling out automation
+
+#### IntegrationWorker
+- **Purpose**: Map Codex-Synaptic workflows to external systems and services
+- **Capabilities**: Interface contracts, compatibility matrices, integration stages
+- **Interface**: MCP bridge endpoints, external API specs
+- **Deployment**: Used when wiring Codex-Synaptic into CI/CD, observability, or partner stacks
+
+#### SimulationWorker
+- **Purpose**: Stress-test scenarios with what-if simulations prior to rollout
+- **Capabilities**: Monte Carlo scenario modelling, risk envelope analysis
+- **Interface**: Swarm coordinator, consensus manager, memory snapshots
+- **Deployment**: Validates complex upgrades or automation changes before production
+
+#### MemoryWorker
+- **Purpose**: Curate persistent knowledge and keep reasoning artefacts fresh
+- **Capabilities**: Namespace audits, archival strategies, tagging and promotion
+- **Interface**: Codex memory system, docs/, telemetry logs
+- **Deployment**: Scheduled to keep `tot_runs` and related namespaces healthy
+
+#### PlanningWorker
+- **Purpose**: Draft strategic roadmaps and translate insights into executable phases
+- **Capabilities**: Phase planning, success metrics, roadmap refinement
+- **Interface**: Tree-of-Thought outputs, analyst briefs, architecture blueprints
+- **Deployment**: Aligns stakeholders before deep swarm engagements
+
+#### ReviewWorker
+- **Purpose**: Summarise diffs and enforce quality gates prior to consensus
+- **Capabilities**: Checklist generation, highlight extraction, approval preparation
+- **Interface**: Code diffs, automation plans, compliance requirements
+- **Deployment**: Supports automation worker and consensus coordinator hand-offs
+
+#### CommunicationWorker
+- **Purpose**: Broadcast relevant updates to human operators and partner teams
+- **Capabilities**: Message composition, digest creation, channel targeting
+- **Interface**: Docs, memory artefacts, observability dashboards
+- **Deployment**: Ensures transparency throughout multi-phase upgrades
+
+#### AutomationWorker
+- **Purpose**: Design automation runbooks, guardrails, and rollout scripts
+- **Capabilities**: Workflow scripting, safeguards, trigger definition
+- **Interface**: CLI commands, task scheduler, consensus manager
+- **Deployment**: Drives repeatable follow-up execution without sacrificing governance
+
+#### ObservabilityWorker
+- **Purpose**: Keep telemetry coverage aligned with evolving automation
+- **Capabilities**: Dashboard curation, alert tuning, instrumentation planning
+- **Interface**: observability backends, swarm metrics, consensus telemetry
+- **Deployment**: Run before and after major releases
+
+#### ComplianceWorker
+- **Purpose**: Align swarm automation with policy and regulatory requirements
+- **Capabilities**: Compliance gap analysis, policy drafting, retention auditing
+- **Interface**: Memory retention policies, consensus audit logs, documentation
+- **Deployment**: Mandatory for regulated workloads or enterprise rollouts
+
+#### ReliabilityWorker
+- **Purpose**: Protect uptime and resilience across mesh, swarm, and consensus layers
+- **Capabilities**: Reliability reviews, chaos experiment design, improvement recommendations
+- **Interface**: Health monitor, auto-scaler, telemetry
+- **Deployment**: Scheduled to keep SLAs on track and expose resilience gaps
+
+
+### 4. Platform Capabilities
+
+- **Auto-scaling Manager** – monitors CPU/memory and triggers balanced worker scale-up/down, persisting events to `autoscaler_events`.
+- **Self-Healing Mesh** – repairs topology gaps automatically and logs activity to `mesh_events`.
+- **Vector Memory Service** – optional local/Qdrant/Redis vector store for knowledge retrieval; managed via `vector` config.
+- **Cheat Code Catalog** – consult `docs/codex-synaptic-cheat-codes.md` for command combos.
+- **Observability Toolkit** – see `docs/observability/README.md` for dashboard + metrics wiring.
+- **Consensus Telemetry** – decisions are archived under `consensus_events` for audit trails.
+
 ### 2. Coordinator Agents
 Higher-level agents that manage and orchestrate worker agents.
 
