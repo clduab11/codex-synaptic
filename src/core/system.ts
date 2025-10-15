@@ -1030,7 +1030,6 @@ export class CodexSynapticSystem extends EventEmitter {
 
     const mentionsRepository = /(repo|repository|codebase|pull request|self-improv|refactor|optim|bug|fix|issue|feature|patch)/.test(lower);
     const mentionsDocs = /(readme|agents\.md|documentation|docset|docs\/)/.test(lower);
-    const requiresTesting = /(test|qa|validate|verification|ci|lint|coverage)/.test(lower);
     const wantsReAct = /(re-?act|plan\/apply\/test|reason\s*and\s*act|react methodology)/.test(lower);
     const requiresResearch =
       /(research|recon|discover|investig|intel|survey|learn|context)/.test(lower) ||

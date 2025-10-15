@@ -63,7 +63,7 @@ export class OpsWorker extends Agent {
     };
   }
 
-  private handleSnapshot(task: Task): any {
+  private handleSnapshot(_task: Task): any {
     return {
       summary: 'Operational snapshot captured.',
       meshHealth: {
