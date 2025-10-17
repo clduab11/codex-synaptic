@@ -29,7 +29,7 @@ import type {
   ContextLogEntry
 } from '../types/codex-context.js';
 import { RetryManager } from '../core/errors.js';
-import { HiveMindYamlFormatter, YamlFeedforwardFilter, EndpointCapabilities } from '../utils/yaml-output.js';
+import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 import { InstructionParser } from '../instructions/index.js';
 import { RoutingPolicyService, type RoutingRequest } from '../router/index.js';
 import { readFileSync } from 'fs';
@@ -273,23 +273,6 @@ function parseFileContent(filePath: string): any {
       throw new Error(`Failed to parse JSON file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
-}
-
-/**
- * Read file content as string, supporting both YAML and JSON
- * Returns the raw content without parsing
- */
-function readFileContent(filePath: string): string {
-  const content = readFileSync(filePath, 'utf8');
-  const isYaml = filePath.endsWith('.yaml') || filePath.endsWith('.yml');
-  
-  if (isYaml) {
-    console.log(chalk.gray(`📄 Read YAML file: ${filePath}`));
-  } else {
-    console.log(chalk.gray(`📄 Read file: ${filePath}`));
-  }
-  
-  return content;
 }
 
 function renderAgentTable(agents: AgentMetadata[]): void {

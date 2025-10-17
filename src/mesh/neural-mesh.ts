@@ -5,7 +5,7 @@
 import { EventEmitter } from 'events';
 import { Logger } from '../core/logger.js';
 import { AgentRegistry } from '../agents/registry.js';
-import { NeuralMeshNode, Connection, AgentId } from '../core/types.js';
+import { NeuralMeshNode, AgentId } from '../core/types.js';
 
 export class NeuralMesh extends EventEmitter {
   private logger = Logger.getInstance();
@@ -274,7 +274,7 @@ export class NeuralMesh extends EventEmitter {
     }
   }
 
-  private establishTreeConnections(node: NeuralMeshNode, peers: NeuralMeshNode[]): void {
+  private establishTreeConnections(node: NeuralMeshNode, _peers: NeuralMeshNode[]): void {
     const ordered = [...this.nodes.values()].sort((a, b) => a.agent.id.localeCompare(b.agent.id));
     const index = ordered.findIndex(n => n.agent.id === node.agent.id);
     if (index <= 0) {
