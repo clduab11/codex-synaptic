@@ -68,6 +68,14 @@ export class ConsensusManager extends EventEmitter {
   proposeConsensus(type: string, data: any, proposer: AgentId): string {
     const consensusAgents = this.agentRegistry.getAgentsByType(AgentType.CONSENSUS_COORDINATOR);
     const calculation = this.calculateRequirements(consensusAgents);
+    const tenantId =
+      typeof data === 'object' && data
+        ? data.tenantId ?? data?.metadata?.tenantId ?? data?.context?.tenantId
+        : undefined;
+    const proposalMetadata = {
+      ...(calculation.metadata ?? {}),
+      ...(tenantId ? { tenantId } : {})
+    };
 
     const proposal: ConsensusProposal = {
       id: generateUUID(),
@@ -80,7 +88,7 @@ export class ConsensusManager extends EventEmitter {
       stakeThreshold: calculation.stakeThreshold,
       requiredStake: calculation.requiredStake,
       quorumFactor: calculation.quorumFactor,
-      metadata: calculation.metadata
+      metadata: proposalMetadata
     };
 
     this.activeProposals.set(proposal.id, proposal);

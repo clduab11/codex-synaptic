@@ -1,5 +1,34 @@
 import { CodexMemorySystem } from '../memory/memory-system.js';
 
+const DEFAULT_TENANT_KEY = 'system';
+
+interface TenantAggregate {
+  toolTotal: number;
+  toolSuccess: number;
+  toolFailure: number;
+  toolLatencySum: number;
+  toolLatencyCount: number;
+  reasoningTotal: number;
+  reasoningDurationSum: number;
+  reasoningStatus: Map<string, number>;
+  consensusAccepted: number;
+  consensusRejected: number;
+}
+
+export interface TenantMetricSummary {
+  toolUsageTotal: number;
+  toolUsageSuccess: number;
+  toolUsageFailure: number;
+  toolLatencyAvgMs: number;
+  consensusAccepted: number;
+  consensusRejected: number;
+  reasoningRuns: number;
+  reasoningCompleted: number;
+  reasoningFailed: number;
+  reasoningDurationAvgMs: number;
+  reasoningStatus: Record<string, number>;
+}
+
 export interface MetricSnapshot {
   autoscalerScaleUp: number;
   autoscalerScaleDown: number;
@@ -34,10 +63,12 @@ export interface MetricSnapshot {
     }>;
   }>;
   reasoningPlanStatus: Record<string, Record<string, number>>;
+  perTenant: Record<string, TenantMetricSummary>;
 }
 
 export interface MetricOptions {
   limit?: number;
+  tenantId?: string;
 }
 
 export async function collectMetrics(
@@ -45,14 +76,50 @@ export async function collectMetrics(
   options: MetricOptions = {}
 ): Promise<MetricSnapshot> {
   const limit = options.limit ?? 100;
+  const tenantFilter = options.tenantId;
+  const listOptions = tenantFilter ? { tenantId: tenantFilter } : undefined;
 
   const autoscalerEntries = await memory.list('autoscaler_events', limit);
   const meshEntries = await memory.list('mesh_events', limit);
-  const totRunEntries = await memory.list('tot_runs', limit);
-  const totFollowupEntries = await memory.list('tot_followups', limit);
-  const consensusEntries = await memory.list('consensus_events', limit);
-  const toolUsageEntries = await memory.list('tool_usage', limit);
-  const reasoningEntries = await memory.list('reasoning_runs', limit);
+  const totRunEntries = await memory.list('tot_runs', limit, listOptions);
+  const totFollowupEntries = await memory.list('tot_followups', limit, listOptions);
+  const consensusEntries = await memory.list('consensus_events', limit, listOptions);
+  const toolUsageEntries = await memory.list('tool_usage', limit, listOptions);
+  const reasoningEntries = await memory.list('reasoning_runs', limit, listOptions);
+
+  const resolveTenantId = (...values: Array<string | null | undefined>): string => {
+    for (const value of values) {
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed.length > 0) {
+          return trimmed;
+        }
+      }
+    }
+    return DEFAULT_TENANT_KEY;
+  };
+
+  const tenantAggregates: Map<string, TenantAggregate> = new Map();
+
+  const ensureTenantAggregate = (tenantId: string): TenantAggregate => {
+    let aggregate = tenantAggregates.get(tenantId);
+    if (!aggregate) {
+      aggregate = {
+        toolTotal: 0,
+        toolSuccess: 0,
+        toolFailure: 0,
+        toolLatencySum: 0,
+        toolLatencyCount: 0,
+        reasoningTotal: 0,
+        reasoningDurationSum: 0,
+        reasoningStatus: new Map(),
+        consensusAccepted: 0,
+        consensusRejected: 0
+      };
+      tenantAggregates.set(tenantId, aggregate);
+    }
+    return aggregate;
+  };
 
   const autoscalerScaleUp = autoscalerEntries.filter((entry) =>
     typeof entry.data?.appliedIncrement === 'number' && entry.data.appliedIncrement > 0
@@ -91,6 +158,19 @@ export async function collectMetrics(
     const agentType = record.agentType ?? 'unknown';
     const success = record.success === true;
     const latency = typeof record.latencyMs === 'number' ? record.latencyMs : 0;
+    const tenantKey = resolveTenantId(record.tenantId, entry.tenantId);
+    const tenantAggregate = ensureTenantAggregate(tenantKey);
+
+    tenantAggregate.toolTotal += 1;
+    if (success) {
+      tenantAggregate.toolSuccess += 1;
+    } else if (record.success === false) {
+      tenantAggregate.toolFailure += 1;
+    }
+    if (typeof record.latencyMs === 'number') {
+      tenantAggregate.toolLatencySum += record.latencyMs;
+      tenantAggregate.toolLatencyCount += 1;
+    }
 
     const aggregate = toolBreakdownMap.get(toolId) ?? {
       total: 0,
@@ -153,8 +233,18 @@ export async function collectMetrics(
 
   const reasoningPlanStatus = new Map<string, Map<string, number>>();
   reasoningEntries.forEach((entry) => {
-    const planType = entry.data?.planType ?? 'unknown';
-    const status = entry.data?.status ?? 'unknown';
+    const record = entry.data ?? {};
+    const planType = record.planType ?? 'unknown';
+    const status = record.status ?? 'unknown';
+    const tenantKey = resolveTenantId(record.tenantId, entry.tenantId);
+    const tenantAggregate = ensureTenantAggregate(tenantKey);
+
+    tenantAggregate.reasoningTotal += 1;
+    if (typeof record.durationMs === 'number') {
+      tenantAggregate.reasoningDurationSum += record.durationMs;
+    }
+    tenantAggregate.reasoningStatus.set(status, (tenantAggregate.reasoningStatus.get(status) ?? 0) + 1);
+
     const typeMap = reasoningPlanStatus.get(planType) ?? new Map<string, number>();
     typeMap.set(status, (typeMap.get(status) ?? 0) + 1);
     reasoningPlanStatus.set(planType, typeMap);
@@ -167,6 +257,42 @@ export async function collectMetrics(
       statusObj[status] = count;
     });
     reasoningPlanStatusObj[planType] = statusObj;
+  });
+
+  for (const entry of consensusEntries) {
+    const data = entry.data ?? {};
+    const tenantKey = resolveTenantId(
+      data.tenantId,
+      data.proposal?.metadata?.tenantId,
+      entry.tenantId
+    );
+    const tenantAggregate = ensureTenantAggregate(tenantKey);
+    if (data.accepted === true) {
+      tenantAggregate.consensusAccepted += 1;
+    } else if (data.accepted === false) {
+      tenantAggregate.consensusRejected += 1;
+    }
+  }
+
+  const perTenant: Record<string, TenantMetricSummary> = {};
+  tenantAggregates.forEach((aggregate, tenantId) => {
+    const reasoningStatus: Record<string, number> = {};
+    aggregate.reasoningStatus.forEach((count, status) => {
+      reasoningStatus[status] = count;
+    });
+    perTenant[tenantId] = {
+      toolUsageTotal: aggregate.toolTotal,
+      toolUsageSuccess: aggregate.toolSuccess,
+      toolUsageFailure: aggregate.toolFailure,
+      toolLatencyAvgMs: aggregate.toolLatencyCount > 0 ? aggregate.toolLatencySum / aggregate.toolLatencyCount : 0,
+      consensusAccepted: aggregate.consensusAccepted,
+      consensusRejected: aggregate.consensusRejected,
+      reasoningRuns: aggregate.reasoningTotal,
+      reasoningCompleted: aggregate.reasoningStatus.get('completed') ?? 0,
+      reasoningFailed: aggregate.reasoningStatus.get('failed') ?? 0,
+      reasoningDurationAvgMs: aggregate.reasoningTotal > 0 ? aggregate.reasoningDurationSum / aggregate.reasoningTotal : 0,
+      reasoningStatus
+    };
   });
 
   return {
@@ -189,7 +315,8 @@ export async function collectMetrics(
     reasoningCheckpoints,
     reasoningDurationAvgMs,
     toolBreakdown,
-    reasoningPlanStatus: reasoningPlanStatusObj
+    reasoningPlanStatus: reasoningPlanStatusObj,
+    perTenant
   };
 }
 
@@ -219,6 +346,36 @@ export function formatPrometheusMetrics(snapshot: MetricSnapshot): string[] {
   lines.push(`codex_synaptic_reasoning_duration_average_ms ${snapshot.reasoningDurationAvgMs.toFixed(2)}`);
 
   const escapeLabel = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  Object.entries(snapshot.perTenant).forEach(([tenantId, metrics]) => {
+    const escapedTenant = escapeLabel(tenantId);
+    lines.push(`codex_synaptic_tool_usage_total{tenant="${escapedTenant}"} ${metrics.toolUsageTotal}`);
+    lines.push(`codex_synaptic_tool_usage_success_total{tenant="${escapedTenant}"} ${metrics.toolUsageSuccess}`);
+    lines.push(`codex_synaptic_tool_usage_failure_total{tenant="${escapedTenant}"} ${metrics.toolUsageFailure}`);
+    lines.push(
+      `codex_synaptic_tool_usage_latency_average_ms{tenant="${escapedTenant}"} ${metrics.toolLatencyAvgMs.toFixed(2)}`
+    );
+    lines.push(
+      `codex_synaptic_consensus_events_total{tenant="${escapedTenant}",result="accepted"} ${metrics.consensusAccepted}`
+    );
+    lines.push(
+      `codex_synaptic_consensus_events_total{tenant="${escapedTenant}",result="rejected"} ${metrics.consensusRejected}`
+    );
+    lines.push(`codex_synaptic_reasoning_runs_total{tenant="${escapedTenant}"} ${metrics.reasoningRuns}`);
+    lines.push(
+      `codex_synaptic_reasoning_runs_completed_total{tenant="${escapedTenant}"} ${metrics.reasoningCompleted}`
+    );
+    lines.push(`codex_synaptic_reasoning_runs_failed_total{tenant="${escapedTenant}"} ${metrics.reasoningFailed}`);
+    lines.push(
+      `codex_synaptic_reasoning_duration_average_ms{tenant="${escapedTenant}"} ${metrics.reasoningDurationAvgMs.toFixed(2)}`
+    );
+    Object.entries(metrics.reasoningStatus).forEach(([status, count]) => {
+      const escapedStatus = escapeLabel(status);
+      lines.push(
+        `codex_synaptic_reasoning_runs_status_total{tenant="${escapedTenant}",status="${escapedStatus}"} ${count}`
+      );
+    });
+  });
 
   Object.entries(snapshot.toolBreakdown).forEach(([toolId, stats]) => {
     const escapedToolId = escapeLabel(toolId);

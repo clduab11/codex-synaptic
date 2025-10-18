@@ -65,12 +65,18 @@ export class ToolOptimizer {
     this.minimumConfidence = options.minimumConfidence ?? 0.25;
   }
 
-  async evaluateTools(prompt: string, candidates: ToolCandidate[]): Promise<ToolScore[]> {
+  async evaluateTools(
+    prompt: string,
+    candidates: ToolCandidate[],
+    options: { tenantId?: string } = {}
+  ): Promise<ToolScore[]> {
     if (!candidates.length) {
       return [];
     }
 
-    const history = await this.memory.listToolUsage(this.historyLimit);
+    const history = await this.memory.listToolUsage(this.historyLimit, {
+      tenantId: options.tenantId
+    });
     const aggregates = this.buildUsageAggregates(history);
     const categories = this.deriveIntentCategories(prompt);
 
@@ -110,8 +116,12 @@ export class ToolOptimizer {
     return scores.sort((a, b) => b.score - a.score);
   }
 
-  async recordToolOutcome(record: ToolUsageRecord): Promise<number> {
-    return this.memory.logToolUsage(record);
+  async recordToolOutcome(record: ToolUsageRecord, options: { tenantId?: string } = {}): Promise<number> {
+    const tenantId = options.tenantId ?? record.tenantId;
+    return this.memory.logToolUsage(
+      { ...record, tenantId },
+      { tenantId }
+    );
   }
 
   private buildUsageAggregates(history: ToolUsageRecord[]): Map<string, UsageAggregate> {

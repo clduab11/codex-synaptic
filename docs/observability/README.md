@@ -33,6 +33,8 @@ Codex-Synaptic persists rich telemetry into its memory namespaces. To surface th
 | `tot_runs` | `bestBranch.label`, `monteCarlo.totalSamples` | `codex_synaptic_tot_runs_total{branch="Mesh Architecture Branch"}` |
 | `consensus_events` | `mechanism`, `accepted` | `codex_synaptic_consensus_events_total{mechanism="bft",accepted="true"}` |
 
+Tenant-aware telemetry persists `tenant_id` alongside the payload, so every Prometheus sample exposes a `tenant` label. You can scope metrics to a specific tenant by passing `--tenant <id>` (defaults to `all`).
+
 Below is a small Node snippet you can adapt for a textfile exporter:
 
 ```ts
@@ -75,6 +77,7 @@ Schedule this exporter (cron/systemd) so metrics stay fresh.
 - `codex-synaptic consensus telemetry --limit 5` → Peek at recent decisions.
 - `codex-synaptic memory list autoscaler_events --limit 5` → Read scale actions.
 - `codex-synaptic memory list mesh_events --limit 5` → See self-healing activity.
+- `codex-synaptic tenant quota <tenantId> --max-concurrent 8 --token <admin>` → Verify quota overrides reflected in metrics.
 
 Use these commands alongside the dashboard to validate signals while you wire up exporters.
 
@@ -86,7 +89,7 @@ Use these commands alongside the dashboard to validate signals while you wire up
 Run the exporter on demand (or via cron/systemd):
 
 ```bash
-npm run export:metrics -- --output /var/lib/node_exporter/textfile_collector/codex.prom --limit 200
+npm run export:metrics -- --output /var/lib/node_exporter/textfile_collector/codex.prom --limit 200 --tenant all
 ```
 
 Adjust the path/limit as needed for your environment.

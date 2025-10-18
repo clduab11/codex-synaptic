@@ -90,7 +90,7 @@
     }
   },
   "vector": {
-    "enabled": false,
+    "enabled": true,
     "engine": "local",
     "dimensions": 32,
     "collection": "codex-synaptic",
@@ -103,9 +103,423 @@
       "prefix": "codex:vector"
     }
   },
+  "tenancy": {
+    "enabled": true,
+    "defaultTenantId": null,
+    "defaultQuota": {
+      "maxConcurrentTasks": 10,
+      "cpuLimitPercent": 80,
+      "memoryLimitMb": 1024
+    }
+  },
   "environment": {
     "autoStartProfiles": [
       "observability"
     ]
+  },
+  "openai": {
+    "enabled": true,
+    "defaultBackend": "openai-responses",
+    "credentials": {
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "organizationIdEnv": "OPENAI_ORG_ID",
+      "projectIdEnv": "OPENAI_PROJECT_ID"
+    },
+    "responses": {
+      "enabled": true,
+      "defaultModel": "gpt-4o-mini",
+      "defaultImageModel": "gpt-image-1",
+      "defaultVideoModel": "sora-2",
+      "defaultSpeechModel": "gpt-voice-1",
+      "defaultTranscriptionModel": "whisper-hd",
+      "defaultModerationModel": "omni-moderation-latest",
+      "defaultSearchModel": "gpt-search-1",
+      "requestTimeoutMs": 60000,
+      "userAgentExtension": "codex-synaptic/1.0"
+    },
+    "agents": {
+      "enabled": false,
+      "defaultModel": "gpt-4o-mini",
+      "maxHandoffDepth": 3,
+      "enableGuardrails": true
+    },
+    "telemetry": {
+      "enabled": false,
+      "sampleRate": 1
+    },
+    "modelCatalog": [
+      {
+        "id": "gpt-5-pro",
+        "label": "GPT-5 Pro",
+        "tier": "pro",
+        "modalities": [
+          "text",
+          "code"
+        ],
+        "defaultUseCases": [
+          "mission critical reviews",
+          "regulated workloads"
+        ],
+        "fallback": [
+          "gpt-5",
+          "gpt-4.1"
+        ]
+      },
+      {
+        "id": "gpt-5",
+        "label": "GPT-5",
+        "tier": "flagship",
+        "modalities": [
+          "text",
+          "code"
+        ],
+        "defaultUseCases": [
+          "complex reasoning",
+          "architecture"
+        ],
+        "fallback": [
+          "gpt-5-mini",
+          "gpt-4.1"
+        ]
+      },
+      {
+        "id": "gpt-5-mini",
+        "label": "GPT-5 Mini",
+        "tier": "mini",
+        "modalities": [
+          "text",
+          "code"
+        ],
+        "defaultUseCases": [
+          "executive summaries",
+          "validation"
+        ],
+        "fallback": [
+          "gpt-5-nano",
+          "gpt-4o"
+        ]
+      },
+      {
+        "id": "gpt-5-nano",
+        "label": "GPT-5 Nano",
+        "tier": "mini",
+        "modalities": [
+          "text",
+          "code"
+        ],
+        "defaultUseCases": [
+          "linting",
+          "telemetry summarization"
+        ],
+        "fallback": [
+          "gpt-4o-mini"
+        ]
+      },
+      {
+        "id": "gpt-4.1",
+        "label": "GPT-4.1",
+        "tier": "flagship",
+        "modalities": [
+          "text",
+          "code",
+          "image",
+          "audio"
+        ],
+        "defaultUseCases": [
+          "multimodal reasoning",
+          "agentic workflows"
+        ],
+        "fallback": [
+          "gpt-4o"
+        ]
+      },
+      {
+        "id": "gpt-4.1-mini",
+        "label": "GPT-4.1 Mini",
+        "tier": "mini",
+        "modalities": [
+          "text",
+          "code",
+          "image"
+        ],
+        "defaultUseCases": [
+          "fast multimodal synthesis",
+          "assistant responses"
+        ],
+        "fallback": [
+          "gpt-4o-mini"
+        ]
+      },
+      {
+        "id": "gpt-4o",
+        "label": "GPT-4o",
+        "tier": "flagship",
+        "modalities": [
+          "text",
+          "code",
+          "image",
+          "audio"
+        ],
+        "defaultUseCases": [
+          "production copilots",
+          "multimodal reasoning"
+        ],
+        "fallback": [
+          "gpt-4.1",
+          "gpt-5-mini"
+        ]
+      },
+      {
+        "id": "gpt-4o-mini",
+        "label": "GPT-4o Mini",
+        "tier": "mini",
+        "modalities": [
+          "text",
+          "code",
+          "image",
+          "audio"
+        ],
+        "defaultUseCases": [
+          "assistant runtime",
+          "summaries"
+        ],
+        "fallback": [
+          "gpt-4.1-mini"
+        ]
+      },
+      {
+        "id": "gpt-4o-realtime-preview-2024-12-17",
+        "label": "GPT-4o Realtime Preview",
+        "tier": "realtime",
+        "modalities": [
+          "realtime",
+          "audio",
+          "text",
+          "image"
+        ],
+        "defaultUseCases": [
+          "live collaboration",
+          "voice copilots"
+        ],
+        "fallback": [
+          "gpt-realtime"
+        ]
+      },
+      {
+        "id": "gpt-realtime",
+        "label": "GPT Realtime",
+        "tier": "realtime",
+        "modalities": [
+          "realtime",
+          "audio",
+          "text"
+        ],
+        "defaultUseCases": [
+          "premium voice interactions"
+        ],
+        "fallback": [
+          "gpt-realtime-mini"
+        ]
+      },
+      {
+        "id": "gpt-realtime-mini",
+        "label": "GPT Realtime Mini",
+        "tier": "realtime",
+        "modalities": [
+          "realtime",
+          "audio",
+          "text"
+        ],
+        "defaultUseCases": [
+          "developer previews",
+          "lightweight voice agents"
+        ],
+        "fallback": [
+          "gpt-4o-realtime-preview-2024-12-17"
+        ]
+      },
+      {
+        "id": "gpt-image-1",
+        "label": "GPT Image 1",
+        "tier": "image",
+        "modalities": [
+          "image"
+        ],
+        "defaultUseCases": [
+          "high fidelity renders",
+          "design collateral"
+        ],
+        "fallback": [
+          "gpt-image-1-mini"
+        ]
+      },
+      {
+        "id": "gpt-image-1-mini",
+        "label": "GPT Image 1 Mini",
+        "tier": "image",
+        "modalities": [
+          "image"
+        ],
+        "defaultUseCases": [
+          "wireframes",
+          "concept art"
+        ],
+        "fallback": [
+          "gpt-image-1"
+        ]
+      },
+      {
+        "id": "sora-2",
+        "label": "Sora 2",
+        "tier": "video",
+        "modalities": [
+          "video"
+        ],
+        "defaultUseCases": [
+          "storyboards",
+          "launch promos"
+        ],
+        "fallback": [
+          "sora-2-pro"
+        ]
+      },
+      {
+        "id": "sora-2-pro",
+        "label": "Sora 2 Pro",
+        "tier": "video",
+        "modalities": [
+          "video"
+        ],
+        "defaultUseCases": [
+          "high fidelity creative"
+        ],
+        "fallback": [
+          "sora-2"
+        ]
+      },
+      {
+        "id": "whisper-hd",
+        "label": "Whisper HD",
+        "tier": "audio",
+        "modalities": [
+          "audio"
+        ],
+        "defaultUseCases": [
+          "enterprise transcription",
+          "captioning"
+        ],
+        "fallback": [
+          "whisper-1"
+        ]
+      },
+      {
+        "id": "gpt-voice-1",
+        "label": "GPT Voice 1",
+        "tier": "audio",
+        "modalities": [
+          "audio"
+        ],
+        "defaultUseCases": [
+          "conversational speech synthesis"
+        ],
+        "fallback": [
+          "gpt-voice-1-mini"
+        ]
+      },
+      {
+        "id": "omni-moderation-latest",
+        "label": "Omni Moderation Latest",
+        "tier": "experimental",
+        "modalities": [
+          "text",
+          "image",
+          "audio",
+          "video"
+        ],
+        "defaultUseCases": [
+          "safety",
+          "content moderation"
+        ],
+        "fallback": [
+          "text-moderation-latest"
+        ]
+      },
+      {
+        "id": "gpt-search-1",
+        "label": "GPT Search 1",
+        "tier": "experimental",
+        "modalities": [
+          "text"
+        ],
+        "defaultUseCases": [
+          "structured retrieval",
+          "enterprise search"
+        ],
+        "fallback": [
+          "gpt-4o"
+        ]
+      }
+    ],
+    "modelRouting": {
+      "defaultModel": "gpt-4o-mini",
+      "highComplexityModel": "gpt-5",
+      "evaluationModel": "gpt-5-mini",
+      "allowDynamicFallback": true,
+      "stageOverrides": [
+        {
+          "stageId": "openai-synthesis",
+          "model": "gpt-5-mini",
+          "rationale": "Executive synthesis benefits from higher reasoning fidelity."
+        },
+        {
+          "stageId": "insight-summary",
+          "model": "gpt-4.1-mini",
+          "rationale": "Insight synthesis prefers wide multimodal context windows."
+        },
+        {
+          "stageId": "moderation",
+          "model": "omni-moderation-latest",
+          "rationale": "Moderation stages route to Omni moderation models."
+        }
+      ],
+      "keywordOverrides": [
+        {
+          "pattern": "\\b(video|storyboard|b-roll|animation|motion)\\b",
+          "flags": "i",
+          "model": "sora-2",
+          "rationale": "Video generation requests route to Sora."
+        },
+        {
+          "pattern": "\\b(image|mockup|poster|render|illustration)\\b",
+          "flags": "i",
+          "model": "gpt-image-1-mini",
+          "rationale": "Image deliverable requested."
+        },
+        {
+          "pattern": "\\b(live|voice|realtime|meeting|call)\\b",
+          "flags": "i",
+          "model": "gpt-4o-realtime-preview-2024-12-17",
+          "rationale": "Realtime/voice workload detected."
+        },
+        {
+          "pattern": "\\b(transcribe|caption|audio note|whisper)\\b",
+          "flags": "i",
+          "model": "whisper-hd",
+          "rationale": "Audio transcription workload detected."
+        },
+        {
+          "pattern": "\\b(search|retrieve|knowledge base|catalog)\\b",
+          "flags": "i",
+          "model": "gpt-search-1",
+          "rationale": "Search workload detected."
+        },
+        {
+          "pattern": "\\b(safety|moderation|policy|guardrail)\\b",
+          "flags": "i",
+          "model": "omni-moderation-latest",
+          "rationale": "Moderation workload detected."
+        }
+      ]
+    }
   }
 }

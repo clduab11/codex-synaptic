@@ -389,7 +389,7 @@ describe('RoutingPolicyService', () => {
     const evaluation = await router.evaluateRouting(request);
     
     // Should still return a valid evaluation (fallback)
-    expect(evaluation.agentType).toBeDefined();
+    expect(evaluation.agentType).toBe(AgentType.CODE_WORKER);
     expect(evaluation.confidence).toBeGreaterThan(0);
     expect(evaluation.metadata.evaluationId).toBeDefined();
   });

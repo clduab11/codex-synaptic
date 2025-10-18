@@ -27,7 +27,7 @@ export class CodexSwarm {
 
   async orchestrateTask(task: string, strategy: CoordinationStrategy) {
     const queen = new CodexQueen();
-    await queen.spawnWorker(AgentType.CODE_GENERATOR, []);
+    await queen.spawnWorker(AgentType.CODE_WORKER, []);
     const result = await queen.orchestrateTask(task, strategy);
     return { completed: !!result, agents: Array.from(this.config.maxAgents ? new Array(this.config.maxAgents).keys() : []) };
   }

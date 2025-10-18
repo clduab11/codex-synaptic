@@ -9,11 +9,12 @@ const program = new Command();
 program
   .description('Emit Codex-Synaptic telemetry as Prometheus metrics')
   .option('--output <file>', 'Path to Prometheus textfile output', '/tmp/codex-synaptic.prom')
-  .option('--limit <count>', 'Number of recent entries per namespace to inspect', '100');
+  .option('--limit <count>', 'Number of recent entries per namespace to inspect', '100')
+  .option('--tenant <tenantId>', 'Tenant scope for metrics ("all" for aggregate view)', 'all');
 
 program.parse(process.argv);
 
-const options = program.opts<{ output: string; limit: string }>();
+const options = program.opts<{ output: string; limit: string; tenant?: string }>();
 
 async function main(): Promise<void> {
   const limit = Number.parseInt(options.limit ?? '100', 10);
@@ -21,10 +22,18 @@ async function main(): Promise<void> {
     throw new Error('--limit must be a positive integer');
   }
 
+  const tenantOption = options.tenant ?? 'all';
+  const tenantId = tenantOption.toLowerCase() === 'all' ? undefined : tenantOption;
+
   const memory = new CodexMemorySystem();
-  const lines = await collectPrometheusMetrics(memory, { limit });
-  writeFileSync(options.output, lines.join('\n') + '\n', 'utf8');
-  console.log(`Prometheus metrics written to ${options.output}`);
+  const metrics = await collectPrometheusMetrics(memory, {
+    limit,
+    tenantId
+  });
+  writeFileSync(options.output, metrics.join('\n') + '\n', 'utf8');
+  console.log(
+    `Prometheus metrics written to ${options.output}${tenantId ? ` (tenant: ${tenantId})` : ''}`
+  );
 }
 
 main().catch((error) => {

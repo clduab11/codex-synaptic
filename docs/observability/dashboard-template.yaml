@@ -19,8 +19,18 @@ panels:
   - title: Consensus Vote Spread
     type: timeseries
     targets:
-      - expr: codex_synaptic_consensus_votes_total
-        legendFormat: "{{proposal}}"
+      - expr: sum by (tenant, result) (codex_synaptic_consensus_events_total{tenant!=""})
+        legendFormat: "{{tenant}} ({{result}})"
+  - title: Tenant Tool Usage
+    type: table
+    targets:
+      - expr: sum by (tenant) (codex_synaptic_tool_usage_total{tenant!=""})
+        legendFormat: "{{tenant}}"
+  - title: Tenant Reasoning Status
+    type: table
+    targets:
+      - expr: sum by (tenant, status) (codex_synaptic_reasoning_runs_status_total{tenant!=""})
+        legendFormat: "{{tenant}} ({{status}})"
   - title: Tree-of-Thought Backlog
     type: stat
     targets:

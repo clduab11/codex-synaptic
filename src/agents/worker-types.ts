@@ -1,14 +1,6 @@
 import { randomUUID } from 'crypto';
-
-export enum AgentType {
-  SYSTEM_ARCHITECT = 'system-architect',
-  CODE_GENERATOR = 'code-generator',
-  QUALITY_VALIDATOR = 'quality-validator',
-  DATA_PROCESSOR = 'data-processor',
-  KNOWLEDGE_SEEKER = 'knowledge-seeker',
-  SECURITY_AUDITOR = 'security-auditor',
-  INFRASTRUCTURE_MANAGER = 'infrastructure-manager'
-}
+import { AgentType as CoreAgentType } from '../core/types.js';
+export { AgentType } from '../core/types.js';
 
 export interface Task {
   description: string;
@@ -20,7 +12,7 @@ export interface TaskResult {
 
 export class CodexWorker {
   constructor(
-    public type: AgentType,
+    public type: CoreAgentType,
     public capabilities: string[],
     public id: string = randomUUID()
   ) {}
@@ -37,12 +29,24 @@ export class CodexWorker {
     return { output: 'validated' };
   }
 
+  private async architectSystem(_task: Task): Promise<TaskResult> {
+    return { output: 'architected' };
+  }
+
+  private async manageInfrastructure(_task: Task): Promise<TaskResult> {
+    return { output: 'managed' };
+  }
+
   async processTask(task: Task): Promise<TaskResult> {
     switch (this.type) {
-      case AgentType.CODE_GENERATOR:
+      case CoreAgentType.CODE_WORKER:
         return this.generateCode(task);
-      case AgentType.QUALITY_VALIDATOR:
+      case CoreAgentType.VALIDATION_WORKER:
         return this.validateQuality(task);
+      case CoreAgentType.ARCHITECT_WORKER:
+        return this.architectSystem(task);
+      case CoreAgentType.OPS_WORKER:
+        return this.manageInfrastructure(task);
       default:
         return { output: null };
     }

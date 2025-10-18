@@ -4,6 +4,7 @@
 
 import { EventEmitter } from 'events';
 import { Logger } from './logger.js';
+import type { TenantQuota } from '../tenancy/types.js';
 import { GPUStatus } from './gpu.js';
 
 export interface ResourceLimits {
@@ -57,6 +58,9 @@ export class ResourceManager extends EventEmitter {
   private monitoringInterval?: NodeJS.Timeout;
   private gpuStatus: GPUStatus | undefined;
   private memoryState: MemoryHealthState = 'normal';
+  private tenantTaskCounts: Map<string, number> = new Map();
+  private tenantTaskLimits: Map<string, number> = new Map();
+  private tenantQuotas: Map<string, TenantQuota> = new Map();
 
   constructor(limits: ResourceLimits) {
     super();
@@ -231,6 +235,70 @@ export class ResourceManager extends EventEmitter {
 
   updateTaskCount(count: number): void {
     this.currentUsage.concurrentTasks = count;
+  }
+
+  registerTenantQuota(tenantId: string, quota?: TenantQuota): void {
+    if (!tenantId) {
+      return;
+    }
+    if (!quota) {
+      this.tenantTaskLimits.delete(tenantId);
+      this.tenantQuotas.delete(tenantId);
+      return;
+    }
+
+    const sanitized: TenantQuota = {};
+
+    if (quota.maxConcurrentTasks !== undefined && quota.maxConcurrentTasks !== null) {
+      const limit = Math.max(0, Math.floor(quota.maxConcurrentTasks));
+      sanitized.maxConcurrentTasks = limit;
+      this.tenantTaskLimits.set(tenantId, limit);
+    } else {
+      this.tenantTaskLimits.delete(tenantId);
+    }
+
+    if (quota.cpuLimitPercent !== undefined) {
+      sanitized.cpuLimitPercent = quota.cpuLimitPercent;
+    }
+
+    if (quota.memoryLimitMb !== undefined) {
+      sanitized.memoryLimitMb = quota.memoryLimitMb;
+    }
+
+    this.tenantQuotas.set(tenantId, sanitized);
+  }
+
+  acquireTenantTaskSlot(tenantId: string | undefined): void {
+    if (!tenantId) {
+      return;
+    }
+    const limit = this.tenantTaskLimits.get(tenantId);
+    if (limit !== undefined) {
+      const current = this.tenantTaskCounts.get(tenantId) ?? 0;
+      if (current >= limit) {
+        throw new Error(`Tenant "${tenantId}" exceeded concurrent task quota (${limit})`);
+      }
+      this.tenantTaskCounts.set(tenantId, current + 1);
+    }
+  }
+
+  releaseTenantTaskSlot(tenantId: string | undefined): void {
+    if (!tenantId) {
+      return;
+    }
+    const current = this.tenantTaskCounts.get(tenantId);
+    if (current && current > 0) {
+      this.tenantTaskCounts.set(tenantId, current - 1);
+    } else {
+      this.tenantTaskCounts.delete(tenantId);
+    }
+  }
+
+  getTenantTaskLimit(tenantId: string | undefined): number | undefined {
+    if (!tenantId) {
+      return undefined;
+    }
+    return this.tenantTaskLimits.get(tenantId);
   }
 
   canAllocateAgent(): boolean {

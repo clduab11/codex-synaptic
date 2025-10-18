@@ -83,6 +83,7 @@ export interface Task {
   priority: number;
   requiredCapabilities: string[];
   payload: Record<string, any>;
+  tenantId?: string;
   created: Date;
   deadline?: Date;
   assignedTo?: AgentId;

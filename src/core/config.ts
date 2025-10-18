@@ -6,6 +6,8 @@ import { readFile, writeFile, existsSync, mkdirSync } from 'fs';
 import { promisify } from 'util';
 import { join } from 'path';
 import { Logger } from './logger.js';
+import type { TenantQuota } from '../tenancy/types.js';
+import { OPENAI_BACKENDS, type OpenAIConfiguration } from '../openai/types.js';
 
 const readFileAsync = promisify(readFile);
 const writeFileAsync = promisify(writeFile);
@@ -77,6 +79,11 @@ export interface SystemConfiguration {
   environment?: {
     autoStartProfiles: string[];
   };
+  tenancy?: {
+    enabled: boolean;
+    defaultTenantId?: string;
+    defaultQuota?: TenantQuota;
+  };
   vector?: {
     enabled: boolean;
     engine: 'local' | 'qdrant' | 'redis';
@@ -106,6 +113,7 @@ export interface SystemConfiguration {
     probeCacheTtlMs: number;
     disableProbeCache: boolean;
   };
+  openai?: OpenAIConfiguration;
 }
 
 export class ConfigurationManager {
@@ -184,6 +192,12 @@ export class ConfigurationManager {
       environment: {
         autoStartProfiles: ['observability']
       },
+      tenancy: {
+        enabled: false,
+        defaultQuota: {
+          maxConcurrentTasks: 10
+        }
+      },
       bridges: {
         mcp: {
           enabled: true,
@@ -211,6 +225,174 @@ export class ConfigurationManager {
       gpu: {
         probeCacheTtlMs: 300000,
         disableProbeCache: false
+      },
+      openai: {
+        enabled: false,
+        defaultBackend: 'native',
+        credentials: {
+          apiKeyEnv: 'OPENAI_API_KEY',
+          organizationIdEnv: 'OPENAI_ORG_ID',
+          projectIdEnv: 'OPENAI_PROJECT_ID'
+        },
+        responses: {
+          enabled: true,
+          defaultModel: 'gpt-oss-20b',
+          requestTimeoutMs: 60000
+        },
+        agents: {
+          enabled: false,
+          defaultModel: 'gpt-4o-mini',
+          maxHandoffDepth: 3,
+          enableGuardrails: true
+        },
+        telemetry: {
+          enabled: false,
+          sampleRate: 1
+        },
+        modelCatalog: [
+          {
+            id: 'gpt-oss-20b',
+            label: 'GPT-OSS 20B',
+            tier: 'oss',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['analysis', 'summaries', 'code synthesis'],
+            fallback: ['gpt-oss-120b', 'gpt-5-nano']
+          },
+          {
+            id: 'gpt-oss-120b',
+            label: 'GPT-OSS 120B',
+            tier: 'oss',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['architecture', 'deep reasoning'],
+            fallback: ['gpt-5-nano', 'gpt-4o-mini']
+          },
+          {
+            id: 'gpt-5-mini',
+            label: 'GPT-5 Mini',
+            tier: 'mini',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['executive summaries', 'validation'],
+            fallback: ['gpt-5-nano', 'gpt-4o-mini']
+          },
+          {
+            id: 'gpt-5-nano',
+            label: 'GPT-5 Nano',
+            tier: 'mini',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['high volume telemetry', 'baseline analysis'],
+            fallback: ['gpt-4o-mini']
+          },
+          {
+            id: 'gpt-5',
+            label: 'GPT-5',
+            tier: 'flagship',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['complex reasoning', 'critical reviews'],
+            fallback: ['gpt-5-mini']
+          },
+          {
+            id: 'gpt-5-pro',
+            label: 'GPT-5 Pro',
+            tier: 'pro',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['regulated workloads', 'consensus gating'],
+            fallback: ['gpt-5', 'gpt-5-mini']
+          },
+          {
+            id: 'gpt-4o-mini',
+            label: 'GPT-4.0 Mini',
+            tier: 'flagship',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['general purpose fallback'],
+            fallback: ['gpt-5-nano']
+          },
+          {
+            id: 'gpt-image-1-mini',
+            label: 'GPT Image 1 Mini',
+            tier: 'image',
+            modalities: ['image'],
+            defaultUseCases: ['concept art', 'documentation visuals'],
+            fallback: ['gpt-image-1']
+          },
+          {
+            id: 'gpt-image-1',
+            label: 'GPT Image 1',
+            tier: 'image',
+            modalities: ['image'],
+            defaultUseCases: ['high fidelity renders'],
+            fallback: ['gpt-5-mini']
+          },
+          {
+            id: 'gpt-realtime-mini',
+            label: 'GPT Realtime Mini',
+            tier: 'realtime',
+            modalities: ['realtime', 'audio', 'text'],
+            defaultUseCases: ['live collaboration', 'voice co-pilots'],
+            fallback: ['gpt-realtime']
+          },
+          {
+            id: 'gpt-realtime',
+            label: 'GPT Realtime',
+            tier: 'realtime',
+            modalities: ['realtime', 'audio', 'text'],
+            defaultUseCases: ['premium live interactions'],
+            fallback: ['gpt-5-mini']
+          },
+          {
+            id: 'sora-2',
+            label: 'Sora 2',
+            tier: 'video',
+            modalities: ['video'],
+            defaultUseCases: ['storyboards', 'launch promos'],
+            fallback: ['sora-2-pro']
+          },
+          {
+            id: 'sora-2-pro',
+            label: 'Sora 2 Pro',
+            tier: 'video',
+            modalities: ['video'],
+            defaultUseCases: ['high fidelity creative'],
+            fallback: ['sora-2']
+          }
+        ],
+        modelRouting: {
+          defaultModel: 'gpt-oss-20b',
+          highComplexityModel: 'gpt-5',
+          evaluationModel: 'gpt-5-mini',
+          allowDynamicFallback: true,
+          stageOverrides: [
+            {
+              stageId: 'openai-synthesis',
+              model: 'gpt-5-mini',
+              rationale: 'Executive synthesis benefits from higher reasoning fidelity.'
+            },
+            {
+              stageId: 'insight-summary',
+              model: 'gpt-oss-120b',
+              rationale: 'Insight synthesis prefers OSS breadth.'
+            }
+          ],
+          keywordOverrides: [
+            {
+              pattern: '\\b(video|storyboard|b-roll|animation|motion)\\b',
+              flags: 'i',
+              model: 'sora-2',
+              rationale: 'Video generation requests route to Sora.'
+            },
+            {
+              pattern: '\\b(image|mockup|poster|render|illustration)\\b',
+              flags: 'i',
+              model: 'gpt-image-1-mini',
+              rationale: 'Image deliverable requested.'
+            },
+            {
+              pattern: '\\b(live|voice|transcription|real-time|meeting)\\b',
+              flags: 'i',
+              model: 'gpt-realtime-mini',
+              rationale: 'Realtime/voice workload detected.'
+            }
+          ]
+        }
       }
     };
   }
@@ -357,9 +539,40 @@ export class ConfigurationManager {
       }
     }
 
+    if (this.config.openai) {
+      const openai = this.config.openai;
+      if (!OPENAI_BACKENDS.includes(openai.defaultBackend)) {
+        errors.push('openai.defaultBackend must be one of ' + OPENAI_BACKENDS.join(', '));
+      }
+      if (openai.telemetry?.sampleRate !== undefined) {
+        if (openai.telemetry.sampleRate < 0 || openai.telemetry.sampleRate > 1) {
+          errors.push('openai.telemetry.sampleRate must be between 0 and 1');
+        }
+      }
+      if (openai.agents?.maxHandoffDepth !== undefined && openai.agents.maxHandoffDepth < 0) {
+        errors.push('openai.agents.maxHandoffDepth must be >= 0');
+      }
+      if (openai.responses?.requestTimeoutMs !== undefined && openai.responses.requestTimeoutMs < 0) {
+        errors.push('openai.responses.requestTimeoutMs must be >= 0');
+      }
+    }
+
     if (this.config.environment) {
       if (!Array.isArray(this.config.environment.autoStartProfiles)) {
         errors.push('environment.autoStartProfiles must be an array');
+      }
+    }
+
+    if (this.config.tenancy?.defaultQuota) {
+      const quota = this.config.tenancy.defaultQuota;
+      if (quota.maxConcurrentTasks !== undefined && quota.maxConcurrentTasks < 0) {
+        errors.push('tenancy.defaultQuota.maxConcurrentTasks must be >= 0');
+      }
+      if (quota.cpuLimitPercent !== undefined && (quota.cpuLimitPercent <= 0 || quota.cpuLimitPercent > 100)) {
+        errors.push('tenancy.defaultQuota.cpuLimitPercent must be between 0 and 100');
+      }
+      if (quota.memoryLimitMb !== undefined && quota.memoryLimitMb <= 0) {
+        errors.push('tenancy.defaultQuota.memoryLimitMb must be greater than 0');
       }
     }
 
@@ -416,5 +629,13 @@ export class ConfigurationManager {
 
   getScalingConfig() {
     return this.config.scaling;
+  }
+
+  getTenancyConfig() {
+    return this.config.tenancy;
+  }
+
+  getOpenAIConfig() {
+    return this.config.openai;
   }
 }

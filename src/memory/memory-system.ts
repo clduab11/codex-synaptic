@@ -1,7 +1,12 @@
 import sqlite3 from 'sqlite3';
 import { join, dirname } from 'path';
 import { mkdirSync, existsSync } from 'fs';
+import { Logger } from '../core/logger.js';
 import { AgentType } from '../core/types.js';
+
+export interface MemorySystemOptions {
+  enableTenancy?: boolean;
+}
 
 interface SqliteRunResult {
   lastID?: number;
@@ -20,6 +25,7 @@ export interface ToolUsageRecord {
   contextTags?: string[];
   metadata?: Record<string, any>;
   timestamp?: string;
+  tenantId?: string;
 }
 
 export interface ReasoningCheckpoint {
@@ -42,6 +48,7 @@ export interface ReasoningRunRecord {
   checkpoints?: ReasoningCheckpoint[];
   metadata?: Record<string, any>;
   durationMs?: number;
+  tenantId?: string;
   validation?: {
     consensusProposalId?: string;
     consensusAccepted?: boolean;
@@ -55,8 +62,10 @@ export class CodexMemorySystem {
   private db: any;
   private basePath: string;
   private dbPath: string;
+  private tenancyEnabled: boolean;
+  private logger = Logger.getInstance('memory');
 
-  constructor(basePath: string = process.cwd()) {
+  constructor(basePath: string = process.cwd(), options: MemorySystemOptions = {}) {
     this.basePath = basePath;
     this.dbPath = join(this.basePath, '.codex-synaptic', 'memory.db');
     const dbDir = dirname(this.dbPath);
@@ -64,7 +73,11 @@ export class CodexMemorySystem {
       mkdirSync(dbDir, { recursive: true });
     }
     this.db = new sqlite3.Database(this.dbPath);
+    this.tenancyEnabled = Boolean(options.enableTenancy);
     this.initializeTables();
+    if (this.tenancyEnabled) {
+      this.ensureTenancySchema();
+    }
   }
 
   private initializeTables() {
@@ -95,16 +108,21 @@ export class CodexMemorySystem {
     `);
   }
 
-  async store(namespace: string, key: string, data: any): Promise<number> {
+  async store(namespace: string, key: string, data: any, options?: { tenantId?: string }): Promise<number> {
     if (data === null || typeof data === 'undefined') {
-      await this.delete(namespace, key);
+      await this.delete(namespace, key, options);
       return 0;
     }
+    const tenantId = options?.tenantId;
     return await new Promise<number>((resolve, reject) => {
-      const stmt = this.db.prepare(
-        'INSERT INTO memory_entries (namespace, key, data) VALUES (?, ?, ?)'
-      );
-      stmt.run(namespace, key, JSON.stringify(data), function(this: SqliteRunResult, err: Error | null) {
+      const query = this.tenancyEnabled
+        ? 'INSERT INTO memory_entries (namespace, key, data, tenant_id) VALUES (?, ?, ?, ?)'
+        : 'INSERT INTO memory_entries (namespace, key, data) VALUES (?, ?, ?)';
+      const stmt = this.db.prepare(query);
+      const params = this.tenancyEnabled
+        ? [namespace, key, JSON.stringify(data), tenantId ?? null]
+        : [namespace, key, JSON.stringify(data)];
+      stmt.run(params, function(this: SqliteRunResult, err: Error | null) {
         if (err) {
           reject(err);
         } else {
@@ -120,18 +138,22 @@ export class CodexMemorySystem {
     return `${prefix}-${Date.now()}-${random}`;
   }
 
-  async logToolUsage(record: ToolUsageRecord): Promise<number> {
+  async logToolUsage(record: ToolUsageRecord, options?: { tenantId?: string }): Promise<number> {
     const timestamp = record.timestamp ?? new Date().toISOString();
     const key = record.id ?? this.generateKey(record.toolId);
     const payload = {
       ...record,
+      tenantId: record.tenantId ?? options?.tenantId,
       timestamp
     };
-    return this.store('tool_usage', key, payload);
+    return this.store('tool_usage', key, payload, options);
   }
 
-  async listToolUsage(limit = 25, filter?: { toolId?: string; agentType?: AgentType }): Promise<ToolUsageRecord[]> {
-    const entries = await this.list('tool_usage', limit);
+  async listToolUsage(
+    limit = 25,
+    filter?: { toolId?: string; agentType?: AgentType; tenantId?: string }
+  ): Promise<ToolUsageRecord[]> {
+    const entries = await this.list('tool_usage', limit, { tenantId: filter?.tenantId });
     return entries
       .map((entry) => entry.data as ToolUsageRecord)
       .filter((record) => {
@@ -146,21 +168,24 @@ export class CodexMemorySystem {
       });
   }
 
-  async logReasoningRun(record: ReasoningRunRecord): Promise<number> {
+  async logReasoningRun(record: ReasoningRunRecord, options?: { tenantId?: string }): Promise<number> {
     const timestamp = record.timestamp ?? new Date().toISOString();
     const key = record.id ?? this.generateKey(record.planId);
     if (record.id) {
-      await this.delete('reasoning_runs', record.id).catch(() => {});
+      await this.delete('reasoning_runs', record.id, options).catch(() => {});
     }
     const payload = {
       ...record,
       timestamp
     };
-    return this.store('reasoning_runs', key, payload);
+    return this.store('reasoning_runs', key, payload, options);
   }
 
-  async listReasoningRuns(limit = 25, filter?: { status?: ReasoningRunRecord['status']; planType?: ReasoningRunRecord['planType'] }): Promise<ReasoningRunRecord[]> {
-    const entries = await this.list('reasoning_runs', limit);
+  async listReasoningRuns(
+    limit = 25,
+    filter?: { status?: ReasoningRunRecord['status']; planType?: ReasoningRunRecord['planType']; tenantId?: string }
+  ): Promise<ReasoningRunRecord[]> {
+    const entries = await this.list('reasoning_runs', limit, { tenantId: filter?.tenantId });
     return entries
       .map((entry) => entry.data as ReasoningRunRecord)
       .filter((record) => {
@@ -175,8 +200,8 @@ export class CodexMemorySystem {
       });
   }
 
-  async getLatestReasoningRun(planId: string): Promise<ReasoningRunRecord | null> {
-    const entries = await this.listReasoningRuns(100);
+  async getLatestReasoningRun(planId: string, options?: { tenantId?: string }): Promise<ReasoningRunRecord | null> {
+    const entries = await this.listReasoningRuns(100, { tenantId: options?.tenantId });
     for (const record of entries) {
       if (record.planId === planId) {
         return record;
@@ -185,12 +210,31 @@ export class CodexMemorySystem {
     return null;
   }
 
-  async list(namespace: string, limit = 10): Promise<Array<{ id: number; key: string; data: any; timestamp: string }>> {
+  async list(
+    namespace: string,
+    limit = 10,
+    options?: { tenantId?: string }
+  ): Promise<Array<{ id: number; key: string; data: any; timestamp: string; tenantId?: string | null }>> {
+    const tenantId = options?.tenantId;
     return await new Promise((resolve, reject) => {
+      const conditions = ['namespace = ?'];
+      const params: Array<string | number | null> = [namespace];
+      if (this.tenancyEnabled && tenantId) {
+        conditions.push('(tenant_id = ? OR tenant_id IS NULL)');
+        params.push(tenantId);
+      }
+      params.push(limit);
+
+      const selectFields = this.tenancyEnabled
+        ? 'id, key, data, timestamp, tenant_id as tenantId'
+        : 'id, key, data, timestamp';
+      const query = `SELECT ${selectFields} FROM memory_entries WHERE ${conditions.join(
+        ' AND '
+      )} ORDER BY id DESC LIMIT ?`;
       this.db.all(
-        'SELECT id, key, data, timestamp FROM memory_entries WHERE namespace = ? ORDER BY id DESC LIMIT ?',
-        [namespace, limit],
-        (err: Error | null, rows: Array<{ id: number; key: string; data: string; timestamp: string }>) => {
+        query,
+        params,
+        (err: Error | null, rows: MemoryEntryRow[]) => {
           if (err) {
             reject(err);
             return;
@@ -200,7 +244,8 @@ export class CodexMemorySystem {
               id: row.id,
               key: row.key,
               data: this.safeParse(row.data),
-              timestamp: row.timestamp
+              timestamp: row.timestamp,
+              tenantId: 'tenantId' in row ? row.tenantId ?? null : undefined
             }))
           );
         }
@@ -217,10 +262,20 @@ export class CodexMemorySystem {
     }
   }
 
-  async stats(): Promise<Record<string, number>> {
+  async stats(options?: { tenantId?: string }): Promise<Record<string, number>> {
     return await new Promise((resolve, reject) => {
+      const tenantId = options?.tenantId;
+      const conditions: string[] = [];
+      const params: Array<string | number> = [];
+      if (this.tenancyEnabled && tenantId) {
+        conditions.push('(tenant_id = ? OR tenant_id IS NULL)');
+        params.push(tenantId);
+      }
+      const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+      const query = `SELECT namespace, COUNT(*) as count FROM memory_entries ${whereClause} GROUP BY namespace`;
       this.db.all(
-        'SELECT namespace, COUNT(*) as count FROM memory_entries GROUP BY namespace',
+        query,
+        params,
         (err: Error | null, rows: Array<{ namespace: string; count: number }>) => {
           if (err) {
             reject(err);
@@ -240,12 +295,27 @@ export class CodexMemorySystem {
     return this.dbPath;
   }
 
-  async get(namespace: string, id: number): Promise<{ id: number; key: string; data: any; timestamp: string } | null> {
+  async get(
+    namespace: string,
+    id: number,
+    options?: { tenantId?: string }
+  ): Promise<{ id: number; key: string; data: any; timestamp: string; tenantId?: string | null } | null> {
     return await new Promise((resolve, reject) => {
+      const tenantId = options?.tenantId;
+      const conditions = ['namespace = ?', 'id = ?'];
+      const params: Array<string | number | null> = [namespace, id];
+      if (this.tenancyEnabled && tenantId) {
+        conditions.push('(tenant_id = ? OR tenant_id IS NULL)');
+        params.push(tenantId);
+      }
+      const selectFields = this.tenancyEnabled
+        ? 'id, key, data, timestamp, tenant_id as tenantId'
+        : 'id, key, data, timestamp';
+      const query = `SELECT ${selectFields} FROM memory_entries WHERE ${conditions.join(' AND ')}`;
       this.db.get(
-        'SELECT id, key, data, timestamp FROM memory_entries WHERE namespace = ? AND id = ?',
-        [namespace, id],
-        (err: Error | null, row: { id: number; key: string; data: string; timestamp: string } | undefined) => {
+        query,
+        params,
+        (err: Error | null, row: MemoryEntryRow | undefined) => {
           if (err) {
             reject(err);
             return;
@@ -258,17 +328,67 @@ export class CodexMemorySystem {
             id: row.id,
             key: row.key,
             data: this.safeParse(row.data),
-            timestamp: row.timestamp
+            timestamp: row.timestamp,
+            tenantId: 'tenantId' in row ? row.tenantId ?? null : undefined
           });
         }
       );
     });
   }
 
-  async delete(namespace: string, key: string): Promise<void> {
+  async getByKey(
+    namespace: string,
+    key: string,
+    options?: { tenantId?: string }
+  ): Promise<{ id: number; key: string; data: any; timestamp: string; tenantId?: string | null } | null> {
+    return await new Promise((resolve, reject) => {
+      const tenantId = options?.tenantId;
+      const conditions = ['namespace = ?', 'key = ?'];
+      const params: Array<string | number | null> = [namespace, key];
+      if (this.tenancyEnabled && tenantId) {
+        conditions.push('(tenant_id = ? OR tenant_id IS NULL)');
+        params.push(tenantId);
+      }
+      const selectFields = this.tenancyEnabled
+        ? 'id, key, data, timestamp, tenant_id as tenantId'
+        : 'id, key, data, timestamp';
+      const query = `SELECT ${selectFields} FROM memory_entries WHERE ${conditions.join(' AND ')} ORDER BY id DESC LIMIT 1`;
+      this.db.get(
+        query,
+        params,
+        (err: Error | null, row: MemoryEntryRow | undefined) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          if (!row) {
+            resolve(null);
+            return;
+          }
+          resolve({
+            id: row.id,
+            key: row.key,
+            data: this.safeParse(row.data),
+            timestamp: row.timestamp,
+            tenantId: 'tenantId' in row ? row.tenantId ?? null : undefined
+          });
+        }
+      );
+    });
+  }
+
+  async delete(namespace: string, key: string, options?: { tenantId?: string }): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-      const stmt = this.db.prepare('DELETE FROM memory_entries WHERE namespace = ? AND key = ?');
-      stmt.run(namespace, key, (err: Error | null) => {
+      const tenantId = options?.tenantId;
+      const conditions = ['namespace = ?', 'key = ?'];
+      const params: Array<string | null> = [namespace, key];
+      if (this.tenancyEnabled && tenantId) {
+        conditions.push('(tenant_id = ? OR tenant_id IS NULL)');
+        params.push(tenantId);
+      }
+      const query = `DELETE FROM memory_entries WHERE ${conditions.join(' AND ')}`;
+      const stmt = this.db.prepare(query);
+      stmt.run(params, (err: Error | null) => {
         if (err) {
           reject(err);
         } else {
@@ -290,4 +410,29 @@ export class CodexMemorySystem {
       });
     });
   }
+
+  private ensureTenancySchema(): void {
+    this.db.serialize(() => {
+      this.db.run('ALTER TABLE memory_entries ADD COLUMN tenant_id TEXT', (err: Error | null) => {
+        if (err && !/duplicate column/i.test(err.message)) {
+          this.logger.warn('memory', 'Failed to extend memory_entries with tenant_id column', undefined, err);
+        }
+      });
+      this.db.run(
+        'CREATE INDEX IF NOT EXISTS idx_memory_entries_tenant ON memory_entries (tenant_id)',
+        (err: Error | null) => {
+          if (err) {
+            this.logger.warn('memory', 'Failed to create tenant index on memory_entries', undefined, err);
+          }
+        }
+      );
+    });
+  }
+}
+interface MemoryEntryRow {
+  id: number;
+  key: string;
+  data: string;
+  timestamp: string;
+  tenantId?: string | null;
 }

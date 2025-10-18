@@ -30,20 +30,154 @@ import type {
 } from '../types/codex-context.js';
 import { RetryManager } from '../core/errors.js';
 import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
+import { parseFileContent, parseJsonInput, loadFileThroughFeedforward } from './feedforward.js';
 import { InstructionParser } from '../instructions/index.js';
 import { RoutingPolicyService, type RoutingRequest } from '../router/index.js';
 import { readFileSync } from 'fs';
 import { join, resolve, relative } from 'path';
-import * as yaml from 'js-yaml';
 import { ToolOptimizer, type ToolCandidate } from '../tools/optimizer/index.js';
 import { type ToolUsageRecord, type ReasoningRunRecord } from '../memory/memory-system.js';
 import type { ReasoningPlanOptions, ReasoningCompletionOptions, ReasoningCheckpointInput } from '../reasoning/planner.js';
+import { GoapExecutor } from '../reasoning/goap/executor.js';
+import { goapRegistry } from '../reasoning/goap/registry.js';
 import type { SystemConfiguration } from '../core/config.js';
 import { serviceManager } from '../env/service-manager.js';
+import type { TenantQuota } from '../tenancy/types.js';
+import { executeCodexPassthrough, isCodexCliAvailable } from './codex-passthrough.js';
 
 const program = new Command();
 const session = CliSession.getInstance();
 const rootLogger = Logger.getInstance();
+const cliSilent = process.env.CODEX_CLI_SILENT === '1';
+const cliAutoShutdown = process.env.CODEX_CLI_AUTO_SHUTDOWN === '1';
+
+if (cliSilent) {
+  rootLogger.setConsoleLevel(LogLevel.ERROR);
+}
+
+type BackgroundJob = {
+  id: number;
+  command: string;
+  startedAt: number;
+};
+
+const backgroundJobs = new Map<number, BackgroundJob>();
+let nextBackgroundJobId = 1;
+
+program.configureHelp({
+  sortSubcommands: false,
+  sortOptions: false,
+  styleTitle: (str: string) => chalk.cyanBright.bold(str),
+  styleUsage: (str: string) => chalk.white(str),
+  styleCommandText: (str: string) => chalk.cyan(str),
+  styleCommandDescription: (str: string) => chalk.gray(str),
+  styleSubcommandTerm: (str: string) => chalk.greenBright(str),
+  styleSubcommandDescription: (str: string) => chalk.white(str),
+  styleOptionTerm: (str: string) => chalk.yellow(str),
+  styleOptionDescription: (str: string) => chalk.white(str),
+  styleArgumentTerm: (str: string) => chalk.magenta(str),
+  styleArgumentDescription: (str: string) => chalk.white(str)
+});
+
+program.addHelpText('beforeAll', ({ command }) => {
+  if (command.parent) {
+    return '';
+  }
+  return [
+    chalk.cyanBright.bold('Codex-Synaptic CLI'),
+    chalk.gray('Distributed agent orchestration for OpenAI Codex workflows.'),
+    '',
+    `${chalk.bold('Highlights')}:`,
+    `  ${chalk.green('•')} Boot the orchestrator, neural mesh, and swarm managers`,
+    `  ${chalk.green('•')} Pipe README.md and AGENTS.md into Codex with ${chalk.cyan('--codex')}`,
+    `  ${chalk.green('•')} Track tenants, consensus, and tooling from one hub`,
+    ''
+  ].join('\n');
+});
+
+program.addHelpText('afterAll', ({ command }) => {
+  if (command.parent) {
+    return '';
+  }
+  return [
+    '',
+    `${chalk.bold('Next steps')}:`,
+    `  ${chalk.cyan('codex-synaptic system start')} ${chalk.gray('Boot the orchestrator in this shell')}`,
+    `  ${chalk.cyan('codex-synaptic --codex "Deploy agents"')} ${chalk.gray('Send docs and prompts to Codex')}`,
+    `  ${chalk.cyan('codex-synaptic interactive')} ${chalk.gray('Explore guided menus and dashboards')}`
+  ].join('\n');
+});
+
+type CommandHelpDecorOptions = {
+  title: string;
+  subtitle: string;
+  context: string[];
+  skills: string[];
+  actions?: Array<{ command: string; description: string }>;
+  docs?: Array<{ label: string; description: string }>;
+  vibeTips?: string[];
+};
+
+function decorateCommandHelp(command: Command, options: CommandHelpDecorOptions): Command {
+  command.addHelpText('beforeAll', () => {
+    const lines: string[] = [
+      chalk.cyanBright.bold(options.title),
+      chalk.gray(options.subtitle),
+      ''
+    ];
+
+    if (options.context.length) {
+      lines.push(`${chalk.bold('Why it matters')}:`);
+      for (const insight of options.context) {
+        lines.push(`  ${chalk.green('•')} ${insight}`);
+      }
+      lines.push('');
+    }
+
+    if (options.skills.length) {
+      lines.push(`${chalk.bold('Dev skill boost')}:`);
+      for (const skill of options.skills) {
+        lines.push(`  ${chalk.green('•')} ${skill}`);
+      }
+      lines.push('');
+    }
+
+    if (options.vibeTips?.length) {
+      lines.push(`${chalk.bold('Vibe tips')}:`);
+      for (const tip of options.vibeTips) {
+        lines.push(`  ${chalk.green('•')} ${tip}`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  });
+
+  command.addHelpText('afterAll', () => {
+    const lines: string[] = [];
+
+    if (options.actions?.length) {
+      lines.push(`${chalk.bold('Try next')}:`);
+      for (const action of options.actions) {
+        lines.push(`  ${chalk.cyan(action.command)} ${chalk.gray(action.description)}`);
+      }
+    }
+
+    if (options.docs?.length) {
+      if (lines.length) {
+        lines.push('');
+      }
+      lines.push(`${chalk.bold('Docs to skim')}:`);
+      for (const doc of options.docs) {
+        lines.push(`  ${chalk.yellow(doc.label)} ${chalk.gray(doc.description)}`);
+      }
+    }
+
+    return lines.join('\n');
+  });
+
+  return command;
+}
 
 function shouldAutoAttachCodexContext(prompt: string): boolean {
   const lower = prompt.toLowerCase();
@@ -223,11 +357,17 @@ function handleCommand<T extends any[]>(name: string, fn: (...args: T) => Promis
 
 async function useSystem(description: string, fn: (system: CodexSynapticSystem) => Promise<void>): Promise<void> {
   const alreadyRunning = !!session.getSystemUnsafe();
-  if (!alreadyRunning) {
+  if (!alreadyRunning && !cliSilent) {
     console.log(chalk.blue(`🔧 Initializing Codex-Synaptic system (${description})...`));
   }
   const system = await session.ensureSystem();
-  await fn(system);
+  try {
+    await fn(system);
+  } finally {
+    if (!alreadyRunning && cliAutoShutdown) {
+      await session.shutdown('auto-shutdown');
+    }
+  }
 }
 
 function parseInteger(value: string, label: string): number {
@@ -238,42 +378,15 @@ function parseInteger(value: string, label: string): number {
   return parsed;
 }
 
-function parseJsonInput(value: string, label: string): any {
-  try {
-    return JSON.parse(value);
-  } catch {
-    throw new Error(`${label} must be valid JSON`);
+async function authorizeTenantAction(system: CodexSynapticSystem, action: 'read' | 'write', tokenOverride?: string): Promise<void> {
+  const token = tokenOverride ?? process.env.CODEX_TENANT_ADMIN_TOKEN;
+  if (!token) {
+    throw new Error('Tenant operations require an authorization token. Use --token, set CODEX_TENANT_ADMIN_TOKEN, or run "codex-synaptic auth token" to mint one.');
   }
+  const normalized = token.toLowerCase().startsWith('bearer ') ? token.slice(7).trim() : token.trim();
+  await system.getAuthMiddleware().authenticateAndAuthorize(normalized, 'tenant', action);
 }
 
-/**
- * Parse file content supporting both YAML and JSON formats
- * YAML files are automatically converted to JSON for compatibility
- */
-function parseFileContent(filePath: string): any {
-  const content = readFileSync(filePath, 'utf8');
-  const isYaml = filePath.endsWith('.yaml') || filePath.endsWith('.yml');
-  
-  if (isYaml) {
-    try {
-      // Parse YAML content
-      const parsed = yaml.load(content);
-      console.log(chalk.gray(`📄 Parsed YAML file: ${filePath}`));
-      return parsed;
-    } catch (error) {
-      throw new Error(`Failed to parse YAML file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  } else {
-    // Parse as JSON
-    try {
-      const parsed = JSON.parse(content);
-      console.log(chalk.gray(`📄 Parsed JSON file: ${filePath}`));
-      return parsed;
-    } catch (error) {
-      throw new Error(`Failed to parse JSON file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-}
 
 function renderAgentTable(agents: AgentMetadata[]): void {
   if (!agents.length) {
@@ -311,12 +424,870 @@ function renderMeshStatus(status: any): void {
 }
 
 function renderInteractiveHints(): void {
-  console.log(chalk.blueBright('💡 Interactive hints'));
-  console.log('  - Use arrow keys and Enter to choose actions.');
-  console.log('  - Start with "System status" to confirm mesh and agents are healthy.');
-  console.log('  - "List agents" summarizes Code/Data/Validation workers from AGENTS.md.');
-  console.log('  - "Submit workflow" accepts natural language tasks and streams results.');
-  console.log('  - Full telemetry continues in logs/, press Ctrl+C to exit gracefully.');
+  console.log(chalk.blueBright('💡 Interactive Command Hub'));
+  console.log('  • Navigate through guided menus for system, agents, mesh, swarm, hive-mind, consensus, and tasks.');
+  console.log('  • Each submenu provides context-aware operations tailored to that subsystem.');
+  console.log('  • The "Run CLI command" option lets you execute any codex-synaptic subcommand without leaving this shell.');
+  console.log('  • Dashboard view provides real-time snapshot of mesh, swarm, consensus, and resource metrics.');
+  console.log('  • The system stays running when you exit interactive mode—choose explicit shutdown when needed.');
+  console.log('  • Hive-mind quick spawn wizard auto-attaches Codex context (AGENTS.md, README, docs/) for repository-aware workflows.');
+  console.log('');
+}
+
+async function ensureInteractiveSystem(): Promise<CodexSynapticSystem> {
+  const existing = session.getSystemUnsafe();
+  if (existing) {
+    const status = existing.getStatus?.();
+    if (!status?.shuttingDown) {
+      return existing;
+    }
+  }
+  return session.ensureSystem();
+}
+
+async function pause(message = 'Press Enter to return to the menu.'): Promise<void> {
+  await inquirer.prompt<{ __continue: string }>([
+    {
+      type: 'input',
+      name: '__continue',
+      message
+    }
+  ]);
+}
+
+function tokenizeCliArgs(input: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let quoteChar = '';
+
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+    if (inQuotes) {
+      if (char === '\\' && i + 1 < input.length) {
+        current += input[i + 1];
+        i += 1;
+        continue;
+      }
+      if (char === quoteChar) {
+        inQuotes = false;
+        quoteChar = '';
+        continue;
+      }
+      current += char;
+      continue;
+    }
+
+    if (char === '"' || char === '\'') {
+      inQuotes = true;
+      quoteChar = char;
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      if (quoteChar === '\'') {
+        // Start new token for single quoted strings
+        current = '';
+      }
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current) {
+    tokens.push(current);
+  }
+
+  return tokens.filter((token) => token.length > 0);
+}
+
+function formatElapsedDuration(startedAt: number): string {
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs < 1000) {
+    return `${elapsedMs}ms`; // fast feedback for very short runs
+  }
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
+}
+
+function renderBackgroundJobs(): void {
+  if (!backgroundJobs.size) {
+    console.log(chalk.gray('No background CLI commands are running.'));
+    return;
+  }
+
+  console.log(chalk.blue('🧵 Background CLI commands'));
+  for (const job of backgroundJobs.values()) {
+    console.log(`  #${job.id} ${job.command} ${chalk.gray(`(${formatElapsedDuration(job.startedAt)})`)}`);
+  }
+  console.log('');
+}
+
+async function dispatchCliCommand(raw: string): Promise<void> {
+  const args = tokenizeCliArgs(raw.trim());
+  if (!args.length) {
+    console.log(chalk.gray('No command provided.'));
+    return;
+  }
+
+  if (['interactive', 'i'].includes(args[0])) {
+    console.log(chalk.yellow('Already running in interactive mode – choose another command.'));
+    return;
+  }
+
+  const argv = ['node', 'codex-synaptic', ...args];
+
+  try {
+    await program.parseAsync(argv, { from: 'user' });
+  } catch (error: any) {
+    if (
+      error?.code === 'commander.helpDisplayed'
+      || error?.code === 'commander.version'
+    ) {
+      return;
+    }
+    if (error?.code === 'commander.executeSubCommandAsync') {
+      console.log(chalk.red('Sub-command execution failed.'));
+      return;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(chalk.red(`❌ Command failed: ${message}`));
+    if (process.env.CODEX_DEBUG === '1' && error instanceof Error && error.stack) {
+      console.log(chalk.gray(error.stack));
+    }
+  }
+}
+
+async function renderSystemDashboard(system: CodexSynapticSystem): Promise<void> {
+  console.log('');
+  renderTelemetry();
+  console.log('');
+  renderMeshStatus(system.getNeuralMesh().getStatus());
+  console.log('');
+  renderSwarmStatus(system.getSwarmCoordinator().getStatus());
+  console.log('');
+  renderConsensusStatus(system);
+  console.log('');
+}
+
+async function interactiveSystemMenu(): Promise<void> {
+  let exit = false;
+  let first = true;
+  while (!exit) {
+    const system = await ensureInteractiveSystem();
+    if (first) {
+      console.log(chalk.cyan('\n🛠  System control center'));
+      console.log('Use these options to review health, stream telemetry, or stop the orchestrator.');
+      first = false;
+    }
+    const { action } = await inquirer.prompt<{ action: string }>([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'System controls:',
+        choices: [
+          {
+            name: `${chalk.green('Dashboard')} — mesh/swarm/consensus snapshot`,
+            value: 'dashboard',
+            short: 'Dashboard'
+          },
+          {
+            name: `${chalk.green('Telemetry pulse')} — quick resource + task view`,
+            value: 'telemetry',
+            short: 'Telemetry'
+          },
+          {
+            name: `${chalk.red('Shutdown')} — gracefully stop all services`,
+            value: 'stop',
+            short: 'Shutdown'
+          },
+          {
+            name: 'Back to main menu',
+            value: 'back',
+            short: 'Back'
+          }
+        ]
+      }
+    ]);
+
+    switch (action) {
+      case 'dashboard':
+        await renderSystemDashboard(system);
+        await pause();
+        break;
+      case 'telemetry':
+        renderTelemetry();
+        console.log('');
+        await pause();
+        break;
+      case 'stop': {
+        const { confirm } = await inquirer.prompt<{ confirm: boolean }>([
+          {
+            type: 'confirm',
+            name: 'confirm',
+            message: 'Shut down Codex-Synaptic now?',
+            default: false
+          }
+        ]);
+        if (confirm) {
+          await session.shutdown('interactive-stop');
+          console.log(chalk.green('✅ Codex-Synaptic system shutdown complete.'));
+        }
+        break;
+      }
+      case 'back':
+      default:
+        if (!first) {
+          console.log('');
+        }
+        exit = true;
+        break;
+    }
+  }
+}
+
+async function interactiveAgentsMenu(): Promise<void> {
+  let exit = false;
+  let first = true;
+  while (!exit) {
+    const system = await ensureInteractiveSystem();
+    const agents = system.getAgentRegistry().getAllAgents();
+    if (first) {
+      console.log(chalk.cyan('\n🤖 Agent operations hub'));
+      console.log('Inspect current workers, deploy new specialists, or drill into a single agent.');
+      first = false;
+    }
+
+    const { action } = await inquirer.prompt<{ action: string }>([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'Agent operations:',
+        choices: [
+          {
+            name: `${chalk.green('List roster')} — summary table of all registered agents`,
+            value: 'list',
+            short: 'List roster'
+          },
+          {
+            name: `${chalk.green('Deploy agents')} — add more workers or coordinators`,
+            value: 'deploy',
+            short: 'Deploy'
+          },
+          {
+            name: `${chalk.green('Inspect agent')} — detailed view for one agent`,
+            value: 'inspect',
+            short: 'Inspect'
+          },
+          {
+            name: 'Back to main menu',
+            value: 'back',
+            short: 'Back'
+          }
+        ]
+      }
+    ]);
+
+    switch (action) {
+      case 'list':
+        renderAgentTable(agents);
+        console.log('');
+        await pause();
+        break;
+      case 'deploy': {
+        const { type } = await inquirer.prompt<{ type: AgentType }>([
+          {
+            type: 'list',
+            name: 'type',
+            message: 'Choose agent type to deploy:',
+            choices: Object.values(AgentType)
+          }
+        ]);
+        const { replicas } = await inquirer.prompt<{ replicas: string }>([
+          {
+            type: 'input',
+            name: 'replicas',
+            message: 'How many replicas?',
+            default: '1',
+            validate: (value) => {
+              try {
+                parseInteger(value, 'replicas');
+                return true;
+              } catch (error: any) {
+                return error.message;
+              }
+            }
+          }
+        ]);
+        await system.deployAgent(type, parseInteger(replicas, 'replicas'));
+        console.log(chalk.green(`✅ Deployed ${replicas} ${type} agent(s).`));
+        await pause();
+        break;
+      }
+      case 'inspect': {
+        if (!agents.length) {
+          console.log(chalk.gray('No agents registered.'));
+          await pause();
+          break;
+        }
+        const { agentId } = await inquirer.prompt<{ agentId: string }>([
+          {
+            type: 'list',
+            name: 'agentId',
+            message: 'Select agent:',
+            choices: agents.map((agent) => ({
+              name: `${agent.id.id} (${agent.id.type})`,
+              value: agent.id.id
+            }))
+          }
+        ]);
+        const agent = system.getAgentRegistry().getAgentByStringId(agentId);
+        if (!agent) {
+          console.log(chalk.red('Agent not found.'));
+          break;
+        }
+        console.log(chalk.blue(`👤 Agent ${agent.id.id}`));
+        console.log(`  Type: ${agent.id.type}`);
+        console.log(`  Status: ${agent.status}`);
+        console.log(`  Capabilities: ${agent.capabilities.map((cap) => cap.name).join(', ') || 'none'}`);
+        console.log(`  Resources: CPU ${agent.resources.cpu} | RAM ${agent.resources.memory}MB`);
+        console.log(`  Last Updated: ${agent.lastUpdated.toISOString()}`);
+        console.log('');
+        await pause();
+        break;
+      }
+      case 'back':
+      default:
+        if (!first) {
+          console.log('');
+        }
+        exit = true;
+        break;
+    }
+  }
+}
+
+async function interactiveMeshMenu(): Promise<void> {
+  let exit = false;
+  while (!exit) {
+    const system = await ensureInteractiveSystem();
+    const { action } = await inquirer.prompt<{ action: string }>([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'Neural mesh controls:',
+        choices: [
+          { name: 'Show mesh status', value: 'status' },
+          { name: 'Configure topology', value: 'configure' },
+          { name: 'Return to main menu', value: 'back' }
+        ]
+      }
+    ]);
+
+    switch (action) {
+      case 'status':
+        renderMeshStatus(system.getNeuralMesh().getStatus());
+        console.log('');
+        break;
+      case 'configure': {
+        const { topology } = await inquirer.prompt<{ topology: string }>([
+          {
+            type: 'list',
+            name: 'topology',
+            message: 'Topology:',
+            choices: ['mesh', 'ring', 'star', 'tree', 'hybrid']
+          }
+        ]);
+        const { nodes } = await inquirer.prompt<{ nodes: string }>([
+          {
+            type: 'input',
+            name: 'nodes',
+            message: 'Desired node count:',
+            default: '5',
+            validate: (value) => {
+              try {
+                parseInteger(value, 'nodes');
+                return true;
+              } catch (error: any) {
+                return error.message;
+              }
+            }
+          }
+        ]);
+        await system.createNeuralMesh(topology, parseInteger(nodes, 'nodes'));
+        console.log(chalk.green(`✅ Mesh configured (${topology}, ${nodes} nodes).`));
+        renderMeshStatus(system.getNeuralMesh().getStatus());
+        console.log('');
+        break;
+      }
+      case 'back':
+      default:
+        exit = true;
+        break;
+    }
+  }
+}
+
+async function interactiveSwarmMenu(): Promise<void> {
+  let exit = false;
+  while (!exit) {
+    const system = await ensureInteractiveSystem();
+    const { action } = await inquirer.prompt<{ action: string }>([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'Swarm coordination:',
+        choices: [
+          { name: 'Start swarm', value: 'start' },
+          { name: 'Stop swarm', value: 'stop' },
+          { name: 'Show swarm status', value: 'status' },
+          { name: 'Return to main menu', value: 'back' }
+        ]
+      }
+    ]);
+
+    switch (action) {
+      case 'start': {
+        const { algorithm } = await inquirer.prompt<{ algorithm: string }>([
+          {
+            type: 'list',
+            name: 'algorithm',
+            message: 'Algorithm:',
+            choices: ['pso', 'aco', 'flocking', 'hybrid']
+          }
+        ]);
+        const { objectives } = await inquirer.prompt<{ objectives: string }>([
+          {
+            type: 'input',
+            name: 'objectives',
+            message: 'Objectives (comma-separated, optional):',
+            default: ''
+          }
+        ]);
+        const objectiveList = objectives
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean);
+        await system.startSwarm(algorithm, objectiveList);
+        console.log(chalk.green('✅ Swarm coordination started.'));
+        renderSwarmStatus(system.getSwarmCoordinator().getStatus());
+        console.log('');
+        break;
+      }
+      case 'stop':
+        system.getSwarmCoordinator().stopSwarm();
+        console.log(chalk.green('✅ Swarm coordination stopped.'));
+        console.log('');
+        break;
+      case 'status':
+        renderSwarmStatus(system.getSwarmCoordinator().getStatus());
+        console.log('');
+        break;
+      case 'back':
+      default:
+        exit = true;
+        break;
+    }
+  }
+}
+
+async function interactiveHiveMindMenu(): Promise<void> {
+  let exit = false;
+  while (!exit) {
+    const system = await ensureInteractiveSystem();
+    const { action } = await inquirer.prompt<{ action: string }>([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'Hive-mind orchestration:',
+        choices: [
+          { name: 'Quick spawn with defaults', value: 'quick' },
+          { name: 'Run advanced spawn command', value: 'advanced' },
+          { name: 'Show hive-mind status', value: 'status' },
+          { name: 'Return to main menu', value: 'back' }
+        ]
+      }
+    ]);
+
+    switch (action) {
+      case 'quick': {
+        const { prompt } = await inquirer.prompt<{ prompt: string }>([
+          {
+            type: 'input',
+            name: 'prompt',
+            message: 'Describe the hive-mind objective:',
+            validate: (value) => value.trim() ? true : 'Prompt cannot be empty.'
+          }
+        ]);
+        const { topology, algorithm } = await inquirer.prompt<{ topology: string; algorithm: string }>([
+          {
+            type: 'list',
+            name: 'topology',
+            message: 'Mesh topology:',
+            choices: ['mesh', 'ring', 'star', 'tree'],
+            default: 'mesh'
+          },
+          {
+            type: 'list',
+            name: 'algorithm',
+            message: 'Swarm algorithm:',
+            choices: ['pso', 'aco', 'flocking', 'hybrid'],
+            default: 'pso'
+          }
+        ]);
+        const { agentCount } = await inquirer.prompt<{ agentCount: string }>([
+          {
+            type: 'input',
+            name: 'agentCount',
+            message: 'Target agents:',
+            default: '6',
+            validate: (value) => {
+              try {
+                parseInteger(value, 'agents');
+                return true;
+              } catch (error: any) {
+                return error.message;
+              }
+            }
+          }
+        ]);
+        const { attachCodex } = await inquirer.prompt<{ attachCodex: boolean }>([
+          {
+            type: 'confirm',
+            name: 'attachCodex',
+            message: 'Attach Codex context from AGENTS.md/README?',
+            default: shouldAutoAttachCodexContext(prompt)
+          }
+        ]);
+
+        let workingPrompt = prompt;
+        if (attachCodex) {
+          const builder = new CodexContextBuilder(process.cwd());
+          await builder.withAgentDirectives();
+          await builder.withReadmeExcerpts();
+          await builder.withDirectoryInventory();
+          await builder.withDatabaseMetadata();
+          const buildResult = await builder.build();
+          emitContextLogs(buildResult.logs);
+          emitContextSummary(buildResult.context, buildResult.metadata);
+          workingPrompt = composePromptWithContext(prompt, buildResult.context);
+          console.log(chalk.cyan('📚 Codex context attached to prompt.'));
+        }
+
+        const agentsTarget = parseInteger(agentCount, 'agents');
+        await system.createNeuralMesh(topology, agentsTarget);
+        await system.deployAgent(AgentType.SWARM_COORDINATOR, 1);
+        await system.deployAgent(AgentType.CONSENSUS_COORDINATOR, 1);
+        await system.deployAgent(AgentType.CODE_WORKER, Math.max(1, Math.floor(agentsTarget / 3)));
+        await system.deployAgent(AgentType.DATA_WORKER, 1);
+        await system.deployAgent(AgentType.VALIDATION_WORKER, 1);
+
+        await system.startSwarm(algorithm, ['hive_mind_objective']);
+        console.log(chalk.blue('🧠 Hive-mind swarm engaged. Executing task...'));
+        const outcome = await system.executeTask(workingPrompt);
+        console.log(chalk.green('✅ Hive-mind execution complete.'));
+        console.log(chalk.gray(JSON.stringify(outcome.summary ?? outcome, null, 2)));
+        system.getSwarmCoordinator().stopSwarm();
+        console.log('');
+        break;
+      }
+      case 'advanced': {
+        console.log(chalk.blue('Tip: enter a command such as'));
+        console.log(chalk.gray('  hive-mind spawn "Design multi-cloud rollout" --codex --algorithm hybrid --agents 8'));
+        const { command } = await inquirer.prompt<{ command: string }>([
+          {
+            type: 'input',
+            name: 'command',
+            message: 'Enter hive-mind CLI command (without the codex-synaptic prefix):'
+          }
+        ]);
+        if (command.trim()) {
+          await dispatchCliCommand(command);
+        }
+        break;
+      }
+      case 'status': {
+        const swarmStatus = system.getSwarmCoordinator().getStatus();
+        renderSwarmStatus(swarmStatus);
+        console.log('');
+        break;
+      }
+      case 'back':
+      default:
+        exit = true;
+        break;
+    }
+  }
+}
+
+async function interactiveConsensusMenu(): Promise<void> {
+  let exit = false;
+  while (!exit) {
+    const system = await ensureInteractiveSystem();
+    const { action } = await inquirer.prompt<{ action: string }>([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'Consensus management:',
+        choices: [
+          { name: 'Show consensus status', value: 'status' },
+          { name: 'Propose decision', value: 'propose' },
+          { name: 'Vote on proposal', value: 'vote' },
+          { name: 'View consensus telemetry', value: 'telemetry' },
+          { name: 'Return to main menu', value: 'back' }
+        ]
+      }
+    ]);
+
+    switch (action) {
+      case 'status':
+        renderConsensusStatus(system);
+        console.log('');
+        break;
+      case 'propose': {
+        const { type, payload } = await inquirer.prompt<{ type: string; payload: string }>([
+          {
+            type: 'input',
+            name: 'type',
+            message: 'Proposal type (e.g., system_upgrade):',
+            validate: (value) => value.trim() ? true : 'Type is required.'
+          },
+          {
+            type: 'editor',
+            name: 'payload',
+            message: 'Proposal payload JSON:',
+            default: '{\n  "description": "Describe the proposal"\n}'
+          }
+        ]);
+        const proposerAgents = system.getAgentRegistry().getAgentsByType(AgentType.CONSENSUS_COORDINATOR);
+        const proposerId = proposerAgents[0]?.id;
+        const data = parseJsonInput(payload, 'payload');
+        const proposalId = await system.proposeConsensus(type, data, proposerId);
+        console.log(chalk.green(`✅ Proposal ${proposalId} submitted.`));
+        break;
+      }
+      case 'vote': {
+        const proposals = system.getConsensusManager().getActiveProposals();
+        if (!proposals.length) {
+          console.log(chalk.gray('No active proposals.'));
+          break;
+        }
+        const { proposalId } = await inquirer.prompt<{ proposalId: string }>([
+          {
+            type: 'list',
+            name: 'proposalId',
+            message: 'Select proposal:',
+            choices: proposals.map((proposal) => ({
+              name: `${proposal.id} (${proposal.type})`,
+              value: proposal.id
+            }))
+          }
+        ]);
+        const { vote } = await inquirer.prompt<{ vote: string }>([
+          {
+            type: 'list',
+            name: 'vote',
+            message: 'Vote:',
+            choices: [
+              { name: 'Approve', value: 'yes' },
+              { name: 'Reject', value: 'no' }
+            ]
+          }
+        ]);
+        const voter = system.getAgentRegistry().getAgentsByType(AgentType.CONSENSUS_COORDINATOR)[0]?.id;
+        system.submitConsensusVote(proposalId, vote === 'yes', voter);
+        console.log(chalk.green('✅ Vote submitted.'));
+        break;
+      }
+      case 'telemetry': {
+        const entries = await system.getMemorySystem().list('consensus_events', 5);
+        if (!entries.length) {
+          console.log(chalk.gray('No consensus telemetry recorded yet.'));
+          break;
+        }
+        console.log(chalk.blue('🗳️ Consensus Telemetry'));
+        entries.forEach((entry, idx) => {
+          const data = entry.data ?? {};
+          console.log(chalk.cyan(`\n${idx + 1}. ${entry.key}`));
+          console.log(chalk.gray(`   Finalized: ${data.finalizedAt ?? entry.timestamp}`));
+          console.log(chalk.gray(`   Mechanism: ${data.mechanism ?? 'unknown'}`));
+          console.log(chalk.gray(`   Accepted: ${data.accepted ? 'yes' : 'no'}`));
+          if (data.requiredVotes) {
+            console.log(chalk.gray(`   Required votes: ${data.requiredVotes}`));
+          }
+        });
+        console.log('');
+        break;
+      }
+      case 'back':
+      default:
+        exit = true;
+        break;
+    }
+  }
+}
+
+async function interactiveTasksMenu(): Promise<void> {
+  let exit = false;
+  while (!exit) {
+    const system = await ensureInteractiveSystem();
+    const { action } = await inquirer.prompt<{ action: string }>([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'Task & router workflows:',
+        choices: [
+          { name: 'Execute task prompt', value: 'execute' },
+          { name: 'Show recent session tasks', value: 'recent' },
+          { name: 'Evaluate routing for prompt', value: 'route' },
+          { name: 'Return to main menu', value: 'back' }
+        ]
+      }
+    ]);
+
+    switch (action) {
+      case 'execute': {
+        const { prompt } = await inquirer.prompt<{ prompt: string }>([
+          {
+            type: 'input',
+            name: 'prompt',
+            message: 'Task prompt:',
+            validate: (value) => value.trim() ? true : 'Prompt cannot be empty.'
+          }
+        ]);
+        const { silent } = await inquirer.prompt<{ silent: boolean }>([
+          {
+            type: 'confirm',
+            name: 'silent',
+            message: 'Suppress verbose JSON output?',
+            default: false
+          }
+        ]);
+        console.log(chalk.blue('🚀 Dispatching task...'));
+        const outcome = await system.executeTask(prompt);
+        console.log(chalk.green('✅ Task complete.'));
+        if (!silent) {
+          console.log(JSON.stringify(outcome, null, 2));
+        } else {
+          console.log(chalk.gray(outcome.summary ?? 'Task executed.'));
+        }
+        console.log('');
+        break;
+      }
+      case 'recent': {
+        const snapshot = session.getTelemetry();
+        if (!snapshot.recentTasks.length) {
+          console.log(chalk.gray('No tasks executed yet in this session.'));
+          break;
+        }
+        console.log(chalk.blue('🗂 Recent tasks'));
+        for (const item of snapshot.recentTasks) {
+          console.log(`  • ${item.id} [${item.status}] — ${item.summary}`);
+        }
+        console.log('');
+        break;
+      }
+      case 'route': {
+        const { prompt } = await inquirer.prompt<{ prompt: string }>([
+          {
+            type: 'input',
+            name: 'prompt',
+            message: 'Prompt to evaluate for routing:',
+            validate: (value) => value.trim() ? true : 'Prompt cannot be empty.'
+          }
+        ]);
+        const router = new RoutingPolicyService(undefined, {
+          toolOptimizer: system.getToolOptimizer()
+        });
+        console.log(chalk.cyan('🔄 Evaluating routing...'));
+        const evaluation = await router.evaluateRouting({ prompt } as RoutingRequest);
+        console.log(chalk.green(`✅ Recommended agent: ${evaluation.agentType}`));
+        console.log(`📊 Confidence: ${(evaluation.confidence * 100).toFixed(1)}%`);
+        console.log(`💭 Reasoning: ${evaluation.reasoning}`);
+        if (evaluation.toolRecommendations?.length) {
+          console.log(chalk.gray('\n🛠 Tool Recommendations:'));
+          evaluation.toolRecommendations.slice(0, 5).forEach((score, index) => {
+            console.log(
+              chalk.gray(
+                `  ${index + 1}. ${score.toolId} – score ${(score.score * 100).toFixed(1)}%, confidence ${(score.confidence * 100).toFixed(1)}%`
+              )
+            );
+          });
+        }
+        console.log('');
+        break;
+      }
+      case 'back':
+      default:
+        exit = true;
+        break;
+    }
+  }
+}
+
+async function interactiveCommandRunner(): Promise<void> {
+  console.log(chalk.gray('Tip: append "&" to run a command in the background.'));
+  const { command } = await inquirer.prompt<{ command: string }>([
+    {
+      type: 'input',
+      name: 'command',
+      message: 'CLI command (omit the codex-synaptic prefix):'
+    }
+  ]);
+
+  const raw = command.trim();
+  if (!raw) {
+    return;
+  }
+
+  const runInBackground = raw.endsWith('&');
+  const normalized = runInBackground ? raw.slice(0, -1).trim() : raw;
+  if (!normalized) {
+    console.log(chalk.gray('Command discarded. Nothing to run.'));
+    return;
+  }
+
+  if (!runInBackground) {
+    await dispatchCliCommand(normalized);
+    return;
+  }
+
+  const jobId = nextBackgroundJobId++;
+  const startedAt = Date.now();
+  backgroundJobs.set(jobId, { id: jobId, command: normalized, startedAt });
+  console.log(chalk.gray(`Started background command #${jobId}: ${normalized}`));
+
+  const runPromise = dispatchCliCommand(normalized);
+
+  void runPromise
+    .then(() => {
+      backgroundJobs.delete(jobId);
+      console.log(chalk.green(`\n✅ Background command #${jobId} complete: ${normalized}`));
+    })
+    .catch((error) => {
+      backgroundJobs.delete(jobId);
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(chalk.red(`\n❌ Background command #${jobId} failed: ${message}`));
+    });
 }
 
 function renderSwarmStatus(status: any): void {
@@ -558,7 +1529,33 @@ function buildToolUsageRecord(options: any): ToolUsageRecord {
 }
 
 // System commands
-const systemCmd = program.command('system').description('System management commands');
+const systemCmd = decorateCommandHelp(
+  program
+    .command('system')
+    .description('Boot, monitor, and gracefully stop the orchestrator core'),
+  {
+    title: 'System Control Lounge',
+    subtitle: 'Power up or wind down the whole Codex-Synaptic stack like a studio session.',
+    context: [
+      'Service orchestrators start schedulers, servers, and workers together—watching this flow is DevOps gold.',
+      'Status output teaches you how health checks narrate readiness the same way real production stacks do.'
+    ],
+    skills: [
+      'Practice lifecycle commands you also meet in Docker, PM2, and systemd.',
+      'Read telemetry signals to diagnose boot hiccups before they escalate in production.'
+    ],
+    vibeTips: [
+      'Treat the orchestrator like your band leader—lock it in before other sections start playing.'
+    ],
+    actions: [
+      { command: 'codex-synaptic system start', description: 'Kick off the orchestrator and stream the live telemetry loop.' },
+      { command: 'codex-synaptic system monitor', description: 'Keep the console vibing while metrics pulse every few seconds.' }
+    ],
+    docs: [
+      { label: 'docs/guides/quick-start.md', description: 'Step-by-step walkthrough for lighting up the full platform.' }
+    ]
+  }
+);
 
 systemCmd
   .command('start')
@@ -639,8 +1636,140 @@ systemCmd
     });
   }));
 
+const openaiCmd = decorateCommandHelp(
+  program
+    .command('openai')
+    .description('Inspect OpenAI integration status and usage telemetry'),
+  {
+    title: 'OpenAI Telemetry Lab',
+    subtitle: 'See exactly how many tokens you are burning and how fast responses flow.',
+    context: [
+      'Token analytics help you stay within OpenAI rate plans and spot runaway prompts early.',
+      'Throughput snapshots mimic production dashboards for API-backed LLM services.'
+    ],
+    skills: [
+      'Translate raw usage events into actionable throughput insights.',
+      'Correlate spike patterns with prompts, tools, and orchestration workflows.'
+    ],
+    vibeTips: [
+      'Pair this with your budget spreadsheet so finance stays chill when experiments scale.'
+    ],
+    actions: [
+      { command: 'codex-synaptic openai usage', description: 'Review token totals, throughput, and the latest usage events.' }
+    ],
+    docs: [
+      { label: 'docs/integration/OPENAI_PLATFORM_2025_INTEGRATION.md', description: 'Deep dive into OpenAI integration strategy and telemetry hooks.' }
+    ]
+  }
+);
+
+openaiCmd
+  .command('usage')
+  .description('Show token usage totals and throughput for recent OpenAI responses')
+  .option('-w, --window <minutes>', 'Sliding window in minutes used for throughput stats', '5')
+  .option('-l, --limit <count>', 'Number of recent usage events to display', '10')
+  .option('--json', 'Output JSON summary instead of formatted text')
+  .action(handleCommand('openai.usage', async (options) => {
+    await useSystem('openai usage', async (system) => {
+      const windowMinutes = Number.parseFloat(String(options.window ?? '5'));
+      if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) {
+        throw new Error('window must be a positive number');
+      }
+
+      const limit = parseInteger(options.limit ?? '10', 'limit');
+      if (limit <= 0) {
+        throw new Error('limit must be a positive integer');
+      }
+      const windowMs = Math.max(1000, Math.round(windowMinutes * 60000));
+      const summary = system.getOpenAIUsageSummary(windowMs);
+      const events = system.getRecentOpenAIUsage(limit);
+
+      if (options.json) {
+        const payload = {
+          configured: Boolean(system.getOpenAIResolvedConfiguration()?.config?.enabled),
+          clientReady: Boolean(system.getOpenAIResponsesClient()?.isReady()),
+          windowMinutes,
+          summary,
+          events
+        };
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      const configured = system.getOpenAIResolvedConfiguration()?.config?.enabled;
+      const ready = system.getOpenAIResponsesClient()?.isReady();
+
+      console.log(chalk.blue('🧮 OpenAI Usage Overview'));
+      console.log(`  Integration configured: ${configured ? chalk.green('yes') : chalk.red('no')}`);
+      console.log(`  Client ready: ${ready ? chalk.green('yes') : chalk.red('no')}`);
+      if (!system.hasOpenAIUsage()) {
+        console.log(chalk.gray('  No usage events recorded yet. Run Codex workflows that invoke OpenAI responses.'));
+        return;
+      }
+
+      const totals = summary.totals;
+      console.log(chalk.cyan('\nTotals'));
+      console.log(`  Requests: ${totals.requests}`);
+      console.log(`  Input tokens: ${totals.inputTokens.toLocaleString()}`);
+      console.log(`  Output tokens: ${totals.outputTokens.toLocaleString()}`);
+      console.log(`  Total tokens: ${totals.totalTokens.toLocaleString()}`);
+
+      const throughput = summary.throughput;
+      const windowLabel = `${(throughput.windowMs / 60000).toFixed(2)} min window`;
+      console.log(chalk.cyan(`\nThroughput (${windowLabel})`));
+      console.log(`  Tokens/min: ${throughput.tokensPerMinute.toFixed(2)}`);
+      console.log(`  Tokens/sec: ${throughput.tokensPerSecond.toFixed(2)}`);
+      console.log(`  Requests/min: ${throughput.requestsPerMinute.toFixed(2)}`);
+      console.log(`  Window requests: ${throughput.requests}`);
+
+      if (events.length) {
+        console.log(chalk.cyan('\nRecent usage events'));
+        events
+          .slice()
+          .reverse()
+          .forEach((event, index) => {
+            const label = `${event.timestamp.toISOString()} — ${event.model ?? 'unknown model'}`;
+            const detail = `in ${event.inputTokens.toLocaleString()} | out ${event.outputTokens.toLocaleString()} | total ${event.totalTokens.toLocaleString()}`;
+            const prefix = chalk.gray(`${index + 1}.`);
+            console.log(`  ${prefix} ${chalk.white(label)}`);
+            console.log(chalk.gray(`     ${detail}`));
+          });
+      }
+
+      if (summary.mostRecent) {
+        console.log(chalk.gray(`\nLast event ID: ${summary.mostRecent.id}`));
+      }
+    });
+  }));
+
 // Background daemon commands
-const backgroundCmd = program.command('background').description('Manage the background Codex-Synaptic daemon');
+const backgroundCmd = decorateCommandHelp(
+  program
+    .command('background')
+    .description('Control the detached daemon that keeps Codex-Synaptic running'),
+  {
+    title: 'Background Beats',
+    subtitle: 'Run Codex-Synaptic as a low-key background service while you jam elsewhere.',
+    context: [
+      'Background daemons are how CLIs stay responsive while servers hum behind the scenes.',
+      'Learning to manage detached processes translates directly to screen, tmux, and cloud supervisors.'
+    ],
+    skills: [
+      'Master process lifecycle flows: start, status, graceful stop.',
+      'See how timeout safeguards mirror the health probes used in container orchestration.'
+    ],
+    vibeTips: [
+      'Think of the daemon as a chill lo-fi loop—you can ride the groove without blasting the main speakers.'
+    ],
+    actions: [
+      { command: 'codex-synaptic background start', description: 'Launch the detached orchestrator and free your shell.' },
+      { command: 'codex-synaptic background status', description: 'Check that the groove is still looping in the background.' }
+    ],
+    docs: [
+      { label: 'docs/architecture/multi-tenancy.md', description: 'Peek at how background services support multi-tenant workloads.' }
+    ]
+  }
+);
 
 backgroundCmd
   .command('status')
@@ -692,7 +1821,33 @@ backgroundCmd
   }));
 
 // Instructions commands
-const instructionsCmd = program.command('instructions').description('Instruction processing and cache management');
+const instructionsCmd = decorateCommandHelp(
+  program
+    .command('instructions')
+    .description('Parse AGENTS.md trees and steward the instruction cache'),
+  {
+    title: 'Instruction Cartography',
+    subtitle: 'Map every AGENTS.md so Codex always knows the vibe and the rules.',
+    context: [
+      'Instruction parsers keep large language models aligned with repo-specific playbooks.',
+      'Caching speeds up workflows just like CDN layers accelerate web apps.'
+    ],
+    skills: [
+      'Work with precedence chains to learn how configuration overrides stack.',
+      'Preview how YAML and Markdown metadata become structured runtime inputs.'
+    ],
+    vibeTips: [
+      'Imagine you are a tour guide—every AGENTS.md is a postcard from a different neighborhood.'
+    ],
+    actions: [
+      { command: 'codex-synaptic instructions sync', description: 'Refresh the cache and see precedence chains in action.' },
+      { command: 'codex-synaptic instructions sync --dry-run', description: 'Preview the metadata story without changing cache state.' }
+    ],
+    docs: [
+      { label: 'docs/instructions/README.md', description: 'Deep dive into instruction discovery and precedence.' }
+    ]
+  }
+);
 
 instructionsCmd
   .command('sync')
@@ -700,27 +1855,42 @@ instructionsCmd
   .option('-r, --root <path>', 'Repository root path', process.cwd())
   .option('--no-cache', 'Skip cache and force fresh scan')
   .option('-v, --verbose', 'Show detailed processing information')
+  .option('--json', 'Output synchronization summary as JSON')
   .action(handleCommand('instructions.sync', async (options) => {
     const parser = new InstructionParser();
     try {
-      console.log(chalk.cyan('🔄 Synchronizing instruction files...'));
-      
+      if (!options.json) {
+        console.log(chalk.cyan('🔄 Synchronizing instruction files...'));
+      }
+
       const startTime = Date.now();
       const context = await parser.parseInstructions(options.root, options.cache);
       const duration = Date.now() - startTime;
-      
-      if (options.verbose) {
-        console.log(chalk.gray(`Processed ${context.metadata.length} instruction files`));
-        console.log(chalk.gray(`Precedence chain: ${context.precedenceChain.join(' → ')}`));
-        console.log(chalk.gray(`Context hash: ${context.contextHash}`));
-        console.log(chalk.gray(`Total size: ${context.aggregatedSize} bytes`));
-        console.log(chalk.gray(`Processing time: ${duration}ms`));
+
+      if (options.json) {
+        const payload = {
+          root: options.root,
+          metadataCount: context.metadata.length,
+          precedenceChain: context.precedenceChain,
+          contextHash: context.contextHash,
+          aggregatedSize: context.aggregatedSize,
+          cacheUsed: options.cache !== false,
+          durationMs: duration
+        };
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        if (options.verbose) {
+          console.log(chalk.gray(`Processed ${context.metadata.length} instruction files`));
+          console.log(chalk.gray(`Precedence chain: ${context.precedenceChain.join(' → ')}`));
+          console.log(chalk.gray(`Context hash: ${context.contextHash}`));
+          console.log(chalk.gray(`Total size: ${context.aggregatedSize} bytes`));
+          console.log(chalk.gray(`Processing time: ${duration}ms`));
+        }
+        
+        console.log(chalk.green(`✅ Instructions synchronized successfully`));
+        console.log(`📁 Files processed: ${context.metadata.length}`);
+        console.log(`🔗 Context hash: ${context.contextHash.slice(0, 12)}...`);
       }
-      
-      console.log(chalk.green(`✅ Instructions synchronized successfully`));
-      console.log(`📁 Files processed: ${context.metadata.length}`);
-      console.log(`🔗 Context hash: ${context.contextHash.slice(0, 12)}...`);
-      
     } catch (error) {
       console.error(chalk.red(`❌ Failed to sync instructions: ${error}`));
       process.exitCode = 1;
@@ -834,8 +2004,299 @@ instructionsCmd
     }
   }));
 
+// Authentication commands
+const authCmd = decorateCommandHelp(
+  program
+    .command('auth')
+    .description('Issue, rotate, and inspect authentication tokens'),
+  {
+    title: 'Auth Groove',
+    subtitle: 'Mint tokens with swagger while respecting security best practices.',
+    context: [
+      'APIs everywhere expect bearer tokens—practise the pattern here and carry it to any stack.',
+      'Rotation workflow mirrors the zero-trust mindset modern teams adopt.'
+    ],
+    skills: [
+      'Understand how CLI tools wrap crypto-safe token generation.',
+      'Learn to audit active tokens the same way you would on real infrastructure.'
+    ],
+    vibeTips: [
+      'Security can feel heavy, so add a playlist and treat it like mastering your own backstage passes.'
+    ],
+    actions: [
+      { command: 'codex-synaptic auth token', description: 'Create a fresh tenant admin token for sandbox experiments.' },
+      { command: 'codex-synaptic auth rotate', description: 'Rotate credentials and feel the instant access refresh.' }
+    ],
+    docs: [
+      { label: 'docs/architecture/multi-tenancy.md', description: 'See how tokens gate tenant actions across the mesh.' }
+    ]
+  }
+);
+
+authCmd
+  .command('token')
+  .description('Authenticate with username/password and print a bearer token')
+  .requiredOption('--username <username>', 'Account username')
+  .requiredOption('--password <password>', 'Account password')
+  .action(handleCommand('auth.token', async (options) => {
+    await useSystem('auth token', async (system) => {
+      const manager = system.getAuthenticationManager();
+      const { user, token } = await manager.authenticate(options.username, options.password);
+      console.log(chalk.green('✅ Authentication successful'));
+      console.log(chalk.gray(`   User: ${user.username}`));
+      console.log(chalk.gray('   Token (store securely):'));
+      console.log(token);
+    });
+  }));
+
+// Tenant commands
+const tenantCmd = decorateCommandHelp(
+  program
+    .command('tenant')
+    .description('Provision tenants, quotas, and policy guardrails'),
+  {
+    title: 'Tenant Playground',
+    subtitle: 'Slice up resources so every crew gets fair compute and vibes.',
+    context: [
+      'Multi-tenancy is how SaaS apps keep customers isolated yet efficient.',
+      'Quotas resemble API rate limits and Kubernetes resource budgets you use in production.'
+    ],
+    skills: [
+      'Balance access control with usability—core platform engineering muscle.',
+      'Design guardrails that prevent noisy neighbors from overwhelming the system.'
+    ],
+    vibeTips: [
+      'Imagine throwing a festival—each stage needs space, power, and a soundcheck schedule.'
+    ],
+    actions: [
+      { command: 'codex-synaptic tenant create acme', description: 'Create a tenant and instantly see default quota scaffolding.' },
+      { command: 'codex-synaptic tenant quota acme --set maxConcurrentTasks=5', description: 'Tune resource limits the way ops teams tweak autoscalers.' }
+    ],
+    docs: [
+      { label: 'docs/architecture/multi-tenancy.md', description: 'Architecture notes on isolation, quotas, and tenant orchestration.' }
+    ]
+  }
+);
+
+tenantCmd
+  .command('list')
+  .option('--limit <count>', 'Number of tenants to display', '20')
+  .option('--token <token>', 'API token with tenant.read permission')
+  .action(handleCommand('tenant.list', async (options) => {
+    const limit = parseInteger(options.limit ?? '20', 'limit');
+    await useSystem('tenant list', async (system) => {
+      if (!system.isMultiTenancyEnabled()) {
+        console.log(chalk.yellow('Multi-tenancy is disabled. Set CODEX_TENANCY_ENABLED=1 to enable tenant commands.'));
+        return;
+      }
+      await authorizeTenantAction(system, 'read', options.token);
+      const manager = system.getTenantManager();
+      const tenants = await manager.listTenants(limit);
+      if (!tenants.length) {
+        console.log(chalk.gray('No tenants configured.'));
+        return;
+      }
+      console.log(chalk.blue('🏢 Registered Tenants'));
+      tenants.forEach((tenant, index) => {
+        console.log(chalk.cyan(`\n${index + 1}. ${tenant.id}`));
+        console.log(chalk.gray(`   Name: ${tenant.name}`));
+        console.log(chalk.gray(`   Status: ${tenant.status}`));
+        console.log(chalk.gray(`   Created: ${tenant.createdAt}`));
+        if (tenant.metadata) {
+          console.log(chalk.gray(`   Metadata: ${JSON.stringify(tenant.metadata)}`));
+        }
+      });
+    });
+  }));
+
+tenantCmd
+  .command('create')
+  .requiredOption('--name <name>', 'Tenant display name')
+  .option('--id <tenantId>', 'Explicit tenant identifier (defaults to generated UUID)')
+  .option('--metadata <json>', 'Optional metadata JSON payload')
+  .option('--token <token>', 'API token with tenant.write permission')
+  .action(handleCommand('tenant.create', async (options) => {
+    const metadata = parseJsonOption(options.metadata);
+    await useSystem('tenant create', async (system) => {
+      if (!system.isMultiTenancyEnabled()) {
+        console.log(chalk.yellow('Multi-tenancy is disabled. Set CODEX_TENANCY_ENABLED=1 to enable tenant commands.'));
+        return;
+      }
+      await authorizeTenantAction(system, 'write', options.token);
+      const manager = system.getTenantManager();
+      const record = await manager.createTenant({
+        name: options.name,
+        id: options.id,
+        metadata
+      });
+      console.log(chalk.green(`✅ Tenant "${record.id}" created`));
+      if (record.metadata) {
+        console.log(chalk.gray(`   Metadata: ${JSON.stringify(record.metadata)}`));
+      }
+    });
+  }));
+
+tenantCmd
+  .command('show')
+  .argument('<tenantId>', 'Tenant identifier to inspect')
+  .option('--token <token>', 'API token with tenant.read permission')
+  .action(handleCommand('tenant.show', async (tenantId: string, options) => {
+    await useSystem('tenant show', async (system) => {
+      if (!system.isMultiTenancyEnabled()) {
+        console.log(chalk.yellow('Multi-tenancy is disabled. Set CODEX_TENANCY_ENABLED=1 to enable tenant commands.'));
+        return;
+      }
+      await authorizeTenantAction(system, 'read', options?.token);
+      const manager = system.getTenantManager();
+      const tenant = await manager.getTenant(tenantId);
+      if (!tenant) {
+        console.log(chalk.yellow(`Tenant "${tenantId}" not found.`));
+        return;
+      }
+      console.log(chalk.blue(`Tenant ${tenant.id}`));
+      console.log(chalk.gray(`   Name: ${tenant.name}`));
+      console.log(chalk.gray(`   Status: ${tenant.status}`));
+      console.log(chalk.gray(`   Created: ${tenant.createdAt}`));
+      console.log(chalk.gray(`   Updated: ${tenant.updatedAt}`));
+      if (tenant.metadata) {
+        console.log(chalk.gray(`   Metadata: ${JSON.stringify(tenant.metadata)}`));
+      }
+      const policy = await manager.getPolicy(tenantId);
+      if (policy) {
+        console.log(chalk.gray(`   Policy: ${JSON.stringify(policy)}`));
+      } else {
+        console.log(chalk.gray('   Policy: <none>'));
+      }
+      const effectiveQuota = await manager.getQuota(tenantId);
+      if (effectiveQuota) {
+        console.log(chalk.gray(`   Effective quota: ${JSON.stringify(effectiveQuota)}`));
+      } else {
+        console.log(chalk.gray('   Effective quota: <none>'));
+      }
+      const defaultQuota = manager.getDefaultQuota();
+      if (defaultQuota) {
+        console.log(chalk.gray(`   Default quota: ${JSON.stringify(defaultQuota)}`));
+      }
+    });
+  }));
+
+tenantCmd
+  .command('quota')
+  .argument('<tenantId>', 'Tenant identifier to update')
+  .option('--max-concurrent <count>', 'Maximum concurrent tasks for the tenant')
+  .option('--cpu <percent>', 'Optional CPU utilisation limit percentage (0-100)')
+  .option('--memory <mb>', 'Optional memory limit in megabytes (>0)')
+  .option('--clear', 'Remove tenant-specific quota overrides and fall back to defaults')
+  .option('--token <token>', 'API token with tenant.write permission')
+  .action(handleCommand('tenant.quota', async (tenantId: string, options) => {
+    await useSystem('tenant quota', async (system) => {
+      if (!system.isMultiTenancyEnabled()) {
+        console.log(chalk.yellow('Multi-tenancy is disabled. Set CODEX_TENANCY_ENABLED=1 to enable tenant commands.'));
+        return;
+      }
+      await authorizeTenantAction(system, 'write', options?.token);
+      const manager = system.getTenantManager();
+      const tenant = await manager.getTenant(tenantId);
+      if (!tenant) {
+        console.log(chalk.yellow(`Tenant "${tenantId}" not found.`));
+        return;
+      }
+
+      const hasQuotaFlags =
+        options.clear ||
+        options.maxConcurrent !== undefined ||
+        options.cpu !== undefined ||
+        options.memory !== undefined;
+
+      if (!hasQuotaFlags) {
+        console.log(chalk.yellow('Provide at least one quota flag (--max-concurrent/--cpu/--memory) or use --clear.'));
+        return;
+      }
+
+      if (options.clear && (options.maxConcurrent !== undefined || options.cpu !== undefined || options.memory !== undefined)) {
+        throw new Error('Cannot combine --clear with quota values.');
+      }
+
+      const policyInput: { tenantId: string; quota?: TenantQuota | null } = { tenantId };
+
+      if (options.clear) {
+        policyInput.quota = null;
+      } else {
+        const quota: TenantQuota = {};
+        if (options.maxConcurrent !== undefined) {
+          const maxConcurrent = parseInteger(options.maxConcurrent, 'maxConcurrent');
+          if (maxConcurrent < 0) {
+            throw new Error('maxConcurrent must be a non-negative integer');
+          }
+          quota.maxConcurrentTasks = maxConcurrent;
+        }
+        if (options.cpu !== undefined) {
+          const cpu = Number.parseFloat(options.cpu);
+          if (!Number.isFinite(cpu) || cpu <= 0 || cpu > 100) {
+            throw new Error('cpu must be a number between 0 and 100');
+          }
+          quota.cpuLimitPercent = cpu;
+        }
+        if (options.memory !== undefined) {
+          const memory = Number.parseFloat(options.memory);
+          if (!Number.isFinite(memory) || memory <= 0) {
+            throw new Error('memory must be a number greater than 0');
+          }
+          quota.memoryLimitMb = memory;
+        }
+        if (!Object.keys(quota).length) {
+          console.log(chalk.yellow('No quota fields provided. Use --clear to remove overrides.'));
+          return;
+        }
+        policyInput.quota = quota;
+      }
+
+      const updatedPolicy = await manager.upsertPolicy(policyInput);
+      const effectiveQuota = await manager.getQuota(tenantId);
+      const defaultQuota = manager.getDefaultQuota();
+
+      console.log(chalk.green(`✅ Tenant "${tenantId}" quota updated`));
+      const policyQuota = updatedPolicy.quota === null ? '<default>' : JSON.stringify(updatedPolicy.quota);
+      console.log(chalk.gray(`   Policy quota: ${policyQuota}`));
+      console.log(
+        chalk.gray(
+          `   Effective quota: ${effectiveQuota ? JSON.stringify(effectiveQuota) : '<none>'}`
+        )
+      );
+      if (defaultQuota) {
+        console.log(chalk.gray(`   Default quota: ${JSON.stringify(defaultQuota)}`));
+      }
+    });
+  }));
+
 // Tools commands
-const toolsCmd = program.command('tools').description('Tool optimisation utilities');
+const toolsCmd = decorateCommandHelp(
+  program
+    .command('tools')
+    .description('Score tools, review usage, and tune optimizer hints'),
+  {
+    title: 'Tool Shed Sessions',
+    subtitle: 'Curate which utilities agents should vibe with and why.',
+    context: [
+      'Keeping track of tool success mirrors managing feature flags and A/B tests.',
+      'Scoring candidates teaches prompt engineers to rely on telemetry, not hunches.'
+    ],
+    skills: [
+      'Interpret precision/recall style metrics to choose the best automation helpers.',
+      'Log feedback loops so the optimizer can learn like a seasoned mentor.'
+    ],
+    vibeTips: [
+      'Treat every tool like a pedal in a guitar rig—only keep the pedals that enhance the set.'
+    ],
+    actions: [
+      { command: 'codex-synaptic tools score', description: 'Evaluate tool candidates with ranking telemetry output.' },
+      { command: 'codex-synaptic tools history', description: 'Review the tool performances to decide who stays on the roster.' }
+    ],
+    docs: [
+      { label: 'docs/tools/optimizer.md', description: 'Understand the scoring heuristics and how to extend them.' }
+    ]
+  }
+);
 
 toolsCmd
   .command('score')
@@ -843,6 +2304,7 @@ toolsCmd
   .argument('<prompt>', 'Prompt to evaluate')
   .requiredOption('-c, --candidates <file>', 'Path to JSON file containing tool candidate definitions')
   .option('-l, --history <count>', 'History limit for telemetry lookback', '200')
+  .option('--json', 'Output tool scoring results as JSON')
   .action(handleCommand('tools.score', async (prompt: string, options) => {
     const candidates = loadToolCandidates(options.candidates);
     const historyLimit = Number.parseInt(options.history ?? '200', 10);
@@ -852,28 +2314,41 @@ toolsCmd
       const scores = await optimizer.evaluateTools(prompt, candidates);
 
       if (!scores.length) {
-        console.log(chalk.gray('No tool candidates available for scoring.'));
+        if (options.json) {
+          console.log(JSON.stringify({ prompt, scores: [], generatedAt: new Date().toISOString() }, null, 2));
+        } else {
+          console.log(chalk.gray('No tool candidates available for scoring.'));
+        }
         return;
       }
 
-      console.log(chalk.blue('🎯 Tool Scoring Results'));
-      scores.forEach((score, index) => {
-        console.log(chalk.cyan(`\n${index + 1}. ${score.toolId}`));
-        console.log(chalk.gray(`   Score: ${(score.score * 100).toFixed(1)}%`));
-        console.log(chalk.gray(`   Confidence: ${(score.confidence * 100).toFixed(1)}%`));
-        if (score.usage) {
-          console.log(
-            chalk.gray(
-              `   Usage: ${score.usage.success}/${score.usage.total} success, avg latency ${score.usage.averageLatencyMs.toFixed(1)}ms`
-            )
-          );
-          if (score.usage.lastInvokedAt) {
-            console.log(chalk.gray(`   Last invoked: ${score.usage.lastInvokedAt}`));
+      if (options.json) {
+        const payload = {
+          prompt,
+          generatedAt: new Date().toISOString(),
+          scores
+        };
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(chalk.blue('🎯 Tool Scoring Results'));
+        scores.forEach((score, index) => {
+          console.log(chalk.cyan(`\n${index + 1}. ${score.toolId}`));
+          console.log(chalk.gray(`   Score: ${(score.score * 100).toFixed(1)}%`));
+          console.log(chalk.gray(`   Confidence: ${(score.confidence * 100).toFixed(1)}%`));
+          if (score.usage) {
+            console.log(
+              chalk.gray(
+                `   Usage: ${score.usage.success}/${score.usage.total} success, avg latency ${score.usage.averageLatencyMs.toFixed(1)}ms`
+              )
+            );
+            if (score.usage.lastInvokedAt) {
+              console.log(chalk.gray(`   Last invoked: ${score.usage.lastInvokedAt}`));
+            }
           }
-        }
-        console.log(chalk.gray(`   Signals: ${score.signals.join(', ')}`));
-        score.reasoning.forEach((reason) => console.log(chalk.gray(`     • ${reason}`)));
-      });
+          console.log(chalk.gray(`   Signals: ${score.signals.join(', ')}`));
+          score.reasoning.forEach((reason) => console.log(chalk.gray(`     • ${reason}`)));
+        });
+      }
     });
   }));
 
@@ -954,7 +2429,33 @@ toolsCmd
   }));
 
 // Reasoning planner commands
-const reasoningCmd = program.command('reasoning').description('Reasoning planner and checkpoint management');
+const reasoningCmd = decorateCommandHelp(
+  program
+    .command('reasoning')
+    .description('Design reasoning plans and manage checkpoint archives'),
+  {
+    title: 'Reasoning Lab',
+    subtitle: 'Sketch tree-of-thought plans and checkpoint them like a story arc.',
+    context: [
+      'Structured reasoning plans tame hallucinations just like architecture reviews corral scope creep.',
+      'Checkpointing echoes incident retros—documenting turning points keeps teams aligned.'
+    ],
+    skills: [
+      'Compare ToT and ReAct planning styles so you can match cognition patterns to unique prompts.',
+      'Balance consensus gates with autonomy the way senior leads juggle PR approvals.'
+    ],
+    vibeTips: [
+      'Treat every branch like a synth track—solo the best one but keep the stems archived.'
+    ],
+    actions: [
+      { command: 'codex-synaptic reasoning plan "Stabilize the repo"', description: 'Spin up a quick ToT scaffold and inspect the best branch rationale.' },
+      { command: 'codex-synaptic reasoning history', description: 'Review recent plans and see how checkpoints tell the narrative.' }
+    ],
+    docs: [
+      { label: 'docs/tree-of-thought.md', description: 'Deep dive into the ToT patterns this CLI surfaces.' }
+    ]
+  }
+);
 
 reasoningCmd
   .command('plan')
@@ -965,6 +2466,7 @@ reasoningCmd
   .option('--branches <count>', 'Tree-of-Thought branch count')
   .option('--iterations <count>', 'Monte Carlo iteration count')
   .option('--seed <number>', 'Random seed for deterministic plans')
+  .option('--json', 'Output reasoning plan metadata as JSON')
   .action(handleCommand('reasoning.plan', async (prompt: string, options) => {
     await useSystem('reasoning plan', async (system) => {
       const planOptions: ReasoningPlanOptions = {
@@ -979,16 +2481,20 @@ reasoningCmd
       };
 
       const result = await system.createReasoningPlan(prompt, planOptions);
-      console.log(chalk.green('✅ Reasoning plan created'));
-      console.log(chalk.gray(`   Plan ID: ${result.planId}`));
-      console.log(chalk.gray(`   Plan Type: ${result.planType}`));
-      console.log(chalk.gray(`   Status: ${result.status}`));
-      if (result.consensus?.required) {
-        console.log(chalk.gray(`   Consensus proposal: ${result.consensus.proposalId ?? 'pending'}`));
-      }
-      if (result.totPlan) {
-        console.log(chalk.gray(`   Summary: ${result.totPlan.summary}`));
-        console.log(chalk.gray(`   Best branch: ${result.totPlan.bestBranch.label} (score ${(result.totPlan.bestBranch.score * 100).toFixed(1)}%)`));
+      if (options.json) {
+        console.log(JSON.stringify({ prompt, plan: result }, null, 2));
+      } else {
+        console.log(chalk.green('✅ Reasoning plan created'));
+        console.log(chalk.gray(`   Plan ID: ${result.planId}`));
+        console.log(chalk.gray(`   Plan Type: ${result.planType}`));
+        console.log(chalk.gray(`   Status: ${result.status}`));
+        if (result.consensus?.required) {
+          console.log(chalk.gray(`   Consensus proposal: ${result.consensus.proposalId ?? 'pending'}`));
+        }
+        if (result.totPlan) {
+          console.log(chalk.gray(`   Summary: ${result.totPlan.summary}`));
+          console.log(chalk.gray(`   Best branch: ${result.totPlan.bestBranch.label} (score ${(result.totPlan.bestBranch.score * 100).toFixed(1)}%)`));
+        }
       }
     });
   }));
@@ -1138,7 +2644,33 @@ const cheatCodeLibrary: Record<string, { description: string; prompt: string; us
 };
 
 // Router commands
-const routerCmd = program.command('router').description('Routing policy management and evaluation');
+const routerCmd = decorateCommandHelp(
+  program
+    .command('router')
+    .description('Inspect routing policies and run evaluation simulators'),
+  {
+    title: 'Routing Control Room',
+    subtitle: 'Shape how prompts pick their perfect agent wingman.',
+    context: [
+      'Routing policies echo API gateways deciding which microservice wakes up for a request.',
+      'Simulation loops mirror canary rollouts—validate rules before live traffic arrives.'
+    ],
+    skills: [
+      'Translate natural language cues into rule engines that stay explainable.',
+      'Blend tool scoring with agent preferences like orchestrating an air-traffic deck.'
+    ],
+    vibeTips: [
+      'Think of agents as DJs and routing policies as the set list you curate for the night.'
+    ],
+    actions: [
+      { command: 'codex-synaptic router evaluate "Refactor the mesh service"', description: 'Preview which agent type the rules crown as lead.' },
+      { command: 'codex-synaptic router rules --list', description: 'Audit rule precedence and see who is really running the show.' }
+    ],
+    docs: [
+      { label: 'docs/architecture.md', description: 'Review how routing fits into the broader Codex-Synaptic topology.' }
+    ]
+  }
+);
 
 routerCmd
   .command('evaluate')
@@ -1150,6 +2682,7 @@ routerCmd
   .option('--tools <file>', 'Tool candidate JSON file for optimizer recommendations')
   .option('--tool-prompt <prompt>', 'Override prompt used for tool scoring')
   .option('-v, --verbose', 'Show detailed evaluation information')
+  .option('--json', 'Output routing evaluation as JSON')
   .action(handleCommand('router.evaluate', async (prompt, options) => {
     await useSystem('router evaluate', async (system) => {
       const router = new RoutingPolicyService(undefined, {
@@ -1157,16 +2690,20 @@ routerCmd
       });
 
       try {
-        console.log(chalk.cyan('🔄 Evaluating routing for prompt...'));
+        if (!options.json) {
+          console.log(chalk.cyan('🔄 Evaluating routing for prompt...'));
+        }
 
         const toolCandidates = options.tools ? loadToolCandidates(options.tools) : undefined;
+        const contextFeedforward = options.context ? loadFileThroughFeedforward(options.context) : undefined;
+
         const request = {
           prompt,
           toolPrompt: options.toolPrompt ? String(options.toolPrompt) : undefined,
           toolCandidates,
-          context: options.context
+          context: contextFeedforward
             ? {
-                fileContext: JSON.stringify(parseFileContent(options.context))
+                fileContext: contextFeedforward.toJson()
               }
             : undefined,
           constraints: {
@@ -1176,6 +2713,15 @@ routerCmd
         } as RoutingRequest;
 
         const evaluation = await router.evaluateRouting(request);
+
+        if (options.json) {
+          const payload = {
+            prompt,
+            evaluation
+          };
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
 
         console.log(chalk.green(`✅ Routing evaluation completed`));
         console.log(`🎯 Recommended agent: ${chalk.bold(evaluation.agentType)}`);
@@ -1325,7 +2871,33 @@ routerCmd
   }));
 
 // Agent commands
-const agentCmd = program.command('agent').description('Agent management commands');
+const agentCmd = decorateCommandHelp(
+  program
+    .command('agent')
+    .description('List, inspect, and operate on registered agents'),
+  {
+    title: 'Agent Green Room',
+    subtitle: 'Manage the talent roster powering Codex-Synaptic sessions.',
+    context: [
+      'Agent registries behave like service catalogs—knowing who is available unlocks quick routing decisions.',
+      'Replica management echoes Kubernetes deployments where you dial the scale knob per workload.'
+    ],
+    skills: [
+      'Read capability manifests so you can pair prompts with the right specialties.',
+      'Inspect runtime stats to practice proactive incident response.'
+    ],
+    vibeTips: [
+      'Treat status like backstage access—only green-light the performers that keep the crowd hyped.'
+    ],
+    actions: [
+      { command: 'codex-synaptic agent list', description: 'See the current cast and their capabilities at a glance.' },
+      { command: 'codex-synaptic agent deploy --type planner --replicas 2', description: 'Scale a specialty when the storyline demands more hands.' }
+    ],
+    docs: [
+      { label: 'docs/architecture/multi-tenancy.md', description: 'Understand how agents plug into the broader orchestration surface.' }
+    ]
+  }
+);
 
 agentCmd
   .command('list')
@@ -1384,7 +2956,33 @@ agentCmd
   }));
 
 // Mesh commands
-const meshCmd = program.command('mesh').description('Neural mesh management');
+const meshCmd = decorateCommandHelp(
+  program
+    .command('mesh')
+    .description('Steer neural mesh topology and runtime windows'),
+  {
+    title: 'Mesh Control Tower',
+    subtitle: 'Shape connectivity so agents riff off each other without feedback whine.',
+    context: [
+      'Topology tweaks mirror distributed systems tuning—small graph changes can unlock huge resilience gains.',
+      'Connection caps feel like circuit breakers, protecting clusters from overload spirals.'
+    ],
+    skills: [
+      'Experiment with node counts to understand scaling curves before production traffic hits.',
+      'Read mesh status like a network map, spotting hot spots before they melt servers.'
+    ],
+    vibeTips: [
+      'Imagine each node as a synth module—rewire the patch bay until the groove feels tight.'
+    ],
+    actions: [
+      { command: 'codex-synaptic mesh configure --nodes 7 --topology ring', description: 'Prototype resilience profiles with alternate graph layouts.' },
+      { command: 'codex-synaptic mesh status', description: 'Glance at connectivity health after the adjustments land.' }
+    ],
+    docs: [
+      { label: 'docs/architecture.md', description: 'See how the neural mesh underpins the wider orchestration mesh.' }
+    ]
+  }
+);
 
 meshCmd
   .command('configure')
@@ -1413,7 +3011,33 @@ meshCmd
   }));
 
 // Swarm commands
-const swarmCmd = program.command('swarm').description('Swarm coordination commands');
+const swarmCmd = decorateCommandHelp(
+  program
+    .command('swarm')
+    .description('Coordinate swarm optimizers and runtime limits'),
+  {
+    title: 'Swarm Playground',
+    subtitle: 'Tune optimisation algorithms until the fitness curve sings.',
+    context: [
+      'Swarm strategies mirror real ML hyperparameter sweeps—small knobs change convergence speed.',
+      'Runtime guards behave like autoscaling policies, keeping compute budget aligned with demand.'
+    ],
+    skills: [
+      'Compare PSO, ACO, and hybrid flows so you can pick the right optimiser per mission.',
+      'Read status telemetry to decide when to stop or escalate experiments.'
+    ],
+    vibeTips: [
+      'Picture a flock of drones—you choreograph the formation so they never collide mid-air.'
+    ],
+    actions: [
+      { command: 'codex-synaptic swarm start --algorithm pso --objective latency', description: 'Launch an experiment and observe how objectives shift the run.' },
+      { command: 'codex-synaptic swarm status', description: 'Check convergence stats without popping open a profiler.' }
+    ],
+    docs: [
+      { label: 'docs/guides/adaptive-tooling.md', description: 'Learn how swarm tuning feeds into adaptive tooling decisions.' }
+    ]
+  }
+);
 
 swarmCmd
   .command('start')
@@ -1449,7 +3073,33 @@ swarmCmd
   }));
 
 // Bridge commands
-const bridgeCmd = program.command('bridge').description('Bridge management');
+const bridgeCmd = decorateCommandHelp(
+  program
+    .command('bridge')
+    .description('Manage MCP and A2A bridge connections'),
+  {
+    title: 'Bridge Ops Bay',
+    subtitle: 'Wire Codex-Synaptic into external agents without dropping packets.',
+    context: [
+      'Bridging flows resemble message buses—payload contracts matter as much as bandwidth.',
+      'Testing connections upfront saves the late-night scramble when integrations misbehave.'
+    ],
+    skills: [
+      'Design payload schemas that play nice with remote runtimes.',
+      'Trace message flow end-to-end to sharpen your distributed debugging instincts.'
+    ],
+    vibeTips: [
+      'Imagine you are splicing two mixtapes—levels need to match before the crossfade.'
+    ],
+    actions: [
+      { command: 'codex-synaptic bridge mcp-send --endpoint docs --payload "{\\"ping\\":true}"', description: 'Dry-run MCP connectivity and inspect the reply contract.' },
+      { command: 'codex-synaptic bridge a2a-send agent-1 --message "{\\"op\\":\\"ping\\"}"', description: 'Send a friendly ping across the agent-to-agent bus.' }
+    ],
+    docs: [
+      { label: 'docs/mcp/README.md', description: 'Connector architecture, auth models, and troubleshooting tips.' }
+    ]
+  }
+);
 
 bridgeCmd
   .command('mcp-send')
@@ -1480,7 +3130,33 @@ bridgeCmd
   }));
 
 // Consensus commands
-const consensusCmd = program.command('consensus').description('Consensus management commands');
+const consensusCmd = decorateCommandHelp(
+  program
+    .command('consensus')
+    .description('Drive consensus configuration and vote flows'),
+  {
+    title: 'Consensus Forum',
+    subtitle: 'Tune decision engines so every proposal gets a fair hearing.',
+    context: [
+      'Consensus settings mirror distributed databases—timeouts and quorum math decide stability.',
+      'Stake and voting flows teach the same lessons as DAO governance and Raft clusters.'
+    ],
+    skills: [
+      'Analyse telemetry to spot Byzantine failures before they trigger incidents.',
+      'Experiment with mechanisms to map requirements to Raft, BFT, or proof-of-stake models.'
+    ],
+    vibeTips: [
+      'Think of it as band democracy—set the rules so solos land on beat without chaos.'
+    ],
+    actions: [
+      { command: 'codex-synaptic consensus mode --set bft --timeout 8000', description: 'Reconfigure the decision engine and feel the latency shift.' },
+      { command: 'codex-synaptic consensus telemetry --limit 5', description: 'Review recent proposals and learn from their vote breakdown.' }
+    ],
+    docs: [
+      { label: 'docs/architecture/multi-tenancy.md', description: 'Understand how consensus supports guardrails across tenants.' }
+    ]
+  }
+);
 
 consensusCmd
   .command('propose')
@@ -1644,7 +3320,33 @@ consensusCmd
   }));
 
 // Task commands
-const taskCmd = program.command('task').description('Workflow and task management');
+const taskCmd = decorateCommandHelp(
+  program
+    .command('task')
+    .description('Kick off workflows and inspect task lifecycle'),
+  {
+    title: 'Task Dispatch Desk',
+    subtitle: 'Launch workflows and watch the stage cues roll in.',
+    context: [
+      'Workflow prompts behave like runbooks—clear intent yields predictable automation.',
+      'Recent task views feel like incident timelines, helping you narrate outcomes with receipts.'
+    ],
+    skills: [
+      'Author prompts that pair nicely with Codex context blocks.',
+      'Interpret stage events to debug long-running flows without cracking open logs.'
+    ],
+    vibeTips: [
+      'Cue tasks like tracks in a DJ set—set the energy, then let the automation groove.'
+    ],
+    actions: [
+      { command: 'codex-synaptic task submit "Audit the instructions cache"', description: 'Kick off a workflow and stream its stage-by-stage story.' },
+      { command: 'codex-synaptic task recent', description: 'Grab a quick highlight reel of what just shipped.' }
+    ],
+    docs: [
+      { label: 'docs/guides/quick-start.md', description: 'Follow the end-to-end workflow primer for Codex-Synaptic.' }
+    ]
+  }
+);
 
 taskCmd
   .command('submit')
@@ -1704,12 +3406,42 @@ taskCmd
   }));
 
 // Hive-mind commands (leveraging existing workflow orchestration)
-const hiveMindCmd = program.command('hive-mind').description('Hive-mind coordination and spawning');
+const hiveMindCmd = decorateCommandHelp(
+  program
+    .command('hive-mind')
+    .description('Launch hive-mind workflows and Codex passthroughs'),
+  {
+    title: 'Hive Control Stage',
+    subtitle: 'Summon squads of agents and channel Codex context on demand.',
+    context: [
+      'Hive-mind orchestration blends task graphs with swarm tuning—perfect rehearsal for complex delivery pipelines.',
+      'Codex passthrough options show how docs-as-context sharpens LLM reasoning.'
+    ],
+    skills: [
+      'Balance agent counts, mesh topology, and consensus gates without drowning in flags.',
+      'Dry-run prompts to preview the Codex context story before committing compute.'
+    ],
+    vibeTips: [
+      'Approach it like stage management—lights, sound, and dancers all need their cues.'
+    ],
+    actions: [
+      { command: 'codex-synaptic hive-mind spawn "Stabilize the mesh adapter" --codex', description: 'Launch a Codex-boosted workflow with the vibe-rich defaults.' },
+      { command: 'codex-synaptic hive-mind spawn "Dry run" --dry-run --yaml', description: 'Preview the context payload without firing agents.' }
+    ],
+    docs: [
+      { label: 'docs/cli/codex-passthrough.md', description: 'Understand Codex passthrough flags and interactive guardrails.' }
+    ]
+  }
+);
 
 hiveMindCmd
   .command('spawn')
   .description('Spawn a coordinated hive-mind workflow from a prompt')
   .argument('<prompt...>', 'Natural language description of the task/goal')
+  .option('--strategy <type>', 'Coordination strategy (classic|goap)', 'classic')
+  .option('--goap-profile <id>', 'GOAP manifest identifier to execute when using the goap strategy')
+  .option('--goap-goal <id>', 'Override GOAP goal identifier for the selected manifest')
+  .option('--goap-dry-run', 'Preview GOAP actions without mutating the filesystem')
   .option('--codex', 'Augment the prompt with Codex context from AGENTS.md, README, and local artifacts')
   .option('--agents <count>', 'Number of agents to target', '5')
   .option('--max-agents <count>', 'Maximum number of agents allowed', '10')
@@ -1732,6 +3464,63 @@ hiveMindCmd
       throw new Error('Prompt cannot be empty');
     }
 
+    const originalPrompt = prompt;
+    const strategy = (options.strategy ?? 'classic').toLowerCase();
+
+    if (strategy === 'goap') {
+      await useSystem('hive-mind goap', async (system) => {
+        let manifest = options.goapProfile
+          ? await goapRegistry.getManifest(options.goapProfile)
+          : await goapRegistry.matchManifest(originalPrompt);
+
+        if (!manifest && options.goapProfile) {
+          throw new Error(`GOAP manifest "${options.goapProfile}" was not found in config/goap.`);
+        }
+
+        if (!manifest) {
+          throw new Error(
+            'No GOAP manifest matched the prompt. Provide --goap-profile to select a manifest explicitly.'
+          );
+        }
+
+        const goalId = options.goapGoal ?? manifest.defaultGoal ?? manifest.goals[0]?.id;
+        if (!goalId) {
+          throw new Error(`GOAP manifest ${manifest.id} does not define a usable goal.`);
+        }
+
+        console.log(
+          chalk.blue(
+            `🧭 Executing GOAP profile ${manifest.metadata?.name ?? manifest.id} (goal: ${goalId})`
+          )
+        );
+
+        const executor = new GoapExecutor(system);
+        const result = await executor.execute(manifest, {
+          goalId,
+          prompt: originalPrompt,
+          dryRun: Boolean(options.goapDryRun)
+        });
+
+        console.log(
+          chalk.green(
+            `✅ GOAP workflow complete — ${result.actionsCompleted}/${result.totalActions} actions executed.`
+          )
+        );
+
+        if (result.artifacts.length) {
+          console.log(chalk.cyan('📦 Generated artifacts:'));
+          for (const artifact of result.artifacts) {
+            console.log(chalk.gray(`  • ${artifact}`));
+          }
+        }
+      });
+      return;
+    }
+
+    if (strategy !== 'classic') {
+      throw new Error(`Unsupported hive-mind strategy: ${strategy}`);
+    }
+
     const autoAttachCodex = shouldAutoAttachCodexContext(prompt);
     const codexRequested = options.codex || autoAttachCodex;
 
@@ -1739,7 +3528,6 @@ hiveMindCmd
       throw new Error('--dry-run can only be used together with --codex');
     }
 
-    const originalPrompt = prompt;
     let codexContext: CodexContext | undefined;
     let codexMetadata: CodexContextAggregationMetadata | undefined;
     let codexEnvelope: CodexPromptEnvelope | undefined;
@@ -2104,7 +3892,32 @@ hiveMindCmd
     });
   }));
 
-const observabilityCmd = program.command('observability').description('Observability helpers and templates');
+const observabilityCmd = decorateCommandHelp(
+  program
+    .command('observability')
+    .description('Export metrics, dashboards, and tracing templates'),
+  {
+    title: 'Telemetry Lounge',
+    subtitle: 'Spin up dashboards and capture metrics before the trail goes cold.',
+    context: [
+      'Dashboards are backstage monitors—build them early to avoid late-night blind hunts.',
+      'Metrics exports double as compliance receipts and fine-tuning datasets alike.'
+    ],
+    skills: [
+      'Pick the golden signals that actually reflect user experience.',
+      'Automate observability scaffolding so teams never start from blank graphs.'
+    ],
+    vibeTips: [
+      'Treat charts like album art—make the narrative obvious even at a glance.'
+    ],
+    actions: [
+      { command: 'codex-synaptic observability template', description: 'Generate a Grafana-ready baseline in seconds.' }
+    ],
+    docs: [
+      { label: 'docs/observability/README.md', description: 'Deep dive on metrics, dashboards, and tracing flows.' }
+    ]
+  }
+);
 
 observabilityCmd
   .command('template')
@@ -2117,7 +3930,33 @@ observabilityCmd
     console.log(chalk.gray('  Use this as a starting point for your telemetry dashboards.'));
   }));
 
-const envCmd = program.command('env').description('Environment and service management');
+const envCmd = decorateCommandHelp(
+  program
+    .command('env')
+    .description('Control local services, GPU detection, and env scaffolding'),
+  {
+    title: 'Environment Ops Bar',
+    subtitle: 'Spin up local stacks and stay ahead of service drift.',
+    context: [
+      'Service profiles behave like docker-compose presets—perfect rehearsal for staging rollouts.',
+      'Health-check waits train you to respect readiness gates before unleashing traffic.'
+    ],
+    skills: [
+      'Coordinate multiple docker-compose surfaces without losing track of logs.',
+      'Read status reports to troubleshoot infra hiccups before they block the team.'
+    ],
+    vibeTips: [
+      'Approach profiles like pedalboard presets—switch the stack to fit the jam.'
+    ],
+    actions: [
+      { command: 'codex-synaptic env up dev-core', description: 'Boot the default profile and confirm health checks pass.' },
+      { command: 'codex-synaptic env plan', description: 'Preview compose files so you know what each preset activates.' }
+    ],
+    docs: [
+      { label: 'docs/architecture.md', description: 'See how local services mirror the production topology.' }
+    ]
+  }
+);
 
 envCmd
   .command('list')
@@ -2186,7 +4025,33 @@ ${name}`));
     });
   });
 
-const memoryCmd = program.command('memory').description('Codex memory utilities');
+const memoryCmd = decorateCommandHelp(
+  program
+    .command('memory')
+    .description('Inspect memory stores, TTLs, and usage snapshots'),
+  {
+    title: 'Memory Archive',
+    subtitle: 'Browse what the platform remembers and when it expires.',
+    context: [
+      'Vector and document stores fuel retrieval workflows—stay aware of what data you are shipping.',
+      'TTL hygiene mirrors cache management in production systems and prevents stale context.'
+    ],
+    skills: [
+      'Audit namespaces to verify sensitive data is scoped correctly.',
+      'Sample entries to design better prompts and follow-up workflows.'
+    ],
+    vibeTips: [
+      'Treat the archive like a crate-digging session—pull the right samples for your next mix.'
+    ],
+    actions: [
+      { command: 'codex-synaptic memory status', description: 'Glance at namespace counts and confirm TTL coverage.' },
+      { command: 'codex-synaptic memory list tot_runs --limit 3', description: 'Review Tree-of-Thought history before planning the sequel.' }
+    ],
+    docs: [
+      { label: 'docs/observability/README.md', description: 'Telemetry storage notes overlap with memory maintenance tips.' }
+    ]
+  }
+);
 
 memoryCmd
   .command('status')
@@ -2233,7 +4098,33 @@ memoryCmd
     });
   }));
 
-const cheatsCmd = program.command('cheats').description('Codex-Synaptic cheat code combos');
+const cheatsCmd = decorateCommandHelp(
+  program
+    .command('cheats')
+    .description('Run curated cheat-code playbooks for rapid ops'),
+  {
+    title: 'Cheat Code Cabinet',
+    subtitle: 'Trigger pre-baked playbooks when you need quick wins.',
+    context: [
+      'Cheat codes package institutional knowledge—share them to shrink onboarding time.',
+      'Syncing the compendium resembles sharing runbooks or terraform modules in real teams.'
+    ],
+    skills: [
+      'Curate reusable prompts that capture best practices and guardrails.',
+      'Publish knowledge artifacts to memory to keep the squad in sync.'
+    ],
+    vibeTips: [
+      'Treat cheats like easter eggs—name them for quick recall and a dash of fun.'
+    ],
+    actions: [
+      { command: 'codex-synaptic cheats list', description: 'Discover the current catalog of rapid-fire boosts.' },
+      { command: 'codex-synaptic cheats sync', description: 'Push the cheat compendium into shared memory for teammates.' }
+    ],
+    docs: [
+      { label: 'docs/codex-synaptic-cheat-codes.md', description: 'Source material for every cheat code in the library.' }
+    ]
+  }
+);
 
 cheatsCmd
   .command('list')
@@ -2373,10 +4264,35 @@ hiveMindCmd
   }));
 
 // Interactive mode
-program
-  .command('interactive')
-  .alias('i')
-  .description('Start interactive mode')
+const interactiveCmd = decorateCommandHelp(
+  program
+    .command('interactive')
+    .alias('i')
+    .description('Start interactive mode'),
+  {
+    title: 'Interactive Lounge',
+    subtitle: 'Tap through dashboards and menus without memorising flags.',
+    context: [
+      'Interactive shells mirror internal tooling consoles—perfect for demos and onboarding.',
+      'Menu flows showcase how to expose automation safely to non-CLI teammates.'
+    ],
+    skills: [
+      'Navigate system insights quickly to triage incidents or live-share status.',
+      'Experiment with commands in a guided flow before scripting them.'
+    ],
+    vibeTips: [
+      'Use it like a control surface—flip between modules and keep the music rolling.'
+    ],
+    actions: [
+      { command: 'codex-synaptic interactive', description: 'Launch the console UI and explore each menu at your pace.' }
+    ],
+    docs: [
+      { label: 'docs/cli/interactive-mode-enhancements.md', description: 'Feature tour and roadmap for the interactive cockpit.' }
+    ]
+  }
+);
+
+interactiveCmd
   .action(handleCommand('interactive', async () => {
     const previousConsoleLevel = rootLogger.getConsoleLevel();
     rootLogger.setConsoleLevel(LogLevel.WARN);
@@ -2384,49 +4300,80 @@ program
       await useSystem('interactive', async (system) => {
         console.log(chalk.green('🎛️  Welcome to Codex-Synaptic Interactive Mode!'));
         renderInteractiveHints();
+        await renderSystemDashboard(system);
         let exit = false;
         while (!exit) {
-          const { action } = await inquirer.prompt([
+          const { action } = await inquirer.prompt<{ action: string }>([
             {
               type: 'list',
               name: 'action',
-              message: 'Select an action:',
-              choices: [
-                'System status',
-                'List agents',
-                'Submit workflow',
-                'Show telemetry',
-                'Exit'
-              ]
+              message: 'Main menu:',
+              choices: (() => {
+                const items: Array<{ name: string; value: string }> = [
+                  { name: 'System dashboard & controls', value: 'system' },
+                  { name: 'Agent operations', value: 'agents' },
+                  { name: 'Neural mesh controls', value: 'mesh' },
+                  { name: 'Swarm intelligence', value: 'swarm' },
+                  { name: 'Hive-mind orchestration', value: 'hive' },
+                  { name: 'Consensus management', value: 'consensus' },
+                  { name: 'Task & router workflows', value: 'tasks' },
+                  { name: 'Telemetry snapshot', value: 'telemetry' },
+                  { name: 'Run CLI command', value: 'command' }
+                ];
+
+                if (backgroundJobs.size) {
+                  items.push({
+                    name: `View background commands (${backgroundJobs.size})`,
+                    value: 'background'
+                  });
+                }
+
+                items.push({ name: 'Exit (keep system running)', value: 'exit' });
+                items.push({ name: 'Exit & shutdown system', value: 'shutdown' });
+
+                return items;
+              })()
             }
           ]);
 
           switch (action) {
-            case 'System status':
+            case 'system':
+              await interactiveSystemMenu();
+              break;
+            case 'agents':
+              await interactiveAgentsMenu();
+              break;
+            case 'mesh':
+              await interactiveMeshMenu();
+              break;
+            case 'swarm':
+              await interactiveSwarmMenu();
+              break;
+            case 'hive':
+              await interactiveHiveMindMenu();
+              break;
+            case 'consensus':
+              await interactiveConsensusMenu();
+              break;
+            case 'tasks':
+              await interactiveTasksMenu();
+              break;
+            case 'telemetry':
               renderTelemetry();
+              console.log('');
               break;
-            case 'List agents':
-              renderAgentTable(system.getAgentRegistry().getAllAgents());
+            case 'command':
+              await interactiveCommandRunner();
               break;
-            case 'Submit workflow': {
-              const { prompt } = await inquirer.prompt([
-                {
-                  type: 'input',
-                  name: 'prompt',
-                  message: 'Workflow prompt:'
-                }
-              ]);
-              if (prompt) {
-                const outcome = await system.executeTask(prompt);
-                console.log(chalk.green('✅ Workflow complete.'));
-                console.log(outcome.summary);
-              }
+            case 'background':
+              renderBackgroundJobs();
               break;
-            }
-            case 'Show telemetry':
-              renderTelemetry();
+            case 'shutdown':
+              await session.shutdown('interactive-exit');
+              exit = true;
               break;
-            case 'Exit':
+            case 'exit':
+            default:
               exit = true;
               break;
           }
@@ -2444,15 +4391,78 @@ program.configureOutput({
 
 program.exitOverride();
 
-try {
-  program.parse();
-} catch (err: any) {
-  if (err.code === 'commander.helpDisplayed') {
-    process.exit(0);
-  } else if (err.code === 'commander.version') {
-    process.exit(0);
-  } else {
-    console.error(chalk.red('CLI Error:'), err.message);
-    process.exit(1);
+// Codex CLI Passthrough Handler
+// Intercept commands with --codex flag and pass through to Codex CLI
+// Similar to claude-flow's --claude flag
+(async () => {
+  const args = process.argv.slice(2);
+  
+  // Check if --codex flag is present (but not in hive-mind spawn or cheat which have their own --codex handling)
+  const hasCodexFlag = args.includes('--codex');
+  const isHiveMindSpawn = args[0] === 'hive-mind' && args[1] === 'spawn';
+  const isCheatCommand = args[0] === 'cheat';
+  
+  if (hasCodexFlag && !isHiveMindSpawn && !isCheatCommand) {
+    // This is a passthrough request
+    console.log(chalk.cyan('🔀 Codex CLI Passthrough Mode Activated'));
+    console.log(chalk.gray('   Enriching command with Codex-Synaptic platform context...'));
+    console.log('');
+    
+    // Remove --codex flag from args
+    const passthroughArgs = args.filter(arg => arg !== '--codex');
+    const isDryRun = passthroughArgs.includes('--dry-run');
+    const isVerbose = passthroughArgs.includes('--verbose') || passthroughArgs.includes('-v');
+    
+    // Extract command (first non-flag argument)
+    const command = passthroughArgs.find(arg => !arg.startsWith('-')) || 'help';
+    const commandArgs = passthroughArgs.filter(arg => arg !== command);
+    
+    // Check if Codex CLI is available
+    if (!isCodexCliAvailable() && !isDryRun) {
+      console.error(chalk.red('❌ Codex CLI not found!'));
+      console.error('');
+      console.error(chalk.yellow('The --codex flag requires the OpenAI Codex CLI to be installed.'));
+      console.error('');
+      console.error(chalk.cyan('Installation options:'));
+      console.error(chalk.gray('  npm install -g @openai/codex-cli'));
+      console.error(chalk.gray('  # or'));
+      console.error(chalk.gray('  brew install openai/tap/codex-cli'));
+      console.error('');
+      console.error(chalk.gray('Alternatively, remove the --codex flag to run the command locally.'));
+      process.exit(1);
+    }
+    
+    try {
+      // Get current system state if running
+      const system = session.getSystemUnsafe();
+      
+      const result = await executeCodexPassthrough({
+        command,
+        args: commandArgs,
+        system: system || undefined,
+        projectRoot: process.cwd(),
+        dryRun: isDryRun,
+        verbose: isVerbose
+      });
+      
+      process.exit(result.exitCode);
+    } catch (error: any) {
+      console.error(chalk.red('Passthrough error:'), error.message);
+      process.exit(1);
+    }
   }
-}
+  
+  // Normal command processing
+  try {
+    program.parse();
+  } catch (err: any) {
+    if (err.code === 'commander.helpDisplayed') {
+      process.exit(0);
+    } else if (err.code === 'commander.version') {
+      process.exit(0);
+    } else {
+      console.error(chalk.red('CLI Error:'), err.message);
+      process.exit(1);
+    }
+  }
+})();

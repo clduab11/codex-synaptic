@@ -71,21 +71,21 @@ Deliver adaptive tool-call optimisation and reasoning workflow orchestration tha
 - [x] REST endpoint for optimiser (`POST /v1/tools/score`).
 
 ### 3. Reasoning Planner
-- Implement planner API: `createPlan`, `checkpoint`, `resume`, `rollback`.
-- Integrate with ToT engine outputs and instruction context.
-- Persist checkpoints to memory; ensure resumability.
-- Provide CLI subcommands (`codex-synaptic reasoning plan|checkpoint|resume`).
-- Add Vitest suites validating branching, resume correctness, and persistence.
+- [x] Implement planner API: `createPlan`, `checkpoint`, `resume`, `complete`.
+- [x] Integrate with ToT engine outputs and instruction context.
+- [x] Persist checkpoints to memory; ensure resumability.
+- [x] Provide CLI subcommands (`codex-synaptic reasoning plan|checkpoint|resume|complete|history`).
+- [x] Add Vitest suites validating branching, resume correctness, and persistence.
 
 ### 4. Validation Integration
-- Modify `CodexSynapticSystem` workflow builder to insert ValidationWorker consensus gates before plan execution.
-- Ensure CLI cheat codes and hive-mind flows honour gating outcomes.
-- Add tests covering rejection paths and consensus telemetry recording.
+- [x] Modify `CodexSynapticSystem` workflow builder to insert consensus gating before workflow execution.
+- [x] Ensure CLI cheat codes and hive-mind flows honour gating outcomes.
+- [x] Add tests covering rejection paths and consensus telemetry recording.
 
 ### 5. Documentation & Operationalisation
-- Author developer guide (`docs/guides/adaptive-tooling.md`).
-- Update README quick-start and architecture docs with new commands/services.
-- Produce runbook entries for telemetry exporters and validation gating.
+- [x] Author developer guide (`docs/guides/adaptive-tooling.md`).
+- [x] Update README quick-start and architecture docs with new commands/services.
+- [x] Produce runbook entries for telemetry exporters and validation gating.
 
 ## Dependencies & Alignment
 - Reuse instruction cache outputs (`InstructionParser`) to seed optimiser/routing inputs.
@@ -112,3 +112,6 @@ Deliver adaptive tool-call optimisation and reasoning workflow orchestration tha
 - ReAcT workflow executes only after validation consensus passes.
 - Telemetry exporter emits new metrics without breaking existing dashboards.
 - All new modules covered by automated tests and integrated into lint/test pipelines.
+
+## Week 3 Backlog Preview
+- Draft backlog captured in [docs/plans/week-3-backlog.md](./week-3-backlog.md), covering multi-tenancy foundations, analytics expansion, and integrated acceptance testing.

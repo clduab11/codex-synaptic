@@ -45,6 +45,12 @@ Base execution units that perform specific computational tasks.
 - **Interface**: Persistent memory, docs/, operator channels
 - **Deployment**: Runs after ReAcT/ToT cycles to keep humans and agents aligned
 
+#### GoalPlanner
+- **Purpose**: Drive Goal-Oriented Action Planning (GOAP) workflows for complex, multi-step objectives
+- **Capabilities**: A* search-based plan synthesis, precondition/effect tracking, adaptive replanning with OODA feedback loops
+- **Interface**: GOAP action manifests under `user-projects/**/goap/`, reasoning planner APIs, consensus manager for approval gates
+- **Deployment**: Activated when tasks demand structured decomposition, such as bounty hunts, compliance remediation, or multi-domain rollouts. See the [goal-planner brief](https://gist.github.com/ruvnet/d5d7686dd96d83fc7ef8968cb57d4b57) for the canonical response template.
+
 #### AnalystWorker
 - **Purpose**: Generate heatmaps, scorecards, and analytical briefs to prioritise work
 - **Capabilities**: Metric synthesis, risk diagnostics, hotspot reporting

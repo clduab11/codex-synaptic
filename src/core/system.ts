@@ -3,6 +3,8 @@
  */
 
 import { EventEmitter } from 'events';
+import { randomUUID } from 'node:crypto';
+import type { IncomingHttpHeaders } from 'node:http';
 import { Logger, LogLevel } from './logger.js';
 import { HealthMonitor } from './health.js';
 import { AuthenticationManager, AuthMiddleware } from './auth.js';
@@ -63,6 +65,18 @@ import {
   type ReasoningCheckpointInput,
   type ReasoningCompletionOptions
 } from '../reasoning/planner.js';
+import { TenantManager } from '../tenancy/tenant-manager.js';
+import { TenantResolver } from '../tenancy/tenant-resolver.js';
+import {
+  OpenAIResponsesClient,
+  OpenAIModelRouter,
+  resolveOpenAIConfiguration,
+  isOpenAIIntegrationReady,
+  type OpenAIResolvedConfiguration,
+  type OpenAIResponseRequest,
+  type OpenAIModelCatalogEntry
+} from '../openai/index.js';
+import { OpenAIUsageMonitor, type OpenAIUsageSummary, type OpenAIUsageEvent } from '../openai/usage-monitor.js';
 
 interface WorkflowStage {
   id: string;
@@ -137,13 +151,21 @@ export class CodexSynapticSystem extends EventEmitter {
   private mcpBridge: MCPBridge;
   private a2aBridge: A2ABridge;
   private configManager: ConfigurationManager;
-  private memorySystem: CodexMemorySystem;
+  private memorySystem!: CodexMemorySystem;
   private vectorClient?: VectorClient;
-  private toolOptimizer: ToolOptimizer;
+  private toolOptimizer!: ToolOptimizer;
   private apiServer?: ApiServer;
-  private reasoningPlanner: ReasoningPlanner;
+  private reasoningPlanner!: ReasoningPlanner;
+  private tenantManager!: TenantManager;
+  private tenantResolver!: TenantResolver;
+  private tenancyEnabled = false;
   private config?: SystemConfiguration;
   private scalingConfig?: SystemConfiguration['scaling'];
+  private openaiResolved?: OpenAIResolvedConfiguration | null;
+  private openaiResponsesClient?: OpenAIResponsesClient;
+  private openaiModelRouter?: OpenAIModelRouter;
+  private openaiModelCatalog?: { fetchedAt: Date; models: OpenAIModelCatalogEntry[] };
+  private openaiUsageMonitor = new OpenAIUsageMonitor();
   private isInitialized = false;
   private isShuttingDown = false;
   private taskPromises: Map<string, TaskPromiseTracker> = new Map();
@@ -205,20 +227,15 @@ export class CodexSynapticSystem extends EventEmitter {
     
     // Initialize components
     this.agentRegistry = new AgentRegistry();
-    this.taskScheduler = new TaskScheduler(this.agentRegistry);
+    this.taskScheduler = new TaskScheduler(this.agentRegistry, this.resourceManager);
     this.neuralMesh = new NeuralMesh(this.agentRegistry);
     this.swarmCoordinator = new SwarmCoordinator(this.agentRegistry);
     this.consensusManager = new ConsensusManager(this.agentRegistry);
     this.mcpBridge = new MCPBridge();
     this.a2aBridge = new A2ABridge(this.agentRegistry);
     this.healthMonitor = new HealthMonitor(this);
-    this.memorySystem = new CodexMemorySystem();
-    this.toolOptimizer = new ToolOptimizer(this.memorySystem);
-    this.reasoningPlanner = new ReasoningPlanner({
-      memory: this.memorySystem,
-      proposeConsensus: async (data) => this.proposeConsensus('reasoning_plan', data),
-      logger: this.logger
-    });
+    const envTenancy = this.isTenancyEnvEnabled();
+    this.initializeTenancyResources(envTenancy);
     
     this.setupEventHandlers();
 
@@ -254,6 +271,9 @@ export class CodexSynapticSystem extends EventEmitter {
       await this.configManager.load();
       this.config = this.configManager.get();
       this.applyLoggerSettings();
+      const desiredTenancy = this.resolveTenancySetting();
+      await this.refreshTenancyResources(desiredTenancy);
+      await this.applyConfiguredTenancyDefaults();
       this.scalingConfig = this.config?.scaling;
       if (this.scalingConfig?.enabled) {
         this.autoScaler.updateConfig({
@@ -286,6 +306,8 @@ export class CodexSynapticSystem extends EventEmitter {
       // Initialize GPU detection
       await this.gpuManager.initialize();
       this.resourceManager.setGpuStatus(this.gpuManager.getStatus());
+
+  await this.initializeOpenAIIntegration();
 
       // Initialize storage
       await this.storageManager.initialize();
@@ -328,6 +350,512 @@ export class CodexSynapticSystem extends EventEmitter {
       this.isInitialized = false;
       this.logger.error('system', 'Failed to initialize system', undefined, error as Error);
       throw new SystemError('System initialization failed', { error: (error as Error).message });
+    } finally {
+      if (!this.isInitialized) {
+        this.authManager.stopPeriodicCleanup();
+      }
+    }
+  }
+
+  private async initializeOpenAIIntegration(): Promise<void> {
+    this.openaiResponsesClient = undefined;
+    this.openaiModelRouter = undefined;
+    this.openaiModelCatalog = undefined;
+    this.openaiResolved = resolveOpenAIConfiguration(this.config?.openai);
+
+    if (!this.openaiResolved?.config?.enabled) {
+      this.logger.info('openai', 'OpenAI integration disabled via configuration');
+      return;
+    }
+
+    if (!isOpenAIIntegrationReady(this.openaiResolved.config, this.openaiResolved.credentials)) {
+      this.logger.warn('openai', 'OpenAI integration enabled but credentials are missing', {
+        credentialEnv: this.openaiResolved.config.credentials
+      });
+      return;
+    }
+
+    if (this.openaiResolved.config.responses?.enabled !== false) {
+      this.openaiResponsesClient = new OpenAIResponsesClient({
+        apiKey: this.openaiResolved.credentials.apiKey,
+        organizationId: this.openaiResolved.credentials.organizationId,
+        projectId: this.openaiResolved.credentials.projectId,
+        defaultModel: this.openaiResolved.config.responses?.defaultModel,
+        defaultImageModel: this.openaiResolved.config.responses?.defaultImageModel,
+        defaultVideoModel: this.openaiResolved.config.responses?.defaultVideoModel,
+        defaultSpeechModel: this.openaiResolved.config.responses?.defaultSpeechModel,
+        defaultTranscriptionModel: this.openaiResolved.config.responses?.defaultTranscriptionModel,
+        defaultModerationModel: this.openaiResolved.config.responses?.defaultModerationModel,
+        defaultSearchModel: this.openaiResolved.config.responses?.defaultSearchModel,
+        requestTimeoutMs: this.openaiResolved.config.responses?.requestTimeoutMs,
+        userAgentExtension: this.openaiResolved.config.responses?.userAgentExtension,
+        logger: this.logger,
+        usageMonitor: this.openaiUsageMonitor
+      });
+
+      if (!this.openaiResponsesClient?.isReady()) {
+        this.logger.warn('openai', 'OpenAI responses client failed to initialize due to missing API key');
+        this.openaiResponsesClient = undefined;
+      } else {
+        try {
+          const snapshot = await this.openaiResponsesClient.getModelCatalogSnapshot();
+          this.openaiModelCatalog = snapshot;
+          this.logger.info('openai', 'Fetched OpenAI model catalog from API', {
+            modelCount: snapshot.models.length,
+            fetchedAt: snapshot.fetchedAt.toISOString()
+          });
+        } catch (error) {
+          this.logger.warn('openai', 'Failed to retrieve OpenAI model catalog from API', undefined, error as Error);
+        }
+      }
+    }
+
+    const routerCatalog = this.openaiResolved.config.modelCatalog ?? this.openaiModelCatalog?.models;
+    const routerConfig = this.openaiResolved.config.modelRouting;
+    const listModels = this.openaiResponsesClient?.isReady()
+      ? () => this.openaiResponsesClient!.listAvailableModels()
+      : undefined;
+
+    this.openaiModelRouter = new OpenAIModelRouter({
+      catalog: routerCatalog,
+      routing: routerConfig,
+      baselineDefaultModel: this.openaiResolved.config.responses?.defaultModel,
+      listModels,
+      logger: this.logger
+    });
+
+    this.logger.info('openai', 'OpenAI model router initialized', {
+      catalogSize: routerCatalog?.length ?? 'default',
+      hasDynamicInventory: Boolean(listModels)
+    });
+  }
+
+  getOpenAIResponsesClient(): OpenAIResponsesClient | undefined {
+    return this.openaiResponsesClient;
+  }
+
+  getOpenAIModelCatalogSnapshot(): { fetchedAt: Date; models: OpenAIModelCatalogEntry[] } | undefined {
+    return this.openaiModelCatalog;
+  }
+
+  async refreshOpenAIModelCatalog(): Promise<{ fetchedAt: Date; models: OpenAIModelCatalogEntry[] } | undefined> {
+    if (!this.openaiResponsesClient?.isReady()) {
+      this.logger.warn('openai', 'Cannot refresh OpenAI model catalog because the client is not ready');
+      return undefined;
+    }
+
+    try {
+      const snapshot = await this.openaiResponsesClient.getModelCatalogSnapshot();
+      this.openaiModelCatalog = snapshot;
+      this.logger.info('openai', 'Refreshed OpenAI model catalog', {
+        modelCount: snapshot.models.length,
+        fetchedAt: snapshot.fetchedAt.toISOString()
+      });
+      return snapshot;
+    } catch (error) {
+      this.logger.warn('openai', 'Failed to refresh OpenAI model catalog', undefined, error as Error);
+      return undefined;
+    }
+  }
+
+  async generateOpenAIImage(request: Record<string, unknown>): Promise<unknown> {
+    if (!this.openaiResponsesClient?.isReady()) {
+      throw new SystemError('OpenAI image generation requested but integration is not ready.', {
+        integration: 'openai',
+        capability: 'image'
+      });
+    }
+    return this.openaiResponsesClient.generateImage(request);
+  }
+
+  async generateOpenAIVideo(request: Record<string, unknown>): Promise<unknown> {
+    if (!this.openaiResponsesClient?.isReady()) {
+      throw new SystemError('OpenAI video generation requested but integration is not ready.', {
+        integration: 'openai',
+        capability: 'video'
+      });
+    }
+    return this.openaiResponsesClient.generateVideo(request);
+  }
+
+  async generateOpenAISpeech(request: Record<string, unknown>): Promise<unknown> {
+    if (!this.openaiResponsesClient?.isReady()) {
+      throw new SystemError('OpenAI speech synthesis requested but integration is not ready.', {
+        integration: 'openai',
+        capability: 'speech'
+      });
+    }
+    return this.openaiResponsesClient.generateSpeech(request);
+  }
+
+  async transcribeOpenAIAudio(request: Record<string, unknown>): Promise<unknown> {
+    if (!this.openaiResponsesClient?.isReady()) {
+      throw new SystemError('OpenAI transcription requested but integration is not ready.', {
+        integration: 'openai',
+        capability: 'transcription'
+      });
+    }
+    return this.openaiResponsesClient.transcribeAudio(request);
+  }
+
+  async moderateWithOpenAI(request: Record<string, unknown>): Promise<unknown> {
+    if (!this.openaiResponsesClient?.isReady()) {
+      throw new SystemError('OpenAI moderation requested but integration is not ready.', {
+        integration: 'openai',
+        capability: 'moderation'
+      });
+    }
+    return this.openaiResponsesClient.moderateContent(request);
+  }
+
+  async executeOpenAISearch(request: Record<string, unknown>): Promise<unknown> {
+    if (!this.openaiResponsesClient?.isReady()) {
+      throw new SystemError('OpenAI search requested but integration is not ready.', {
+        integration: 'openai',
+        capability: 'search'
+      });
+    }
+    return this.openaiResponsesClient.executeSearch(request);
+  }
+
+  async createOpenAIRealtimeSession(request: Record<string, unknown>): Promise<unknown> {
+    if (!this.openaiResponsesClient?.isReady()) {
+      throw new SystemError('OpenAI realtime session requested but integration is not ready.', {
+        integration: 'openai',
+        capability: 'realtime'
+      });
+    }
+    return this.openaiResponsesClient.createRealtimeSession(request);
+  }
+
+  getOpenAIResolvedConfiguration(): OpenAIResolvedConfiguration | null | undefined {
+    return this.openaiResolved;
+  }
+
+  getOpenAIUsageSummary(windowMs?: number): OpenAIUsageSummary {
+    return this.openaiUsageMonitor.getSummary(windowMs);
+  }
+
+  getRecentOpenAIUsage(limit?: number): OpenAIUsageEvent[] {
+    return this.openaiUsageMonitor.getEvents(limit);
+  }
+
+  hasOpenAIUsage(): boolean {
+    return this.openaiUsageMonitor.hasData();
+  }
+
+  private shouldAppendOpenAISynthesisStage(): boolean {
+    if (!this.openaiResponsesClient?.isReady()) {
+      return false;
+    }
+    const openaiConfig = this.openaiResolved?.config;
+    if (!openaiConfig?.enabled) {
+      return false;
+    }
+    if (openaiConfig.responses?.enabled === false) {
+      return false;
+    }
+    return openaiConfig.defaultBackend === 'openai-responses';
+  }
+
+  private shouldExecuteStageWithOpenAI(stage: WorkflowStage): boolean {
+    if (!this.openaiResponsesClient?.isReady()) {
+      return false;
+    }
+    if (stage.taskType !== 'openai_responses') {
+      return false;
+    }
+    if (stage.id !== 'openai-synthesis') {
+      return false;
+    }
+    const openaiConfig = this.openaiResolved?.config;
+    if (!openaiConfig?.enabled) {
+      return false;
+    }
+    if (openaiConfig.responses?.enabled === false) {
+      return false;
+    }
+    return true;
+  }
+
+  private buildOpenAISynthesisPayload(context: WorkflowContext): Record<string, any> {
+    return {
+      prompt: context.prompt,
+      stageContext: this.buildOpenAIStageContextSnapshot(context),
+      artifacts: {
+        research: context.stageResults['research-scan']?.result ?? null,
+        analysis: context.stageResults['data-analysis']?.result ?? null,
+        reactPlan: context.stageResults['react-plan']?.result ?? null,
+        architecture: context.stageResults['architecture-blueprint']?.result ?? null,
+        code: context.stageResults['code-generation']?.result ?? null,
+        validation: context.stageResults['validation']?.result ?? null,
+        knowledge: context.stageResults['knowledge-distillation']?.result ?? null,
+        insight: context.stageResults['insight-summary']?.result ?? null
+      }
+    };
+  }
+
+  private buildOpenAIStageContextSnapshot(context: WorkflowContext): Array<Record<string, any>> {
+    return Object.entries(context.stageResults).map(([id, entry]) => {
+      const result = entry?.result ?? {};
+      const snapshot: Record<string, any> = { id };
+
+      if (typeof result.summary === 'string') {
+        snapshot.summary = result.summary;
+      }
+
+      if (typeof result.status !== 'undefined') {
+        snapshot.status = result.status;
+      }
+
+      if (typeof result.generatedCode === 'string') {
+        snapshot.generatedCodePreview = result.generatedCode.slice(0, 4000);
+      }
+
+      if (Array.isArray(result.issues)) {
+        snapshot.issues = result.issues.slice(0, 10);
+      }
+
+      if (Array.isArray(result.keyFindings)) {
+        snapshot.keyFindings = result.keyFindings.slice(0, 10);
+      }
+
+      if (result?.passed !== undefined) {
+        snapshot.validationPassed = result.passed;
+      }
+
+      return snapshot;
+    });
+  }
+
+  private buildOpenAIStageInstructions(stage: WorkflowStage): string {
+    if (stage.id === 'openai-synthesis') {
+      return [
+        'You are the OpenAI synthesis module for the Codex-Synaptic workflow.',
+        'Use the provided JSON context to craft a production-ready response.',
+        'Return a JSON object with the following keys:',
+        "summary (string) - concise overview of the workflow outcome.",
+        "finalAnswer (string) - direct answer to the original prompt.",
+        "keyPoints (array of strings) - most important insights.",
+        "nextActions (array of strings) - recommended follow-up steps (may be empty)."
+      ].join(' ');
+    }
+
+    return `You are assisting the Codex-Synaptic workflow stage "${stage.label}". ` +
+      'Analyze the JSON payload and respond with a JSON object containing summary (string) and keyPoints (array of strings).';
+  }
+
+  private async executeStageWithOpenAIResponses(
+    stage: WorkflowStage,
+    payload: Record<string, any>,
+    context: WorkflowContext,
+    options?: { tenantId?: string }
+  ): Promise<any> {
+    if (!this.openaiResponsesClient) {
+      throw new Error('OpenAI responses client is not initialized.');
+    }
+
+    const instructions = this.buildOpenAIStageInstructions(stage);
+    const stageContext = this.buildOpenAIStageContextSnapshot(context);
+    const inputEnvelope = {
+      prompt: context.prompt,
+      stage: {
+        id: stage.id,
+        label: stage.label
+      },
+      payload,
+      stageContext
+    };
+
+    let modelSelection: { model: string; reason: string; usedFallback: boolean; fallbackChain: string[] } | null = null;
+    if (this.openaiModelRouter) {
+      try {
+        const selection = await this.openaiModelRouter.selectModel({
+          prompt: context.prompt,
+          stageId: stage.id,
+          stageLabel: stage.label,
+          taskType: stage.taskType,
+          priority: stage.priority,
+          payload,
+          stageContext
+        });
+        modelSelection = {
+          model: selection.model,
+          reason: selection.reason,
+          usedFallback: selection.usedFallback,
+          fallbackChain: selection.fallbackChain
+        };
+        this.logger.info('openai', 'Model router selected OpenAI model', {
+          stageId: stage.id,
+          stageLabel: stage.label,
+          model: selection.model,
+          reason: selection.reason,
+          usedFallback: selection.usedFallback,
+          fallbackChain: selection.fallbackChain
+        });
+      } catch (error) {
+        this.logger.warn('openai', 'OpenAI model router failed to select model; falling back to client defaults', {
+          stageId: stage.id,
+          reason: (error as Error).message
+        });
+      }
+    }
+
+    const request: OpenAIResponseRequest = {
+      instructions,
+      input: this.safeStringifyForOpenAI(inputEnvelope),
+      model: modelSelection?.model,
+      response_format: { type: 'json_object' },
+      metadata: {
+        workflowStage: stage.id,
+        ...(modelSelection
+          ? {
+              selectedModel: modelSelection.model,
+              modelRoutingReason: modelSelection.reason,
+              modelUsedFallback: modelSelection.usedFallback,
+              modelFallbackChain: modelSelection.fallbackChain
+            }
+          : {})
+      }
+    };
+
+    this.logger.info('openai', 'Executing workflow stage via OpenAI Responses', {
+      stageId: stage.id,
+      label: stage.label
+    });
+
+    const response = await this.openaiResponsesClient.createResponse<any>(request);
+    const normalized = this.normalizeOpenAIResponse(stage, response);
+
+    if (this.memorySystem) {
+      await this.memorySystem.store(
+        'openai_responses',
+        `stage-${stage.id}-${Date.now()}`,
+        {
+          prompt: context.prompt,
+          stage: stage.id,
+          stageLabel: stage.label,
+          payloadSnapshot: payload,
+          response: normalized,
+          storedAt: new Date().toISOString()
+        },
+        options?.tenantId ? { tenantId: options.tenantId } : undefined
+      ).catch((error: unknown) => {
+        this.logger.warn('openai', 'Failed to persist OpenAI response to memory', {
+          stageId: stage.id,
+          reason: (error as Error).message
+        });
+      });
+    }
+
+    return normalized;
+  }
+
+  private normalizeOpenAIResponse(stage: WorkflowStage, response: any): Record<string, any> {
+    const responseText = this.extractOpenAIText(response);
+    let structured: any;
+
+    if (responseText) {
+      try {
+        structured = JSON.parse(responseText);
+      } catch {
+        structured = undefined;
+      }
+    }
+
+    const summary = typeof structured?.summary === 'string'
+      ? structured.summary
+      : responseText ?? `Completed stage ${stage.label} using OpenAI.`;
+
+    return {
+      summary,
+      finalAnswer: typeof structured?.finalAnswer === 'string' ? structured.finalAnswer : undefined,
+      keyPoints: Array.isArray(structured?.keyPoints) ? structured.keyPoints : undefined,
+      nextActions: Array.isArray(structured?.nextActions) ? structured.nextActions : undefined,
+      responseText,
+      structured: structured ?? null,
+      raw: response
+    };
+  }
+
+  private extractOpenAIText(response: any): string | undefined {
+    if (!response) {
+      return undefined;
+    }
+
+    if (typeof response.output_text === 'string') {
+      return response.output_text;
+    }
+
+    if (Array.isArray(response.output)) {
+      const textParts: string[] = [];
+      for (const item of response.output) {
+        if (!item) continue;
+        if (typeof item === 'string') {
+          textParts.push(item);
+          continue;
+        }
+        if (typeof item.text === 'string') {
+          textParts.push(item.text);
+          continue;
+        }
+        if (Array.isArray(item.content)) {
+          textParts.push(
+            item.content
+              .map((contentNode: any) => {
+                if (typeof contentNode === 'string') {
+                  return contentNode;
+                }
+                if (typeof contentNode.text === 'string') {
+                  return contentNode.text;
+                }
+                return '';
+              })
+              .filter(Boolean)
+              .join(' ')
+          );
+        }
+      }
+      const combined = textParts.filter(Boolean).join('\n').trim();
+      if (combined) {
+        return combined;
+      }
+    }
+
+    if (Array.isArray(response.data)) {
+      const dataText = response.data
+        .map((entry: any) => {
+          if (typeof entry?.text === 'string') {
+            return entry.text;
+          }
+          if (Array.isArray(entry?.content)) {
+            return entry.content
+              .map((contentNode: any) => contentNode?.text ?? '')
+              .filter(Boolean)
+              .join(' ');
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      if (dataText) {
+        return dataText;
+      }
+    }
+
+    return undefined;
+  }
+
+  private safeStringifyForOpenAI(input: unknown): string {
+    try {
+      const serialized = JSON.stringify(input);
+      if (serialized.length > 20000) {
+        return `${serialized.slice(0, 19980)}...`;
+      }
+      return serialized;
+    } catch {
+      return '[unserializable payload]';
     }
   }
 
@@ -341,6 +869,7 @@ export class CodexSynapticSystem extends EventEmitter {
     this.logger.info('system', 'Shutting down Codex-Synaptic System...');
 
     this.healthMonitor.stopPeriodicHealthChecks();
+    this.authManager.stopPeriodicCleanup();
 
     try {
       // Shutdown components in reverse dependency order
@@ -545,32 +1074,44 @@ export class CodexSynapticSystem extends EventEmitter {
     return this.apiServer;
   }
 
-  async evaluateToolsForPrompt(prompt: string, candidates: ToolCandidate[]): Promise<ToolScore[]> {
-    return this.toolOptimizer.evaluateTools(prompt, candidates);
+  async evaluateToolsForPrompt(prompt: string, candidates: ToolCandidate[], options?: { tenantId?: string }): Promise<ToolScore[]> {
+    return this.toolOptimizer.evaluateTools(prompt, candidates, { tenantId: options?.tenantId });
   }
 
-  async recordToolOutcome(record: ToolUsageRecord): Promise<number> {
-    return this.toolOptimizer.recordToolOutcome(record);
+  async recordToolOutcome(record: ToolUsageRecord, options?: { tenantId?: string }): Promise<number> {
+    return this.toolOptimizer.recordToolOutcome(record, { tenantId: options?.tenantId });
   }
 
-  async createReasoningPlan(prompt: string, options?: ReasoningPlanOptions): Promise<ReasoningPlanCreationResult> {
-    return this.reasoningPlanner.createPlan(prompt, options);
+  async createReasoningPlan(
+    prompt: string,
+    options?: ReasoningPlanOptions,
+    context?: { tenantId?: string }
+  ): Promise<ReasoningPlanCreationResult> {
+    return this.reasoningPlanner.createPlan(prompt, options, { tenantId: context?.tenantId });
   }
 
-  async checkpointReasoningPlan(planId: string, input: ReasoningCheckpointInput): Promise<ReasoningRunRecord> {
-    return this.reasoningPlanner.checkpoint(planId, input);
+  async checkpointReasoningPlan(
+    planId: string,
+    input: ReasoningCheckpointInput,
+    context?: { tenantId?: string }
+  ): Promise<ReasoningRunRecord> {
+    return this.reasoningPlanner.checkpoint(planId, input, { tenantId: context?.tenantId });
   }
 
-  async completeReasoningPlan(planId: string, options: ReasoningCompletionOptions): Promise<ReasoningRunRecord> {
-    return this.reasoningPlanner.complete(planId, options);
+  async completeReasoningPlan(
+    planId: string,
+    options: ReasoningCompletionOptions,
+    context?: { tenantId?: string }
+  ): Promise<ReasoningRunRecord> {
+    return this.reasoningPlanner.complete(planId, options, { tenantId: context?.tenantId });
   }
 
-  async resumeReasoningPlan(planId: string): Promise<ReasoningRunRecord | null> {
-    return this.reasoningPlanner.resume(planId);
+  async resumeReasoningPlan(planId: string, context?: { tenantId?: string }): Promise<ReasoningRunRecord | null> {
+    return this.reasoningPlanner.resume(planId, { tenantId: context?.tenantId });
   }
 
-  async listReasoningPlans(limit = 10): Promise<ReasoningRunRecord[]> {
-    return this.reasoningPlanner.list(limit);
+  async listReasoningPlans(limit = 10, context?: { tenantId?: string }): Promise<ReasoningRunRecord[]> {
+    return this.reasoningPlanner.list(limit, { tenantId: context?.tenantId });
   }
 
   getHealthMonitor(): HealthMonitor {
@@ -587,6 +1128,18 @@ export class CodexSynapticSystem extends EventEmitter {
 
   getResourceManager(): ResourceManager {
     return this.resourceManager;
+  }
+
+  getTenantManager(): TenantManager {
+    return this.tenantManager;
+  }
+
+  getTenantResolver(): TenantResolver {
+    return this.tenantResolver;
+  }
+
+  isMultiTenancyEnabled(): boolean {
+    return this.tenancyEnabled;
   }
 
   getGpuManager(): GPUManager {
@@ -711,7 +1264,7 @@ export class CodexSynapticSystem extends EventEmitter {
     this.logger.info('system', 'Swarm coordination in progress');
   }
 
-  async executeTask(prompt: string): Promise<any> {
+  async executeTask(prompt: string, options?: { tenantId?: string }): Promise<any> {
     if (!this.isInitialized) {
       throw new Error('System must be initialized before executing tasks.');
     }
@@ -723,30 +1276,109 @@ export class CodexSynapticSystem extends EventEmitter {
       stageResults: {}
     };
 
+    const startTime = Date.now();
+    const requireConsensus = this.shouldRequireConsensusForPrompt(prompt);
+    const tenantId = options?.tenantId;
+    let planId: string | undefined;
+    let planTracked = false;
+    let planCompleted = false;
+    try {
+      const reasoningPlan = await this.createReasoningPlan(
+        prompt,
+        {
+          planType: 'tot',
+          requireConsensus
+        },
+        { tenantId }
+      );
+      planId = reasoningPlan.planId;
+      planTracked = true;
+
+      if (requireConsensus && reasoningPlan.consensus?.proposalId) {
+        const decision = await this.waitForConsensusDecision(reasoningPlan.consensus.proposalId);
+        if (!decision.accepted) {
+          await this.completeReasoningPlan(reasoningPlan.planId, {
+            status: 'aborted',
+            summary: 'Consensus gating rejected execution',
+            metadata: { decision },
+            durationMs: Date.now() - startTime
+          }, { tenantId });
+          planCompleted = true;
+          planId = undefined;
+          throw new Error(`Workflow blocked by consensus (proposal ${reasoningPlan.consensus.proposalId})`);
+        }
+        await this.checkpointReasoningPlan(reasoningPlan.planId, {
+          label: 'consensus-approved',
+          status: 'complete',
+          summary: 'Consensus approval granted'
+        }, { tenantId });
+      }
+    } catch (error) {
+      if (!planTracked) {
+        throw error;
+      }
+      throw error;
+    }
+
     const stages = this.buildWorkflow(prompt);
     const stageOutputs: Array<{ stage: string; taskId: string; result: any }> = [];
+    try {
+      for (const stage of stages) {
+        const payload = stage.payloadBuilder(context);
 
-    for (const stage of stages) {
-      const payload = stage.payloadBuilder(context);
-      const task = this.taskScheduler.submitTask({
-        type: stage.taskType,
-        priority: stage.priority,
-        requiredCapabilities: stage.requiredCapabilities,
-        payload
-      });
+        if (this.shouldExecuteStageWithOpenAI(stage)) {
+          const syntheticTaskId = `openai-${stage.id}-${randomUUID()}`;
+          const stageMeta = {
+            id: stage.id,
+            label: stage.label,
+            taskId: syntheticTaskId,
+            taskType: stage.taskType
+          };
 
-      const stageMeta = {
-        id: stage.id,
-        label: stage.label,
-        taskId: task.id,
-        taskType: stage.taskType
-      };
-      this.emit('workflowStageStarted', {
-        ...stageMeta,
-        payload
-      });
+          this.emit('workflowStageStarted', {
+            ...stageMeta,
+            payload
+          });
 
-      try {
+          const result = await this.executeStageWithOpenAIResponses(stage, payload, context, { tenantId });
+          context.stageResults[stage.id] = { payload, result };
+          stageOutputs.push({ stage: stage.label, taskId: syntheticTaskId, result });
+
+          this.emit('workflowStageCompleted', {
+            ...stageMeta,
+            result
+          });
+
+          if (planId) {
+            await this.checkpointReasoningPlan(planId, {
+              label: stage.id,
+              status: 'complete',
+              summary: stage.label
+            }, { tenantId });
+          }
+
+          continue;
+        }
+
+        const task = this.taskScheduler.submitTask({
+          type: stage.taskType,
+          priority: stage.priority,
+          requiredCapabilities: stage.requiredCapabilities,
+          payload,
+          tenantId
+        });
+
+        const stageMeta = {
+          id: stage.id,
+          label: stage.label,
+          taskId: task.id,
+          taskType: stage.taskType
+        };
+        this.emit('workflowStageStarted', {
+          ...stageMeta,
+          payload
+        });
+
         const result = await this.waitForTaskResult(task.id);
         context.stageResults[stage.id] = { payload, result };
         stageOutputs.push({ stage: stage.label, taskId: task.id, result });
@@ -754,20 +1386,38 @@ export class CodexSynapticSystem extends EventEmitter {
           ...stageMeta,
           result
         });
-      } catch (error) {
-        const err = error as Error;
-        this.emit('workflowStageFailed', {
-          ...stageMeta,
-          error: err?.message || err
-        });
-        throw error;
-      }
-    }
 
-    const outcome = this.buildWorkflowOutcome(prompt, context, stageOutputs);
-    await this.persistWorkflowArtifacts(prompt, outcome);
-    this.logger.info('system', 'Workflow completed', { summary: outcome.summary });
-    return outcome;
+        if (planId) {
+          await this.checkpointReasoningPlan(planId, {
+            label: stage.id,
+            status: 'complete',
+            summary: stage.label
+          }, { tenantId });
+        }
+      }
+
+      const outcome = this.buildWorkflowOutcome(prompt, context, stageOutputs);
+      await this.persistWorkflowArtifacts(prompt, outcome, { tenantId });
+      if (planId) {
+        await this.completeReasoningPlan(planId, {
+          status: 'completed',
+          summary: outcome.summary,
+          durationMs: Date.now() - startTime
+        }, { tenantId });
+        planCompleted = true;
+      }
+      this.logger.info('system', 'Workflow completed', { summary: outcome.summary });
+      return outcome;
+    } catch (error) {
+      if (planId && !planCompleted) {
+        await this.completeReasoningPlan(planId, {
+          status: 'failed',
+          summary: (error as Error).message,
+          durationMs: Date.now() - startTime
+        }, { tenantId });
+      }
+      throw error;
+    }
   }
 
   async proposeConsensus(type: string, data: any, proposer?: AgentId): Promise<string> {
@@ -844,8 +1494,33 @@ export class CodexSynapticSystem extends EventEmitter {
     if (!this.apiServer) {
       this.apiServer = new ApiServer(
         {
-          evaluateTools: (prompt, candidates) => this.toolOptimizer.evaluateTools(prompt, candidates),
-          recordToolOutcome: (record) => this.toolOptimizer.recordToolOutcome(record)
+          evaluateTools: (prompt, candidates, context) =>
+            this.toolOptimizer.evaluateTools(prompt, candidates, {
+              tenantId: context?.tenant?.tenant.id
+            }),
+          recordToolOutcome: (record, context) =>
+            this.toolOptimizer.recordToolOutcome(record, {
+              tenantId: context?.tenant?.tenant.id
+            }),
+          createPlan: (prompt, options, context) =>
+            this.createReasoningPlan(prompt, options, { tenantId: context?.tenant?.tenant.id }),
+          checkpointPlan: (planId, input, context) =>
+            this.checkpointReasoningPlan(planId, input, { tenantId: context?.tenant?.tenant.id }),
+          completePlan: (planId, options, context) =>
+            this.completeReasoningPlan(planId, options, { tenantId: context?.tenant?.tenant.id }),
+          getPlan: (planId, context) =>
+            this.resumeReasoningPlan(planId, { tenantId: context?.tenant?.tenant.id }),
+          listPlans: (limit, context) =>
+            this.listReasoningPlans(limit, { tenantId: context?.tenant?.tenant.id }),
+          listTenants: (limit) => this.tenantManager.listTenants(limit),
+          createTenant: (input) => this.tenantManager.createTenant(input),
+          getTenant: (tenantId) => this.tenantManager.getTenant(tenantId),
+          getTenantPolicy: (tenantId) => this.tenantManager.getPolicy(tenantId),
+          getTenantQuota: (tenantId) => this.tenantManager.getQuota(tenantId),
+          upsertTenantPolicy: (policy) => this.tenantManager.upsertPolicy(policy),
+          getDefaultTenantQuota: () => this.tenantManager.getDefaultQuota(),
+          resolveTenant: (headers) => this.tenantResolver.fromHeaders(headers),
+          authorizeRequest: (headers, resource, action) => this.authorizeApiRequest(headers, resource, action)
         },
         this.logger
       );
@@ -865,6 +1540,116 @@ export class CodexSynapticSystem extends EventEmitter {
         throw error;
       }
     }
+  }
+
+  private shouldRequireConsensusForPrompt(prompt: string): boolean {
+    const lower = prompt.toLowerCase();
+    const riskSignals = [
+      'deploy',
+      'production',
+      'migrate',
+      'rollback',
+      'disaster',
+      'hotfix'
+    ];
+    const releaseRiskPatterns = [
+      /release to production/, // capture coordinated release cutovers
+      /production release/, // highlight language upgrades targeting prod
+      /release management window/ // guard controlled release operations
+    ];
+    const governanceSignals = ['consensus', 'approval', 'quorum', 'vote', 'gate'];
+    return (
+      riskSignals.some((signal) => lower.includes(signal)) ||
+      releaseRiskPatterns.some((pattern) => pattern.test(lower)) ||
+      governanceSignals.some((signal) => lower.includes(signal))
+    );
+  }
+
+  private waitForConsensusDecision(proposalId: string, timeoutMs = 15_000): Promise<{ accepted: boolean; votes: number; timedOut: boolean }>
+  {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.off('consensusReached', handler);
+        resolve({ accepted: false, votes: 0, timedOut: true });
+      }, timeoutMs);
+
+      const handler = (event: any) => {
+        if (event?.proposal?.id !== proposalId) {
+          return;
+        }
+        clearTimeout(timeout);
+        this.off('consensusReached', handler);
+        resolve({
+          accepted: Boolean(event?.accepted),
+          votes: Array.isArray(event?.votes) ? event.votes.length : 0,
+          timedOut: false
+        });
+      };
+
+      this.on('consensusReached', handler);
+    });
+  }
+
+  private async authorizeApiRequest(headers: IncomingHttpHeaders, resource: string, action: string): Promise<void> {
+    const rawHeader = headers?.authorization;
+    const headerValue = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+    const token = typeof headerValue === 'string'
+      ? headerValue.toLowerCase().startsWith('bearer ')
+        ? headerValue.slice(7).trim()
+        : headerValue.trim()
+      : undefined;
+    await this.authMiddleware.authenticateAndAuthorize(token, resource, action);
+  }
+
+  private async refreshTenancyResources(enable: boolean): Promise<void> {
+    if (this.tenancyEnabled === enable) {
+      return;
+    }
+    if (this.memorySystem) {
+      try {
+        await this.memorySystem.close();
+      } catch (error) {
+        this.logger.warn('system', 'Failed to close memory system during tenancy reinitialization', undefined, error as Error);
+      }
+    }
+    this.initializeTenancyResources(enable);
+  }
+
+  private initializeTenancyResources(enable: boolean): void {
+    this.tenancyEnabled = enable;
+    this.memorySystem = new CodexMemorySystem(process.cwd(), { enableTenancy: enable });
+    this.toolOptimizer = new ToolOptimizer(this.memorySystem);
+    this.reasoningPlanner = new ReasoningPlanner({
+      memory: this.memorySystem,
+      proposeConsensus: async (data) => this.proposeConsensus('reasoning_plan', data),
+      logger: this.logger
+    });
+    this.tenantManager = new TenantManager({
+      memory: this.memorySystem,
+      logger: this.logger,
+      options: {
+        enableTenancy: enable,
+        defaultQuota: this.config?.tenancy?.defaultQuota
+      },
+      resourceManager: this.resourceManager
+    });
+    this.tenantResolver = new TenantResolver(this.tenantManager, this.logger);
+  }
+
+  private resolveTenancySetting(): boolean {
+    if (this.config && typeof this.config.tenancy?.enabled === 'boolean') {
+      return this.config.tenancy.enabled;
+    }
+    return this.tenancyEnabled;
+  }
+
+  private isTenancyEnvEnabled(): boolean {
+    const flag = process.env.CODEX_TENANCY_ENABLED;
+    if (!flag) {
+      return false;
+    }
+    const normalized = flag.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
   }
 
   private async bootstrapDefaultAgents(): Promise<void> {
@@ -1134,15 +1919,18 @@ export class CodexSynapticSystem extends EventEmitter {
           code: ctx.stageResults['code-generation']?.result?.generatedCode || ''
         })
       });
+    }
 
+    if (requiresCode || requiresTesting) {
       stages.push({
         id: 'validation',
-        label: 'Validation & Quality Gate',
+        label: requiresCode ? 'Validation & Quality Gate' : 'Validation Strategy',
         taskType: 'validate_code',
         requiredCapabilities: ['validate_code'],
         priority: 5,
         payloadBuilder: (ctx) => ({
           code: ctx.stageResults['code-generation']?.result?.generatedCode || '',
+          context: ctx.prompt,
           rules: ['no-console', 'prefer-async', 'document-public-apis']
         })
       });
@@ -1184,6 +1972,17 @@ export class CodexSynapticSystem extends EventEmitter {
       })
     });
 
+    if (this.shouldAppendOpenAISynthesisStage()) {
+      stages.push({
+        id: 'openai-synthesis',
+        label: 'OpenAI Synthesis',
+        taskType: 'openai_responses',
+        requiredCapabilities: [],
+        priority: 3,
+        payloadBuilder: (ctx) => this.buildOpenAISynthesisPayload(ctx)
+      });
+    }
+
     if (stages.length === 0) {
       stages.push({
         id: 'baseline-analysis',
@@ -1214,6 +2013,7 @@ export class CodexSynapticSystem extends EventEmitter {
     const validation = context.stageResults['validation']?.result ?? null;
     const insight = context.stageResults['insight-summary']?.result ?? null;
     const knowledge = context.stageResults['knowledge-distillation']?.result ?? null;
+  const openaiSynthesis = context.stageResults['openai-synthesis']?.result ?? null;
 
     const summaryParts: string[] = [];
     if (research?.summary) summaryParts.push(research.summary);
@@ -1224,14 +2024,20 @@ export class CodexSynapticSystem extends EventEmitter {
     if (validation?.passed) summaryParts.push('Validation gates satisfied.');
     if (knowledge?.summary) summaryParts.push(knowledge.summary);
     if (insight?.summary) summaryParts.push(insight.summary);
+    if (openaiSynthesis?.summary) summaryParts.push(openaiSynthesis.summary);
 
     if (summaryParts.length === 0) {
       summaryParts.push('Workflow executed with available agents.');
     }
 
+    const finalAnswer = typeof openaiSynthesis?.finalAnswer === 'string'
+      ? openaiSynthesis.finalAnswer
+      : undefined;
+
     return {
       prompt,
       summary: summaryParts.join(' '),
+      finalAnswer,
       stages: stageOutputs,
       artifacts: {
         research,
@@ -1241,7 +2047,8 @@ export class CodexSynapticSystem extends EventEmitter {
         lintIssues,
         validation,
         insight,
-        knowledge
+        knowledge,
+        openaiSynthesis
       },
       mesh: this.neuralMesh.getStatus(),
       swarm: this.swarmCoordinator.getStatus(),
@@ -1265,7 +2072,7 @@ export class CodexSynapticSystem extends EventEmitter {
     await this.vectorClient.upsert(vectorConfig.collection, records);
   }
 
-  private async persistWorkflowArtifacts(prompt: string, outcome: any): Promise<void> {
+  private async persistWorkflowArtifacts(prompt: string, outcome: any, context: { tenantId?: string } = {}): Promise<void> {
     try {
       const reactPlan = outcome?.artifacts?.reactPlan;
       const tot = reactPlan?.tot;
@@ -1284,8 +2091,8 @@ export class CodexSynapticSystem extends EventEmitter {
           knowledgeUpdates: tot.knowledgeUpdates,
           monteCarlo: tot.monteCarlo,
           storedAt: new Date().toISOString()
-        });
-        await this.queueTotFollowUps(tot, entryId);
+        }, { tenantId: context.tenantId });
+        await this.queueTotFollowUps(tot, entryId, context);
       }
     } catch (error) {
       const err = error as Error;
@@ -1296,10 +2103,12 @@ export class CodexSynapticSystem extends EventEmitter {
   private async handleConsensusTelemetry(payload: any): Promise<void> {
     try {
       const key = payload?.proposal?.id ?? `consensus-${Date.now()}`;
+      const tenantId = payload?.proposal?.metadata?.tenantId ?? undefined;
       await this.memorySystem.store('consensus_events', key, {
         ...payload,
+        tenantId,
         storedAt: new Date().toISOString()
-      });
+      }, tenantId ? { tenantId } : undefined);
     } catch (error) {
       throw error;
     }
@@ -1453,7 +2262,7 @@ export class CodexSynapticSystem extends EventEmitter {
     }
   }
 
-  private async queueTotFollowUps(tot: TotPlanResult, totEntryId: number): Promise<void> {
+  private async queueTotFollowUps(tot: TotPlanResult, totEntryId: number, context: { tenantId?: string } = {}): Promise<void> {
     const backlog = Array.isArray(tot.priorityBacklog) ? tot.priorityBacklog.slice(0, 3) : [];
     if (!backlog.length) {
       return;
@@ -1468,7 +2277,7 @@ export class CodexSynapticSystem extends EventEmitter {
           item,
           summary: tot.summary,
           createdAt: new Date().toISOString()
-        });
+        }, { tenantId: context.tenantId });
       } catch (error) {
         const err = error as Error;
         this.logger.warn('system', 'Failed to enqueue ToT follow-up task', {
@@ -1504,5 +2313,16 @@ export class CodexSynapticSystem extends EventEmitter {
       const err = error as Error;
       this.logger.warn('system', 'Failed to propose ToT backlog consensus', { reason: err.message });
     }
+  }
+
+  private async applyConfiguredTenancyDefaults(): Promise<void> {
+    if (!this.tenantManager) {
+      return;
+    }
+    const defaultQuota = this.config?.tenancy?.defaultQuota;
+    if (!defaultQuota && !this.tenantManager.getDefaultQuota()) {
+      return;
+    }
+    await this.tenantManager.configureDefaultQuota(defaultQuota);
   }
 }

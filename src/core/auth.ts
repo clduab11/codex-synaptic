@@ -44,6 +44,7 @@ export class AuthenticationManager {
   private roles: Map<string, Role> = new Map();
   private permissions: Map<string, Permission> = new Map();
   private passwordHashes: Map<string, string> = new Map();
+  private cleanupInterval?: NodeJS.Timeout;
 
   constructor() {
     this.initializeDefaultRoles();
@@ -387,11 +388,24 @@ export class AuthenticationManager {
 
   // Start periodic cleanup
   startPeriodicCleanup(intervalMs: number = 60 * 60 * 1000): void { // 1 hour
-    setInterval(() => {
+    if (this.cleanupInterval) {
+      this.logger.warn('auth', 'Token cleanup already scheduled');
+      return;
+    }
+
+    this.cleanupInterval = setInterval(() => {
       this.cleanupExpiredTokens();
     }, intervalMs);
 
     this.logger.info('auth', `Started periodic token cleanup (${intervalMs}ms interval)`);
+  }
+
+  stopPeriodicCleanup(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = undefined;
+      this.logger.info('auth', 'Stopped periodic token cleanup');
+    }
   }
 }
 

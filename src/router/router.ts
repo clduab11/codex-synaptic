@@ -159,7 +159,7 @@ export class RoutingPolicyService {
       
       // Return fallback routing
       return {
-        agentType: 'code_worker' as AgentType,
+        agentType: AgentType.CODE_WORKER,
         confidence: 0.1,
         reasoning: `Routing evaluation failed: ${error}. Using fallback agent.`,
         alternatives: [],

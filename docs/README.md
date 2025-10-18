@@ -19,12 +19,18 @@ Welcome to the comprehensive documentation for Codex-Synaptic, the ultimate AI a
 - [**API Reference**](./api/) - Complete API documentation
 - [**Development Guide**](./guides/development.md) - Setting up development environment
 - [**Contributing**](./guides/contributing.md) - How to contribute to the project
+- [**Adaptive Tooling & Validation**](./guides/adaptive-tooling.md) - Tool optimiser, reasoning planner, and consensus gating workflows
+- [**Authentication CLI**](../README.md#authentication-cli) - Generate bearer tokens for secured endpoints
+- [**Multi-Tenancy Architecture (Draft)**](./architecture/multi-tenancy.md) - Tenant isolation design notes and rollout strategy
 
 ### Operations & Monitoring
 - [**Security**](./security.md) - Security model and best practices
 - [**Telemetry**](./telemetry.md) - Monitoring and observability
 - [**Testing**](./testing.md) - Testing strategies and guidelines
 - [**Deployment**](./guides/deployment.md) - Production deployment guide
+- [**Telemetry Exporter Runbook**](./runbooks/telemetry-exporters.md) - Exporting metrics snapshots for dashboards
+- [**Validation Gating Runbook**](./runbooks/validation-gating.md) - Operating the consensus approval gates
+- [**Week 3 Test Checklist**](./tests/week-3-prep.md) - Upcoming regression and integration suites
 
 ## 🚀 Getting Started
 

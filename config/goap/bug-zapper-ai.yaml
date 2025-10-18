@@ -1,0 +1,470 @@
+id: bug-zapper-ai
+version: 1
+metadata:
+  name: Bug Zapper AI Lab
+  description: >-
+    GOAP manifest that scaffolds an automated bug bounty hunter laboratory inside the user-projects
+    workspace, configuring the swarm footprint and seeding documentation, code stubs, and templates.
+  tags:
+    - goap
+    - bug-bounty
+    - automation
+triggers:
+  phrases:
+    - bug zapper
+    - bug bounty lab
+    - bounty recon
+defaultGoal: scaffold_lab
+goals:
+  - id: scaffold_lab
+    description: Provision workspace assets, configure the swarm footprint, and seed documentation.
+    actions:
+      - type: log
+        message: Preparing Bug Zapper AI lab scaffold.
+      - type: ensure_directories
+        paths:
+          - bug-zapper-ai
+          - bug-zapper-ai/goap
+          - bug-zapper-ai/src
+          - bug-zapper-ai/src/connectors
+          - bug-zapper-ai/src/media
+          - bug-zapper-ai/docs
+      - type: configure_mesh
+        topology: mesh
+        nodes: 12
+      - type: deploy_agents
+        agents:
+          - type: planning_worker
+            count: 1
+          - type: research_worker
+            count: 2
+          - type: architect_worker
+            count: 1
+          - type: code_worker
+            count: 2
+          - type: validation_worker
+            count: 1
+          - type: knowledge_worker
+            count: 1
+          - type: observability_worker
+            count: 1
+          - type: automation_worker
+            count: 1
+          - type: communication_worker
+            count: 1
+      - type: start_swarm
+        algorithm: pso
+        objectives:
+          - recon_quality
+          - remediation_velocity
+          - evidence_depth
+      - type: execute_tool
+        description: Seed lab README
+        tool: filesystem_write_asset
+        params:
+          path: bug-zapper-ai/README.md
+          content: |
+            # 🐞 Bug Zapper AI Lab
+
+            The Bug Zapper AI lab demonstrates how Codex-Synaptic's GOAP manifests can bootstrap a full-stack, automated bug bounty workflow. Executing the GOAP profile will:
+
+            - Configure a mesh topology tuned for research and remediation bursts.
+            - Deploy a curated squad of planning, research, code, validation, knowledge, automation, and observability agents.
+            - Generate documentation, GOAP action schemas, TypeScript stubs, and reporting templates under `user-projects/bug-zapper-ai/`.
+
+            The lab fuses:
+
+            - **MCP intelligence feeds** that hydrate a rolling backlog of bounties from HackerOne, Bugcrowd, Intigriti, and curated private programs.
+            - A **Goal-Oriented Action Planning (GOAP)** graph that breaks down bounty hunts into recon, reproduction, remediation, and reporting stages.
+            - **Media automation helpers** that coordinate screenshots, narrated video clips, and realtime audio updates for operator hand-offs.
+
+            ## Quickstart
+
+            ```bash
+            codex-synaptic hive-mind spawn "Bootstrap the Bug Zapper AI lab" \
+              --strategy goap \
+              --goap-profile bug-zapper-ai
+            ```
+
+            This command configures the swarm, seeds project assets, and stores everything in `user-projects/bug-zapper-ai/`.
+
+            After scaffolding is in place, point the hive-mind at a specific objective:
+
+            ```bash
+            codex-synaptic hive-mind spawn "Hunt top Rust bounty and capture evidence" \
+              --codex \
+              --context user-projects/bug-zapper-ai/goap/bug-zapper-plan.yaml \
+              --require-consensus
+            ```
+
+            ## Repository Layout
+
+            | Path | Purpose |
+            |------|---------|
+            | `goap/bug-zapper-plan.yaml` | Canonical GOAP action definitions for discovery → reproduction → remediation → reporting. |
+            | `src/index.ts` | Entry point that wires Codex-Synaptic subsystems together and exposes helper routines. |
+            | `src/connectors/mcp-feeds.ts` | MCP client adapters for bounty intelligence platforms. |
+            | `src/media/artifact-pipeline.ts` | Utilities for synthesising screenshots, video reenactments, and realtime audio briefs. |
+            | `docs/report-template.md` | Submission-ready template populated by KnowledgeWorker. |
+
+            ## Operating Modes
+
+            ### Recon Sweep
+
+            - Schedules MCP harvesters (default every 15 minutes via `RECON_INTERVAL_MS`).
+            - Scores opportunities using payout, complexity, exploit hints, and recency.
+            - Streams telemetry events for the GoalPlanner's heuristics.
+
+            ### Exploit Studio
+
+            - Spins isolated sandboxes to reproduce suspected vulnerabilities.
+            - Captures runtime traces and attaches artefacts for validation.
+            - Promotes successful reproductions into the evidence backlog.
+
+            ### Media Forge
+
+            - Builds visual aids from observability snapshots.
+            - Captures Playwright-driven screenshots, Sora video reenactments, and OpenAI Realtime audio briefs.
+            - Bundles artefacts for submission under `memory://bounties/<target>/`.
+
+            ### Submission Gate
+
+            - ConsensusCoordinator reviews remediation diffs and evidence.
+            - KnowledgeWorker composes the final report using `docs/report-template.md`.
+            - AutomationWorker handles optional direct portal submissions.
+
+            ## Extending the Lab
+
+            1. **Add new feeds**: drop MCP descriptors into `src/connectors/feeds/` and register them in `loadBountyFeeds()`.
+            2. **Custom actions**: extend `goap/bug-zapper-plan.yaml` with new actions or alternate branches.
+            3. **Sandbox providers**: implement the `SandboxStrategy` interface in `src/sandbox/` to integrate Docker, Firecracker, or cloud sandboxes.
+            4. **Evidence policies**: adapt `docs/report-template.md` and `src/media/artifact-pipeline.ts` to match disclosure requirements.
+
+            ## GOAP Cheat Sheet
+
+            The GoalPlanner follows the guidance from [goal-planner.md](https://gist.github.com/ruvnet/d5d7686dd96d83fc7ef8968cb57d4b57): assess state, evaluate actions, generate plans, monitor execution, and replan dynamically. See `goap/bug-zapper-plan.yaml` for concrete schemas that blend deterministic automation with LLM-driven ideation.
+      - type: execute_tool
+        description: Seed agent briefing
+        tool: filesystem_write_asset
+        params:
+          path: bug-zapper-ai/AGENTS.md
+          content: |
+            # Agent Briefing — Bug Zapper AI Lab
+
+            ## Mission Overview
+
+            Coordinate a GOAP-directed bug bounty hunt from recon to remediation while producing high-fidelity evidence bundles for operator review.
+
+            ### Core Squad
+
+            - **PlanningWorker** — Interprets GOAP graph, schedules branches, and supervises replanning when conditions shift.
+            - **ResearchWorker (x2)** — Harvests intel from MCP feeds, ranks bounties, and enriches target dossiers.
+            - **ArchitectWorker** — Designs exploitation and remediation blueprints aligned with platform constraints.
+            - **CodeWorker (x2)** — Produces and hardens proof-of-concept exploits plus remediation patches.
+            - **ValidationWorker** — Confirms exploit reproduction, executes regression suites, and signs off on fixes.
+            - **KnowledgeWorker** — Compiles submission reports, executive summaries, and operator briefings.
+            - **AutomationWorker** — Coordinates MCP tool usage, sandbox orchestration, and evidence bundling.
+            - **ObservabilityWorker** — Captures metrics snapshots for dashboards and embeds them into reports.
+            - **CommunicationWorker** — Prepares stakeholder updates and escalations.
+
+            ### Support Roles
+
+            - **SecurityWorker** — Reviews patches for regressions and defensive coverage.
+            - **SimulationWorker** — Replays exploit timelines to validate edge cases.
+            - **ComplianceWorker** — Cross-checks submissions against program policy.
+            - **MemoryWorker** — Archives artefacts into `memory://bounties/<target>/` namespaces.
+
+            ## Execution Playbook
+
+            1. **Bootstrap** — Execute GOAP goal `scaffold_lab` to materialise assets under `user-projects/bug-zapper-ai/`.
+            2. **Recon** — Stream MCP feeds via `loadBountyFeeds()` and prioritise listings based on payout, SLA, and complexity.
+            3. **Reproduction** — Trigger sandbox runs, capture traces, and store evidence snapshots.
+            4. **Remediation** — Synthesize patches alongside validation data; loop until consensus approves.
+            5. **Reporting** — Populate `docs/report-template.md`, attach multimedia artefacts, and stage submissions.
+
+            ## Coordinates
+
+            - **GOAP Manifest**: `config/goap/bug-zapper-ai.yaml`
+            - **Action Graph**: `user-projects/bug-zapper-ai/goap/bug-zapper-plan.yaml`
+            - **Swarm Objective Tags**: `recon_quality`, `remediation_velocity`, `evidence_depth`
+            - **Evidence Vault**: `memory://bounties/<target>/`
+      - type: execute_tool
+        description: Seed GOAP action plan
+        tool: filesystem_write_asset
+        params:
+          path: bug-zapper-ai/goap/bug-zapper-plan.yaml
+          content: |
+            version: 1
+            profile:
+              id: bug-zapper-ai-plan
+              name: Bug Zapper AI GOAP Graph
+              description: >-
+                Canonical action graph describing the recon → reproduction → remediation → reporting cadence for the
+                bug bounty lab. Actions blend deterministic automation with LLM-driven ideation.
+            state:
+              initial:
+                has_scaffold: true
+                recon_queue_populated: false
+                target_selected: false
+                exploit_reproduced: false
+                remediation_validated: false
+                submission_bundle_ready: false
+              goal:
+                submission_bundle_ready: true
+            actions:
+              - id: populate_recon_queue
+                label: Populate Recon Queue
+                description: Ingest bounty listings from MCP feeds and rank them.
+                cost: 1
+                preconditions:
+                  recon_queue_populated: false
+                effects:
+                  recon_queue_populated: true
+                controller:
+                  type: research_worker
+                  notes:
+                    - Call `loadBountyFeeds()` and compute weighted scores.
+                    - Persist top candidates to memory namespace `bounty_backlog`.
+              - id: select_target
+                label: Select Target
+                description: Choose a bounty target that fits agent capabilities and SLA.
+                cost: 2
+                preconditions:
+                  recon_queue_populated: true
+                  target_selected: false
+                effects:
+                  target_selected: true
+                controller:
+                  type: planning_worker
+                  notes:
+                    - Evaluate payout, exploit hints, scope, and tooling readiness.
+                    - Emit checkpoint `target-locked` with rationale and fallback options.
+              - id: reproduce_vulnerability
+                label: Reproduce Vulnerability
+                description: Execute sandbox runs to confirm the suspected vulnerability.
+                cost: 3
+                preconditions:
+                  target_selected: true
+                  exploit_reproduced: false
+                effects:
+                  exploit_reproduced: true
+                controller:
+                  type: validation_worker
+                  notes:
+                    - Request sandbox from AutomationWorker.
+                    - Capture traces and attach them to `evidence_backlog`.
+              - id: craft_remediation
+                label: Craft Remediation
+                description: Produce and validate a remediation patch with regression coverage.
+                cost: 3
+                preconditions:
+                  exploit_reproduced: true
+                  remediation_validated: false
+                effects:
+                  remediation_validated: true
+                controller:
+                  type: code_worker
+                  notes:
+                    - Pair with ArchitectWorker for design review.
+                    - Loop with ValidationWorker until regression suite passes.
+              - id: assemble_submission
+                label: Assemble Submission
+                description: Generate final report, multimedia artefacts, and operator brief.
+                cost: 2
+                preconditions:
+                  remediation_validated: true
+                  submission_bundle_ready: false
+                effects:
+                  submission_bundle_ready: true
+                controller:
+                  type: knowledge_worker
+                  notes:
+                    - Populate `docs/report-template.md`.
+                    - Attach screenshots, video reenactments, and audio summary.
+            transitions:
+              - from: populate_recon_queue
+                to:
+                  - select_target
+              - from: select_target
+                to:
+                  - reproduce_vulnerability
+              - from: reproduce_vulnerability
+                to:
+                  - craft_remediation
+              - from: craft_remediation
+                to:
+                  - assemble_submission
+      - type: execute_tool
+        description: Seed bounty report template
+        tool: filesystem_write_asset
+        params:
+          path: bug-zapper-ai/docs/report-template.md
+          content: |
+            # Bug Bounty Submission — {{target}}
+
+            ## Summary
+
+            - **Program**: {{program}}
+            - **Target**: {{target}}
+            - **Severity**: {{severity}}
+            - **Payout Tier**: {{payout}}
+            - **Discovery Date**: {{discovered_at}}
+
+            ## Impact
+
+            {{impact_overview}}
+
+            ## Reproduction Steps
+
+            1. {{step_one}}
+            2. {{step_two}}
+            3. {{step_three}}
+
+            _Attach screenshots, logs, and video links under the Evidence section._
+
+            ## Remediation
+
+            - **Fix Summary**: {{fix_summary}}
+            - **Validation**: {{validation_notes}}
+            - **Regression Coverage**: {{regression_scope}}
+
+            ## Evidence
+
+            - Screenshots: {{screenshots}}
+            - Video Walkthrough: {{video_link}}
+            - Audio Brief: {{audio_link}}
+            - Logs / Attachments: {{attachments}}
+
+            ## Operator Notes
+
+            {{operator_notes}}
+      - type: execute_tool
+        description: Seed lab orchestrator entry point
+        tool: filesystem_write_asset
+        params:
+          path: bug-zapper-ai/src/index.ts
+          content: |
+            /**
+             * Bug Zapper AI lab entry point helpers.
+             */
+
+            export interface BugZapperMissionConfig {
+              target?: string;
+              reconWindowMinutes?: number;
+              dryRun?: boolean;
+            }
+
+            export interface EvidenceBundlePlan {
+              screenshots: string[];
+              videoDemonstrations: string[];
+              audioBriefs: string[];
+              notes: string;
+            }
+
+            export async function bootstrapBugZapperMission(config: BugZapperMissionConfig = {}): Promise<void> {
+              const target = config.target ?? 'unassigned target';
+              const windowMinutes = config.reconWindowMinutes ?? 15;
+              const dryRun = config.dryRun ? ' (dry-run)' : '';
+              console.log(`[BugZapper] Initialising mission for ${target}${dryRun}. Recon window: ${windowMinutes} minutes.`);
+            }
+
+            export async function runBugZapperReconCycle(config: BugZapperMissionConfig = {}): Promise<void> {
+              const windowMinutes = config.reconWindowMinutes ?? 15;
+              console.log(`[BugZapper] Running recon cycle (window=${windowMinutes}m).`);
+            }
+
+            export function planEvidenceBundle(target: string): EvidenceBundlePlan {
+              return {
+                screenshots: [`memory://bounties/${target}/screenshots`],
+                videoDemonstrations: [`memory://bounties/${target}/video`],
+                audioBriefs: [`memory://bounties/${target}/audio`],
+                notes: 'Populate using docs/report-template.md and attach artefacts before submission.'
+              };
+            }
+      - type: execute_tool
+        description: Seed MCP feed connectors
+        tool: filesystem_write_asset
+        params:
+          path: bug-zapper-ai/src/connectors/mcp-feeds.ts
+          content: |
+            export interface BountyProgram {
+              id: string;
+              platform: 'hackerone' | 'bugcrowd' | 'intigriti' | 'private';
+              rewardRange: [number, number];
+              slaDays: number;
+              signal: number;
+              metadata?: Record<string, string>;
+            }
+
+            export interface BountyFeedConfig {
+              endpoint: string;
+              authTokenEnv?: string;
+              refreshMinutes: number;
+            }
+
+            export interface BountyFeedSnapshot {
+              config: BountyFeedConfig;
+              programs: BountyProgram[];
+              fetchedAt: string;
+            }
+
+            const DEFAULT_FEEDS: BountyFeedConfig[] = [
+              { endpoint: 'mcp://feeds/hackerone', refreshMinutes: 15, authTokenEnv: 'H1_TOKEN' },
+              { endpoint: 'mcp://feeds/bugcrowd', refreshMinutes: 20, authTokenEnv: 'BUGCROWD_TOKEN' },
+              { endpoint: 'mcp://feeds/intigriti', refreshMinutes: 20, authTokenEnv: 'INTIGRITI_TOKEN' },
+              { endpoint: 'mcp://feeds/private-programs', refreshMinutes: 30 }
+            ];
+
+            export async function loadBountyFeeds(feeds: BountyFeedConfig[] = DEFAULT_FEEDS): Promise<BountyFeedSnapshot[]> {
+              const now = new Date().toISOString();
+              return feeds.map((feed) => ({
+                config: feed,
+                programs: [],
+                fetchedAt: now
+              }));
+            }
+
+            export function rankBountyPrograms(programs: BountyProgram[]): BountyProgram[] {
+              return [...programs].sort((a, b) => b.signal - a.signal || b.rewardRange[1] - a.rewardRange[1]);
+            }
+      - type: execute_tool
+        description: Seed media artifact pipeline helper
+        tool: filesystem_write_asset
+        params:
+          path: bug-zapper-ai/src/media/artifact-pipeline.ts
+          content: |
+            export interface MediaArtifactPlan {
+              screenshots: string[];
+              videos: string[];
+              audioBriefs: string[];
+              attachments: string[];
+            }
+
+            export interface ArtifactRequest {
+              target: string;
+              includeVideo?: boolean;
+              includeAudio?: boolean;
+            }
+
+            export function buildArtifactPlan(request: ArtifactRequest): MediaArtifactPlan {
+              const basePath = `memory://bounties/${request.target}`;
+              const plan: MediaArtifactPlan = {
+                screenshots: [`${basePath}/screenshots`],
+                videos: [],
+                audioBriefs: [],
+                attachments: [`${basePath}/attachments`]
+              };
+
+              if (request.includeVideo) {
+                plan.videos.push(`${basePath}/video`);
+              }
+
+              if (request.includeAudio) {
+                plan.audioBriefs.push(`${basePath}/audio`);
+              }
+
+              return plan;
+            }
+      - type: log
+        level: info
+        message: Bug Zapper AI lab scaffold complete.

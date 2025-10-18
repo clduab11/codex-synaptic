@@ -6,6 +6,7 @@ import { EventEmitter } from 'events';
 import { Logger } from './logger.js';
 import { Task, TaskStatus, AgentId } from './types.js';
 import { AgentRegistry } from '../agents/registry.js';
+import { ResourceManager } from './resources.js';
 
 // Simple UUID generator for testing
 function generateUUID(): string {
@@ -16,6 +17,15 @@ function generateUUID(): string {
   });
 }
 
+const MAX_TASK_DEFERRAL_COUNT = 5;
+const MAX_TASK_DEFERRAL_MS = 5000;
+
+interface TaskDeferralState {
+  count: number;
+  firstDeferAt: number;
+  lastReason: string;
+}
+
 export class TaskScheduler extends EventEmitter {
   private logger = Logger.getInstance();
   private pendingTasks: Map<string, Task> = new Map();
@@ -24,8 +34,9 @@ export class TaskScheduler extends EventEmitter {
   private taskQueue: Task[] = [];
   private schedulerInterval?: NodeJS.Timeout;
   private isRunning = false;
+  private taskDeferrals: Map<string, TaskDeferralState> = new Map();
 
-  constructor(private agentRegistry: AgentRegistry) {
+  constructor(private agentRegistry: AgentRegistry, private resourceManager?: ResourceManager) {
     super();
     this.logger.info('scheduler', 'Task scheduler created');
   }
@@ -35,7 +46,7 @@ export class TaskScheduler extends EventEmitter {
     
     this.isRunning = true;
     this.schedulerInterval = setInterval(() => {
-      this.processTasks();
+      void this.processTasks();
     }, 1000); // Check every second
 
     this.setupEventHandlers();
@@ -79,6 +90,7 @@ export class TaskScheduler extends EventEmitter {
     );
 
     for (const task of affectedTasks) {
+      this.resourceManager?.releaseTenantTaskSlot(task.tenantId);
       task.status = TaskStatus.PENDING;
       task.assignedTo = undefined;
       this.runningTasks.delete(task.id);
@@ -97,6 +109,7 @@ export class TaskScheduler extends EventEmitter {
     requiredCapabilities: string[];
     payload: Record<string, any>;
     deadline?: Date;
+    tenantId?: string;
   }): Task {
     const task: Task = {
       id: generateUUID(),
@@ -104,6 +117,7 @@ export class TaskScheduler extends EventEmitter {
       priority: taskData.priority || 0,
       requiredCapabilities: taskData.requiredCapabilities,
       payload: taskData.payload,
+      tenantId: taskData.tenantId,
       created: new Date(),
       deadline: taskData.deadline,
       status: TaskStatus.PENDING
@@ -120,17 +134,18 @@ export class TaskScheduler extends EventEmitter {
       return a.created.getTime() - b.created.getTime();
     });
 
-    this.logger.info('scheduler', 'Task submitted', { 
-      taskId: task.id, 
-      type: task.type, 
-      priority: task.priority 
+    this.logger.info('scheduler', 'Task submitted', {
+      taskId: task.id,
+      type: task.type,
+      priority: task.priority,
+      tenantId: task.tenantId
     });
     
     this.emit('taskSubmitted', task);
     return task;
   }
 
-  private processTasks(): void {
+  private async processTasks(): Promise<void> {
     if (!this.isRunning || this.taskQueue.length === 0) {
       return;
     }
@@ -144,14 +159,30 @@ export class TaskScheduler extends EventEmitter {
     let tasksProcessed = 0;
     while (this.taskQueue.length > 0 && tasksProcessed < 10) { // Limit batch size
       const task = this.taskQueue[0];
-      
       const suitableAgent = this.findSuitableAgent(task, availableAgents);
-      if (suitableAgent) {
-        this.assignTaskToAgent(task, suitableAgent);
+      if (!suitableAgent) {
+        break;
+      }
+
+      try {
+        await this.assignTaskToAgent(task, suitableAgent);
         this.taskQueue.shift();
+        this.taskDeferrals.delete(task.id);
         tasksProcessed++;
-      } else {
-        // No suitable agent available, stop processing for now
+      } catch (error) {
+        const outcome = this.handleTenantQuotaDeferral(task, error as Error);
+        if (outcome === 'failed') {
+          this.removeTaskFromQueue(task.id);
+          this.taskDeferrals.delete(task.id);
+          tasksProcessed++;
+          continue;
+        }
+
+        this.logger.debug('scheduler', 'Task assignment deferred', {
+          taskId: task.id,
+          tenantId: task.tenantId,
+          reason: (error as Error).message
+        });
         break;
       }
     }
@@ -177,37 +208,46 @@ export class TaskScheduler extends EventEmitter {
 
   private async assignTaskToAgent(task: Task, agentId: AgentId): Promise<void> {
     try {
+      this.resourceManager?.acquireTenantTaskSlot(task.tenantId);
+    } catch (error) {
+      this.logger.warn('scheduler', 'Tenant quota reached, deferring assignment', {
+        taskId: task.id,
+        tenantId: task.tenantId,
+        reason: (error as Error).message
+      });
+      throw error;
+    }
+
+    try {
       task.assignedTo = agentId;
       task.status = TaskStatus.ASSIGNED;
-      
-      // Move task from pending to running
+
       this.pendingTasks.delete(task.id);
       this.runningTasks.set(task.id, task);
 
-      // Notify agent (this would be handled by the agent registry/communication layer)
       await this.agentRegistry.assignTask(agentId, task);
-      
+
       task.status = TaskStatus.RUNNING;
-      
-      this.logger.info('scheduler', 'Task assigned to agent', { 
-        taskId: task.id, 
-        agentId: agentId.id 
+
+      this.logger.info('scheduler', 'Task assigned to agent', {
+        taskId: task.id,
+        agentId: agentId.id,
+        tenantId: task.tenantId
       });
-      
+
       this.emit('taskAssigned', task, agentId);
-      
     } catch (error) {
-      this.logger.error('scheduler', 'Failed to assign task to agent', { 
-        taskId: task.id, 
-        agentId: agentId.id 
+      this.resourceManager?.releaseTenantTaskSlot(task.tenantId);
+      this.logger.error('scheduler', 'Failed to assign task to agent', {
+        taskId: task.id,
+        agentId: agentId.id
       }, error as Error);
-      
-      // Revert task status
+
       task.status = TaskStatus.PENDING;
       task.assignedTo = undefined;
       this.runningTasks.delete(task.id);
       this.pendingTasks.set(task.id, task);
-      this.taskQueue.unshift(task);
+      throw error;
     }
   }
 
@@ -222,6 +262,7 @@ export class TaskScheduler extends EventEmitter {
       task.status = TaskStatus.FAILED;
       task.error = 'Task deadline exceeded';
       
+      this.resourceManager?.releaseTenantTaskSlot(task.tenantId);
       this.runningTasks.delete(task.id);
       this.completedTasks.set(task.id, task);
       
@@ -240,10 +281,12 @@ export class TaskScheduler extends EventEmitter {
     task.status = TaskStatus.COMPLETED;
     task.result = result;
     
+    this.resourceManager?.releaseTenantTaskSlot(task.tenantId);
     this.runningTasks.delete(taskId);
     this.completedTasks.set(taskId, task);
+    this.taskDeferrals.delete(taskId);
     
-    this.logger.info('scheduler', 'Task completed', { taskId });
+    this.logger.info('scheduler', 'Task completed', { taskId, tenantId: task.tenantId });
     this.emit('taskCompleted', task);
   }
 
@@ -257,10 +300,12 @@ export class TaskScheduler extends EventEmitter {
     task.status = TaskStatus.FAILED;
     task.error = error;
     
+    this.resourceManager?.releaseTenantTaskSlot(task.tenantId);
     this.runningTasks.delete(taskId);
     this.completedTasks.set(taskId, task);
+    this.taskDeferrals.delete(taskId);
     
-    this.logger.warn('scheduler', 'Task failed', { taskId, error });
+    this.logger.warn('scheduler', 'Task failed', { taskId, error, tenantId: task.tenantId });
     this.emit('taskFailed', task);
   }
 
@@ -297,5 +342,71 @@ export class TaskScheduler extends EventEmitter {
 
   getTaskQueue(): Task[] {
     return [...this.taskQueue];
+  }
+
+  private handleTenantQuotaDeferral(task: Task, error: Error): 'failed' | 'deferred' | 'unhandled' {
+    if (!task.tenantId) {
+      return 'unhandled';
+    }
+
+    const message = error.message || '';
+    if (!message.toLowerCase().includes('quota')) {
+      return 'unhandled';
+    }
+
+    const now = Date.now();
+    const state = this.taskDeferrals.get(task.id) ?? {
+      count: 0,
+      firstDeferAt: now,
+      lastReason: message
+    };
+
+    state.count += 1;
+    state.lastReason = message;
+    if (!this.taskDeferrals.has(task.id)) {
+      this.taskDeferrals.set(task.id, state);
+    }
+
+    const tenantLimit = this.resourceManager?.getTenantTaskLimit(task.tenantId);
+    const elapsed = now - state.firstDeferAt;
+    const shouldFail = (tenantLimit !== undefined && tenantLimit <= 0) ||
+      state.count >= MAX_TASK_DEFERRAL_COUNT ||
+      elapsed >= MAX_TASK_DEFERRAL_MS;
+
+    if (!shouldFail) {
+      return 'deferred';
+    }
+
+    this.failPendingTask(task, message);
+    this.taskDeferrals.delete(task.id);
+    return 'failed';
+  }
+
+  private failPendingTask(task: Task, reason: string): void {
+    this.pendingTasks.delete(task.id);
+    this.runningTasks.delete(task.id);
+    this.removeTaskFromQueue(task.id);
+
+    task.status = TaskStatus.FAILED;
+    task.error = reason;
+    this.completedTasks.set(task.id, task);
+
+    this.logger.warn('scheduler', 'Task failed due to tenant quota', {
+      taskId: task.id,
+      tenantId: task.tenantId,
+      reason
+    });
+    this.emit('taskFailed', task);
+  }
+
+  private removeTaskFromQueue(taskId: string): void {
+    if (this.taskQueue.length === 0) {
+      return;
+    }
+    if (this.taskQueue[0]?.id === taskId) {
+      this.taskQueue.shift();
+      return;
+    }
+    this.taskQueue = this.taskQueue.filter((queuedTask) => queuedTask.id !== taskId);
   }
 }

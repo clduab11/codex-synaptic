@@ -7,7 +7,7 @@
     "codex-synaptic": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/dev-cli-link.mjs",
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
@@ -15,6 +15,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write src/**/*.ts",
     "cli": "ts-node src/cli/index.ts",
+    "cli:link": "node scripts/dev-cli-link.mjs",
     "prepare": "npm run build",
     "test:watch": "vitest",
     "export:metrics": "ts-node scripts/observability/exporter.ts"
@@ -50,13 +51,16 @@
     "vitest": "^1.6.1"
   },
   "dependencies": {
+    "@openai/agents": "^0.1.10",
     "chalk": "^5.6.2",
     "commander": "^14.0.0",
     "crypto-js": "^4.2.0",
     "inquirer": "^12.9.4",
     "js-yaml": "^4.1.0",
+    "openai": "^6.5.0",
     "sqlite3": "^5.1.7",
     "uuid": "^13.0.0",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "zod": "^3.25.76"
   }
 }

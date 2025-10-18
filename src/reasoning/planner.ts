@@ -25,6 +25,10 @@ export interface ReasoningPlanCreationResult {
   totPlan?: TotPlanResult;
 }
 
+export interface ReasoningPlanContext {
+  tenantId?: string;
+}
+
 export interface ReasoningCheckpointInput {
   label: string;
   status: 'pending' | 'complete' | 'failed';
@@ -52,7 +56,11 @@ export class ReasoningPlanner {
     this.logger = deps.logger ?? Logger.getInstance('reasoning');
   }
 
-  async createPlan(prompt: string, options: ReasoningPlanOptions = {}): Promise<ReasoningPlanCreationResult> {
+  async createPlan(
+    prompt: string,
+    options: ReasoningPlanOptions = {},
+    context: ReasoningPlanContext = {}
+  ): Promise<ReasoningPlanCreationResult> {
     const planId = randomUUID();
     const allowedTypes: ReasoningPlanType[] = ['tot', 'react', 'custom'];
     const planTypeInput = options.planType ?? 'tot';
@@ -84,10 +92,11 @@ export class ReasoningPlanner {
       checkpoints: [],
       metadata: options.metadata,
       durationMs: 0,
+      tenantId: context.tenantId,
       timestamp: createdAt
     };
 
-    const consensus = await this.maybeProposeConsensus(runRecord, options.requireConsensus);
+    const consensus = await this.maybeProposeConsensus(runRecord, options.requireConsensus, context);
     if (consensus?.proposalId) {
       runRecord.validation = {
         consensusProposalId: consensus.proposalId,
@@ -95,7 +104,7 @@ export class ReasoningPlanner {
       };
     }
 
-    await this.persistRun(runRecord);
+    await this.persistRun(runRecord, context);
 
     return {
       planId,
@@ -108,8 +117,12 @@ export class ReasoningPlanner {
     };
   }
 
-  async checkpoint(planId: string, input: ReasoningCheckpointInput): Promise<ReasoningRunRecord> {
-    const latest = await this.getLatest(planId);
+  async checkpoint(
+    planId: string,
+    input: ReasoningCheckpointInput,
+    context: ReasoningPlanContext = {}
+  ): Promise<ReasoningRunRecord> {
+    const latest = await this.getLatest(planId, context);
     if (!latest) {
       throw new Error(`Reasoning plan ${planId} not found`);
     }
@@ -129,12 +142,16 @@ export class ReasoningPlanner {
       timestamp: new Date().toISOString()
     };
 
-    await this.persistRun(record);
+    await this.persistRun(record, context);
     return record;
   }
 
-  async complete(planId: string, options: ReasoningCompletionOptions): Promise<ReasoningRunRecord> {
-    const latest = await this.getLatest(planId);
+  async complete(
+    planId: string,
+    options: ReasoningCompletionOptions,
+    context: ReasoningPlanContext = {}
+  ): Promise<ReasoningRunRecord> {
+    const latest = await this.getLatest(planId, context);
     if (!latest) {
       throw new Error(`Reasoning plan ${planId} not found`);
     }
@@ -154,16 +171,16 @@ export class ReasoningPlanner {
       timestamp: new Date().toISOString()
     };
 
-    await this.persistRun(record);
+    await this.persistRun(record, context);
     return record;
   }
 
-  async resume(planId: string): Promise<ReasoningRunRecord | null> {
-    return this.getLatest(planId);
+  async resume(planId: string, context: ReasoningPlanContext = {}): Promise<ReasoningRunRecord | null> {
+    return this.getLatest(planId, context);
   }
 
-  async list(limit = 10): Promise<ReasoningRunRecord[]> {
-    return this.deps.memory.listReasoningRuns(limit);
+  async list(limit = 10, context: ReasoningPlanContext = {}): Promise<ReasoningRunRecord[]> {
+    return this.deps.memory.listReasoningRuns(limit, { tenantId: context.tenantId });
   }
 
   async handleConsensusResult(payload: any): Promise<void> {
@@ -196,12 +213,13 @@ export class ReasoningPlanner {
       timestamp: new Date().toISOString()
     };
 
-    await this.persistRun(record);
+    await this.persistRun(record, { tenantId: latest.tenantId });
   }
 
   private async maybeProposeConsensus(
     record: ReasoningRunRecord,
-    requireConsensus?: boolean
+    requireConsensus: boolean | undefined,
+    context: ReasoningPlanContext
   ): Promise<{ required: boolean; proposalId?: string } | undefined> {
     if (!requireConsensus) {
       return { required: false };
@@ -214,7 +232,8 @@ export class ReasoningPlanner {
       planId: record.planId,
       prompt: record.prompt,
       planType: record.planType,
-      requestedAt: new Date().toISOString()
+      requestedAt: new Date().toISOString(),
+      tenantId: context.tenantId
     });
 
     return {
@@ -223,15 +242,18 @@ export class ReasoningPlanner {
     };
   }
 
-  private async getLatest(planId: string): Promise<ReasoningRunRecord | null> {
-    return this.deps.memory.getLatestReasoningRun(planId);
+  private async getLatest(planId: string, context: ReasoningPlanContext = {}): Promise<ReasoningRunRecord | null> {
+    return this.deps.memory.getLatestReasoningRun(planId, { tenantId: context.tenantId });
   }
 
-  private async persistRun(record: ReasoningRunRecord): Promise<number> {
+  private async persistRun(record: ReasoningRunRecord, context: ReasoningPlanContext = {}): Promise<number> {
     this.logger.debug('reasoning', 'Persisting reasoning run', {
       planId: record.planId,
       status: record.status
     });
-    return this.deps.memory.logReasoningRun(record);
+    return this.deps.memory.logReasoningRun(
+      { ...record, tenantId: record.tenantId ?? context.tenantId },
+      { tenantId: context.tenantId ?? record.tenantId }
+    );
   }
 }
