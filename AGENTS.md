@@ -4,6 +4,12 @@
 
 The Codex-Synaptic system enhances OpenAI's Codex with advanced multi-agent capabilities, featuring MCP/A2A bridging, neural meshes, swarm coordination, topological constraints, and various consensus mechanisms. This document outlines the comprehensive agent architecture and deployment strategies.
 
+## Operator Notes — 2025-11-05
+
+- **Consensus gating:** Recent performance-focused hive-mind rehearsals are stalling at RAFT consensus. Ensure at least three voting coordinators (e.g., `consensus_coordinator`, `review_worker`, `planning_worker`) are online before triggering workflows that require approval gates, or temporarily downgrade the quorum threshold when testing.
+- **Autoscaler behaviour:** With the background daemon disabled, idle worker retirement requests cannot execute. Expect scale-down warnings in logs and manually right-size replicas after experiments.
+- **Repository hygiene:** Active development is running from the local `codex-synaptic-clone` directory, but upstream pushes must target `github.com/clduab11/codex-synaptic`. Align the folder/remote names before release packaging so automation recipes resolve assets correctly.
+
 ## Core Agent Types
 
 ### 1. Worker Agents

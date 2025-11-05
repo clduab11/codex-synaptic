@@ -33,7 +33,7 @@ import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 import { parseFileContent, parseJsonInput, loadFileThroughFeedforward } from './feedforward.js';
 import { InstructionParser } from '../instructions/index.js';
 import { RoutingPolicyService, type RoutingRequest } from '../router/index.js';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join, resolve, relative } from 'path';
 import { ToolOptimizer, type ToolCandidate } from '../tools/optimizer/index.js';
 import { type ToolUsageRecord, type ReasoningRunRecord } from '../memory/memory-system.js';
@@ -43,16 +43,117 @@ import { goapRegistry } from '../reasoning/goap/registry.js';
 import type { SystemConfiguration } from '../core/config.js';
 import { serviceManager } from '../env/service-manager.js';
 import type { TenantQuota } from '../tenancy/types.js';
+import {
+  executeStrategy,
+  getSupportedStrategies,
+  type StrategyExecutionResult,
+  type SupportedStrategy
+} from '../reasoning/strategies/index.js';
 import { executeCodexPassthrough, isCodexCliAvailable } from './codex-passthrough.js';
+import {
+  ensureSystemBootstrapEnv,
+  normalizeConsensusMechanism,
+  parseLogLevelOption
+} from './utils/runtime-helpers.js';
+
+function loadEnvFile(filePath: string): boolean {
+  if (!existsSync(filePath)) {
+    return false;
+  }
+
+  try {
+    const content = readFileSync(filePath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    let applied = false;
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) {
+        continue;
+      }
+
+      const separatorIndex = line.indexOf('=');
+      if (separatorIndex === -1) {
+        continue;
+      }
+
+      const key = line.slice(0, separatorIndex).trim();
+      if (!key) {
+        continue;
+      }
+
+      let value = line.slice(separatorIndex + 1).trim();
+      if (!value) {
+        value = '';
+      }
+
+      const startsWithQuote = value.startsWith('"') || value.startsWith("'");
+      const endsWithQuote = value.endsWith('"') || value.endsWith("'");
+      if (startsWithQuote && endsWithQuote && value.length >= 2) {
+        value = value.slice(1, -1);
+      }
+
+      value = value.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+
+      if (process.env[key] === undefined) {
+        process.env[key] = value;
+        applied = true;
+      }
+    }
+
+    return applied;
+  } catch {
+    return false;
+  }
+}
+
+function bootstrapCliEnv(): string[] {
+  const sources: string[] = [];
+  const cwd = process.cwd();
+  const candidates = [
+    resolve(cwd, '.env'),
+    resolve(cwd, '.env.local'),
+    resolve(cwd, 'src/cli/.env')
+  ];
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    if (loadEnvFile(candidate)) {
+      sources.push(candidate);
+    }
+  }
+
+  return sources;
+}
+
+const loadedEnvSources = bootstrapCliEnv();
 
 const program = new Command();
 const session = CliSession.getInstance();
 const rootLogger = Logger.getInstance();
 const cliSilent = process.env.CODEX_CLI_SILENT === '1';
 const cliAutoShutdown = process.env.CODEX_CLI_AUTO_SHUTDOWN === '1';
+const advancedStrategyOptions = getSupportedStrategies();
+const advancedStrategySet = new Set(advancedStrategyOptions);
+const strategyOptionDescription = `Coordination strategy (${['classic', 'goap', ...advancedStrategyOptions].join('|')})`;
+let envBootstrapLogged = false;
 
 if (cliSilent) {
   rootLogger.setConsoleLevel(LogLevel.ERROR);
+}
+
+if (!cliSilent && loadedEnvSources.length) {
+  console.log(
+    chalk.gray(
+      `⚙️  Environment variables loaded from ${loadedEnvSources
+        .map((source) => relative(process.cwd(), source) || source)
+        .join(', ')}`
+    )
+  );
 }
 
 type BackgroundJob = {
@@ -210,11 +311,14 @@ function shouldAutoAttachCodexContext(prompt: string): boolean {
     && intentSignals.some((signal) => lower.includes(signal));
 }
 
+const CONSENSUS_ALWAYS_REQUIRED = new Set(['bft', 'pow', 'pos', 'hybrid']);
+
 function shouldRequireConsensus(prompt: string, consensusMode: string): boolean {
-  const lower = prompt.toLowerCase();
-  if (consensusMode === 'byzantine') {
+  const normalized = normalizeConsensusMechanism(consensusMode);
+  if (CONSENSUS_ALWAYS_REQUIRED.has(normalized)) {
     return true;
   }
+  const lower = prompt.toLowerCase();
   return /(consens|quorum|vote|majority|byzantine)/.test(lower);
 }
 
@@ -250,7 +354,8 @@ function deriveConsensusDecision(outcome: any): boolean {
 async function orchestrateConsensus(
   system: CodexSynapticSystem,
   originalPrompt: string,
-  outcome: any
+  outcome: any,
+  consensusMode: string
 ): Promise<ConsensusExecutionResult> {
   const consensusAgents = system
     .getAgentRegistry()
@@ -286,7 +391,7 @@ async function orchestrateConsensus(
         timedOut: true,
         error: 'timeout'
       });
-    }, 5000);
+  }, Math.max(system.getConsensusManager().getTimeout(), 5000));
 
     const handler = (event: any) => {
       if (event?.proposal?.id !== proposalId) {
@@ -315,24 +420,93 @@ async function orchestrateConsensus(
   if (result.timedOut) {
     console.log(
       chalk.yellow(
-        `  ⚠️  Byzantine consensus timed out for proposal ${proposalId}.`
+        `  ⚠️  ${consensusMode.toUpperCase()} consensus timed out for proposal ${proposalId}.`
       )
     );
   } else if (result.accepted) {
     console.log(
       chalk.green(
-        `  ✓ Byzantine consensus approved for proposal ${proposalId} (${result.votes ?? 0} votes).`
+        `  ✓ ${consensusMode.toUpperCase()} consensus approved for proposal ${proposalId} (${result.votes ?? 0} votes).`
       )
     );
   } else {
     console.log(
       chalk.red(
-        `  ✗ Byzantine consensus rejected for proposal ${proposalId} (${result.votes ?? 0} votes).`
+        `  ✗ ${consensusMode.toUpperCase()} consensus rejected for proposal ${proposalId} (${result.votes ?? 0} votes).`
       )
     );
   }
 
   return result;
+}
+
+function renderStrategyExecutionSummary(
+  result: StrategyExecutionResult,
+  verbose: boolean
+): void {
+  const manifestName = result.manifest.name ?? result.manifest.id;
+  const manifestVersion = result.manifest.version ? ` v${result.manifest.version}` : '';
+  const manifestLabel = `${manifestName}${manifestVersion}`;
+
+  console.log(chalk.blue('\n📊 Strategy Summary'));
+  console.log(chalk.white('Summary:'), result.summary);
+  console.log(chalk.gray(`Manifest: ${manifestLabel}`));
+  if (result.manifest.sourcePath) {
+    console.log(
+      chalk.gray(`Source: ${relative(process.cwd(), result.manifest.sourcePath)}`)
+    );
+  }
+
+  if (Array.isArray(result.warnings) && result.warnings.length) {
+    console.log(chalk.yellow('\n⚠️  Warnings:'));
+    for (const warning of result.warnings) {
+      console.log(chalk.yellow(`  • ${warning}`));
+    }
+  }
+
+  if (result.stages.length) {
+    console.log(chalk.blue('\n🔄 Stage Results:'));
+    result.stages.forEach((stage, index) => {
+      const symbol = stage.status === 'passed'
+        ? chalk.green('✓')
+        : stage.status === 'warning'
+          ? chalk.yellow('!')
+          : chalk.red('✗');
+      console.log(chalk.cyan(`  ${index + 1}. ${stage.stage} (${stage.taskId})`));
+      console.log(chalk.gray(`     ${symbol} ${stage.result.summary}`));
+      if (verbose && stage.result.observations?.length) {
+        stage.result.observations.slice(0, 5).forEach((observation) => {
+          console.log(chalk.gray(`       • ${observation}`));
+        });
+      }
+      if (verbose && stage.result.detail) {
+        console.log(chalk.gray(`       detail: ${stage.result.detail}`));
+      }
+    });
+  }
+
+  const artifactKeys = Object.keys(result.artifacts ?? {});
+  if (artifactKeys.length) {
+    console.log(chalk.blue('\n📦 Artifacts:'));
+    artifactKeys.forEach((key) => {
+      console.log(chalk.gray(`  • ${key}`));
+    });
+  }
+
+  if (result.diagnostics.length) {
+    console.log(chalk.blue('\n🩺 Diagnostics:'));
+    result.diagnostics.forEach((diagnostic) => {
+      const levelColor = diagnostic.level === 'error'
+        ? chalk.red
+        : diagnostic.level === 'warn'
+          ? chalk.yellow
+          : chalk.gray;
+      console.log(levelColor(`  • [${diagnostic.level}] ${diagnostic.message}`));
+      if (verbose && diagnostic.context) {
+        console.log(chalk.gray(`       context: ${JSON.stringify(diagnostic.context)}`));
+      }
+    });
+  }
 }
 
 program
@@ -355,7 +529,52 @@ function handleCommand<T extends any[]>(name: string, fn: (...args: T) => Promis
   };
 }
 
+function bootstrapEnvForCli(): void {
+  const summary = ensureSystemBootstrapEnv();
+  if (envBootstrapLogged || cliSilent) {
+    envBootstrapLogged = true;
+    return;
+  }
+
+  if (summary.autoSet.length) {
+    console.log(
+      chalk.gray(
+        `🔐 Bootstrapped environment: ${summary.autoSet.join(', ')} (applied for current session)`
+      )
+    );
+  }
+
+  for (const note of summary.notes) {
+    console.log(chalk.gray(`   • ${note}`));
+  }
+
+  for (const warning of summary.warnings) {
+    console.log(chalk.yellow(`⚠️  ${warning}`));
+  }
+
+  envBootstrapLogged = true;
+}
+
+function configureLogStreaming(enabled: boolean, level: LogLevel): () => void {
+  if (!enabled) {
+    return () => {};
+  }
+
+  const previousLevel = rootLogger.getConsoleLevel();
+  rootLogger.setConsoleLevel(level);
+
+  if (!cliSilent) {
+    const levelLabel = LogLevel[level] ?? 'INFO';
+    console.log(chalk.gray(`📡 Streaming orchestrator logs at ${levelLabel.toLowerCase()} level`));
+  }
+
+  return () => {
+    rootLogger.setConsoleLevel(previousLevel);
+  };
+}
+
 async function useSystem(description: string, fn: (system: CodexSynapticSystem) => Promise<void>): Promise<void> {
+  bootstrapEnvForCli();
   const alreadyRunning = !!session.getSystemUnsafe();
   if (!alreadyRunning && !cliSilent) {
     console.log(chalk.blue(`🔧 Initializing Codex-Synaptic system (${description})...`));
@@ -3438,7 +3657,12 @@ hiveMindCmd
   .command('spawn')
   .description('Spawn a coordinated hive-mind workflow from a prompt')
   .argument('<prompt...>', 'Natural language description of the task/goal')
-  .option('--strategy <type>', 'Coordination strategy (classic|goap)', 'classic')
+  .option(
+    '--strategy <type>',
+    strategyOptionDescription,
+    'classic'
+  )
+  .option('--strategy-profile <id>', 'Strategy manifest identifier for non-classic modes')
   .option('--goap-profile <id>', 'GOAP manifest identifier to execute when using the goap strategy')
   .option('--goap-goal <id>', 'Override GOAP goal identifier for the selected manifest')
   .option('--goap-dry-run', 'Preview GOAP actions without mutating the filesystem')
@@ -3456,6 +3680,8 @@ hiveMindCmd
   .option('--fault-tolerance', 'Enable fault-tolerant operation')
   .option('--mcp', 'Enable MCP bridge connections')
   .option('--debug', 'Enable debug logging')
+  .option('--stream-logs', 'Stream orchestrator logs while the hive-mind runs')
+  .option('--log-level <level>', 'Override streaming log level (debug|info|warn|error)', 'info')
   .option('--dry-run', 'Preview Codex context without executing the hive-mind spawn')
   .option('--yaml', 'Output results in YAML format (default: JSON)')
   .action(handleCommand('hive-mind.spawn', async (promptParts: string[], options) => {
@@ -3466,6 +3692,16 @@ hiveMindCmd
 
     const originalPrompt = prompt;
     const strategy = (options.strategy ?? 'classic').toLowerCase();
+    const normalizedConsensus = normalizeConsensusMechanism(options.consensus);
+    const streamLogs = Boolean(options.streamLogs);
+    const effectiveLogLevel = parseLogLevelOption(
+      options.logLevel,
+      options.debug ? LogLevel.DEBUG : LogLevel.INFO
+    );
+    const agentTarget = parseInteger(options.agents, 'agents');
+    const maxAgents = options.maxAgents ? parseInteger(options.maxAgents, 'maxAgents') : 10;
+    const timeoutMs = options.timeout ? parseInteger(options.timeout, 'timeout') * 1000 : 600000;
+    const isAdvancedStrategy = advancedStrategySet.has(strategy as SupportedStrategy);
 
     if (strategy === 'goap') {
       await useSystem('hive-mind goap', async (system) => {
@@ -3517,7 +3753,7 @@ hiveMindCmd
       return;
     }
 
-    if (strategy !== 'classic') {
+    if (strategy !== 'classic' && !isAdvancedStrategy) {
       throw new Error(`Unsupported hive-mind strategy: ${strategy}`);
     }
 
@@ -3572,15 +3808,59 @@ hiveMindCmd
       console.log(chalk.cyan('📚 Codex context attached to hive-mind prompt.'));
     }
 
+    if (isAdvancedStrategy) {
+      await useSystem(`hive-mind strategy:${strategy}`, async (system) => {
+        const restoreLogging = configureLogStreaming(streamLogs, effectiveLogLevel);
+        try {
+          if (codexContext && codexEnvelope) {
+            await primeCodexWithRetry(system, codexContext, codexEnvelope);
+          }
+
+          if (!cliSilent) {
+            const manifestDescriptor = options.strategyProfile
+              ? `manifest ${options.strategyProfile}`
+              : 'default manifest';
+            console.log(
+              chalk.blue(`🧭 Executing advanced strategy ${strategy} (${manifestDescriptor})`)
+            );
+          }
+
+          const strategyResult = await executeStrategy({
+            system,
+            strategy: strategy as SupportedStrategy,
+            prompt,
+            manifestId: options.strategyProfile,
+            agentTarget,
+            consensusMechanism: normalizedConsensus,
+            timeoutMs,
+            debug: Boolean(options.debug)
+          });
+
+          if (options.yaml) {
+            console.log(HiveMindYamlFormatter.formatStrategyExecution(strategyResult));
+          } else {
+            renderStrategyExecutionSummary(strategyResult, Boolean(options.debug));
+          }
+        } finally {
+          restoreLogging();
+        }
+      });
+
+      return;
+    }
+
+    const maxWorkers = options.maxWorkers ? parseInteger(options.maxWorkers, 'maxWorkers') : 7;
+    const priority = options.priority ? parseInteger(options.priority, 'priority') : 7;
+
     const config = {
-      agents: parseInteger(options.agents, 'agents'),
-      maxAgents: options.maxAgents ? parseInteger(options.maxAgents, 'maxAgents') : 10,
-      maxWorkers: options.maxWorkers ? parseInteger(options.maxWorkers, 'maxWorkers') : 7,
+      agents: agentTarget,
+      maxAgents,
+      maxWorkers,
       algorithm: options.algorithm,
       meshTopology: options.meshTopology || 'mesh',
-      consensus: options.consensus,
-      priority: options.priority ? parseInteger(options.priority, 'priority') : 7,
-      timeout: options.timeout ? parseInteger(options.timeout, 'timeout') * 1000 : 600000,
+      consensus: normalizedConsensus,
+      priority,
+      timeout: timeoutMs,
       autoScale: !!options.autoScale,
       queenCoordinator: !!options.queenCoordinator,
       faultTolerance: !!options.faultTolerance,
@@ -3599,137 +3879,145 @@ hiveMindCmd
     };
 
     await useSystem('hive-mind spawn', async (system) => {
-      console.log(chalk.blue('🧠 Initializing hive-mind orchestration...'));
-      console.log(chalk.gray(`Configuration: ${JSON.stringify(config, null, 2)}`));
+      const restoreLogging = configureLogStreaming(streamLogs, effectiveLogLevel);
+      try {
+        console.log(chalk.blue('🧠 Initializing hive-mind orchestration...'));
+        console.log(chalk.gray(`Configuration: ${JSON.stringify(config, null, 2)}`));
 
-      if (codexContext && codexEnvelope) {
-        await primeCodexWithRetry(system, codexContext, codexEnvelope);
-      }
-
-      // Phase 1: Infrastructure Setup
-      console.log(chalk.cyan('📡 Phase 1: Infrastructure Setup'));
-      
-      // Configure neural mesh topology
-      await system.createNeuralMesh(config.meshTopology, config.agents);
-      console.log(chalk.green(`  ✓ Neural mesh configured (${config.meshTopology}, ${config.agents} nodes)`));
-
-      // Deploy coordinators first
-      if (config.queenCoordinator) {
-        await system.deployAgent(AgentType.SWARM_COORDINATOR, 1);
-        await system.deployAgent(AgentType.TOPOLOGY_COORDINATOR, 1);
-        console.log(chalk.green('  ✓ Queen coordinator deployed'));
-      }
-
-      // Deploy consensus coordinators
-      await system.deployAgent(AgentType.CONSENSUS_COORDINATOR, 1);
-      console.log(chalk.green(`  ✓ Consensus coordinator deployed (${config.consensus})`));
-
-      // Phase 2: Agent Deployment
-      console.log(chalk.cyan('🤖 Phase 2: Agent Deployment'));
-      
-      // Calculate optimal worker distribution with specialised roles
-      const workerTypes: AgentType[] = [
-        AgentType.RESEARCH_WORKER,
-        AgentType.ARCHITECT_WORKER,
-        AgentType.ANALYST_WORKER,
-        AgentType.SECURITY_WORKER,
-        AgentType.CODE_WORKER,
-        AgentType.DATA_WORKER,
-        AgentType.VALIDATION_WORKER,
-        AgentType.PERFORMANCE_WORKER,
-        AgentType.OPS_WORKER,
-        AgentType.INTEGRATION_WORKER,
-        AgentType.SIMULATION_WORKER,
-        AgentType.KNOWLEDGE_WORKER,
-        AgentType.COMMUNICATION_WORKER,
-        AgentType.AUTOMATION_WORKER,
-        AgentType.OBSERVABILITY_WORKER,
-        AgentType.COMPLIANCE_WORKER,
-        AgentType.MEMORY_WORKER,
-        AgentType.RELIABILITY_WORKER,
-        AgentType.PLANNING_WORKER,
-        AgentType.REVIEW_WORKER
-      ];
-
-      const workerBudget = Math.min(config.maxWorkers, Math.max(config.agents - 3, 0));
-      const deploymentPlan = new Map<AgentType, number>();
-
-      for (let i = 0; i < workerTypes.length && i < workerBudget; i += 1) {
-        deploymentPlan.set(workerTypes[i], (deploymentPlan.get(workerTypes[i]) ?? 0) + 1);
-      }
-
-      let remainingWorkers = workerBudget - Math.min(workerTypes.length, workerBudget);
-      const reinforcementOrder: AgentType[] = [
-        AgentType.RESEARCH_WORKER,
-        AgentType.ARCHITECT_WORKER,
-        AgentType.ANALYST_WORKER,
-        AgentType.CODE_WORKER,
-        AgentType.VALIDATION_WORKER,
-        AgentType.KNOWLEDGE_WORKER,
-        AgentType.SECURITY_WORKER,
-        AgentType.DATA_WORKER,
-        AgentType.PERFORMANCE_WORKER,
-        AgentType.OPS_WORKER,
-        AgentType.INTEGRATION_WORKER,
-        AgentType.MEMORY_WORKER,
-        AgentType.REVIEW_WORKER
-      ];
-
-      let reinforcementIndex = 0;
-      while (remainingWorkers > 0) {
-        const type = reinforcementOrder[reinforcementIndex % reinforcementOrder.length];
-        deploymentPlan.set(type, (deploymentPlan.get(type) ?? 0) + 1);
-        remainingWorkers -= 1;
-        reinforcementIndex += 1;
-      }
-
-      for (const [workerType, count] of deploymentPlan.entries()) {
-        if (count > 0) {
-          await system.deployAgent(workerType, count);
-          console.log(chalk.green(`  ✓ Deployed ${count} ${workerType} agents`));
+        if (codexContext && codexEnvelope) {
+          await primeCodexWithRetry(system, codexContext, codexEnvelope);
         }
-      }
 
-      // Phase 3: Bridge Configuration
-      if (config.mcp) {
-        console.log(chalk.cyan('🌉 Phase 3: Bridge Configuration'));
-        await system.deployAgent(AgentType.MCP_BRIDGE, 1);
-        await system.deployAgent(AgentType.A2A_BRIDGE, 1);
-        console.log(chalk.green('  ✓ MCP and A2A bridges activated'));
-      }
+        // Phase 1: Infrastructure Setup
+        console.log(chalk.cyan('📡 Phase 1: Infrastructure Setup'));
 
-      // Phase 4: Swarm Activation
-      console.log(chalk.cyan('🐝 Phase 4: Swarm Activation'));
-      
-      const objectives = ['code_quality', 'execution_speed', 'resource_efficiency'];
-      if (config.faultTolerance) {
-        objectives.push('fault_tolerance');
-      }
-      
-      await system.startSwarm(config.algorithm, objectives);
-      console.log(chalk.green(`  ✓ Swarm activated (${config.algorithm}, objectives: ${objectives.join(', ')})`));
+        // Configure neural mesh topology
+        await system.createNeuralMesh(config.meshTopology, config.agents);
+        console.log(
+          chalk.green(`  ✓ Neural mesh configured (${config.meshTopology}, ${config.agents} nodes)`)
+        );
 
-      // Phase 5: Task Execution
-      console.log(chalk.cyan('⚡ Phase 5: Task Execution'));
-      console.log(chalk.blue(`Executing: "${prompt}"`));
+        // Deploy coordinators first
+        if (config.queenCoordinator) {
+          await system.deployAgent(AgentType.SWARM_COORDINATOR, 1);
+          await system.deployAgent(AgentType.TOPOLOGY_COORDINATOR, 1);
+          console.log(chalk.green('  ✓ Queen coordinator deployed'));
+        }
 
-      const startTime = Date.now();
-      let consensusResult: ConsensusExecutionResult = { performed: false };
+        // Deploy consensus coordinators
+        await system.deployAgent(AgentType.CONSENSUS_COORDINATOR, 1);
+        console.log(chalk.green(`  ✓ Consensus coordinator deployed (${config.consensus})`));
 
-      const onStageStarted = (event: any) => {
-        console.log(chalk.gray(`    ▶ ${event.label} started (${event.taskType})`));
-      };
-      const onStageCompleted = (event: any) => {
-        const elapsed = Date.now() - startTime;
-        console.log(chalk.green(`    ✓ ${event.label} completed (+${elapsed}ms)`));
-      };
-      const onStageFailed = (event: any) => {
-        console.log(chalk.red(`    ✗ ${event.label} failed: ${event.error}`));
-      };
+        // Phase 2: Agent Deployment
+        console.log(chalk.cyan('🤖 Phase 2: Agent Deployment'));
 
-      system.on('workflowStageStarted', onStageStarted);
-      system.on('workflowStageCompleted', onStageCompleted);
-      system.on('workflowStageFailed', onStageFailed);
+        // Calculate optimal worker distribution with specialised roles
+        const workerTypes: AgentType[] = [
+          AgentType.RESEARCH_WORKER,
+          AgentType.ARCHITECT_WORKER,
+          AgentType.ANALYST_WORKER,
+          AgentType.SECURITY_WORKER,
+          AgentType.CODE_WORKER,
+          AgentType.DATA_WORKER,
+          AgentType.VALIDATION_WORKER,
+          AgentType.PERFORMANCE_WORKER,
+          AgentType.OPS_WORKER,
+          AgentType.INTEGRATION_WORKER,
+          AgentType.SIMULATION_WORKER,
+          AgentType.KNOWLEDGE_WORKER,
+          AgentType.COMMUNICATION_WORKER,
+          AgentType.AUTOMATION_WORKER,
+          AgentType.OBSERVABILITY_WORKER,
+          AgentType.COMPLIANCE_WORKER,
+          AgentType.MEMORY_WORKER,
+          AgentType.RELIABILITY_WORKER,
+          AgentType.PLANNING_WORKER,
+          AgentType.REVIEW_WORKER
+        ];
+
+        const workerBudget = Math.min(config.maxWorkers, Math.max(config.agents - 3, 0));
+        const deploymentPlan = new Map<AgentType, number>();
+
+        for (let i = 0; i < workerTypes.length && i < workerBudget; i += 1) {
+          deploymentPlan.set(workerTypes[i], (deploymentPlan.get(workerTypes[i]) ?? 0) + 1);
+        }
+
+        let remainingWorkers = workerBudget - Math.min(workerTypes.length, workerBudget);
+        const reinforcementOrder: AgentType[] = [
+          AgentType.RESEARCH_WORKER,
+          AgentType.ARCHITECT_WORKER,
+          AgentType.ANALYST_WORKER,
+          AgentType.CODE_WORKER,
+          AgentType.VALIDATION_WORKER,
+          AgentType.KNOWLEDGE_WORKER,
+          AgentType.SECURITY_WORKER,
+          AgentType.DATA_WORKER,
+          AgentType.PERFORMANCE_WORKER,
+          AgentType.OPS_WORKER,
+          AgentType.INTEGRATION_WORKER,
+          AgentType.MEMORY_WORKER,
+          AgentType.REVIEW_WORKER
+        ];
+
+        let reinforcementIndex = 0;
+        while (remainingWorkers > 0) {
+          const type = reinforcementOrder[reinforcementIndex % reinforcementOrder.length];
+          deploymentPlan.set(type, (deploymentPlan.get(type) ?? 0) + 1);
+          remainingWorkers -= 1;
+          reinforcementIndex += 1;
+        }
+
+        for (const [workerType, count] of deploymentPlan.entries()) {
+          if (count > 0) {
+            await system.deployAgent(workerType, count);
+            console.log(chalk.green(`  ✓ Deployed ${count} ${workerType} agents`));
+          }
+        }
+
+        // Phase 3: Bridge Configuration
+        if (config.mcp) {
+          console.log(chalk.cyan('🌉 Phase 3: Bridge Configuration'));
+          await system.deployAgent(AgentType.MCP_BRIDGE, 1);
+          await system.deployAgent(AgentType.A2A_BRIDGE, 1);
+          console.log(chalk.green('  ✓ MCP and A2A bridges activated'));
+        }
+
+        // Phase 4: Swarm Activation
+        console.log(chalk.cyan('🐝 Phase 4: Swarm Activation'));
+
+        const objectives = ['code_quality', 'execution_speed', 'resource_efficiency'];
+        if (config.faultTolerance) {
+          objectives.push('fault_tolerance');
+        }
+
+        await system.startSwarm(config.algorithm, objectives);
+        console.log(
+          chalk.green(
+            `  ✓ Swarm activated (${config.algorithm}, objectives: ${objectives.join(', ')})`
+          )
+        );
+
+        // Phase 5: Task Execution
+        console.log(chalk.cyan('⚡ Phase 5: Task Execution'));
+        console.log(chalk.blue(`Executing: "${prompt}"`));
+
+        const startTime = Date.now();
+        let consensusResult: ConsensusExecutionResult = { performed: false };
+
+        const onStageStarted = (event: any) => {
+          console.log(chalk.gray(`    ▶ ${event.label} started (${event.taskType})`));
+        };
+        const onStageCompleted = (event: any) => {
+          const elapsed = Date.now() - startTime;
+          console.log(chalk.green(`    ✓ ${event.label} completed (+${elapsed}ms)`));
+        };
+        const onStageFailed = (event: any) => {
+          console.log(chalk.red(`    ✗ ${event.label} failed: ${event.error}`));
+        };
+
+        system.on('workflowStageStarted', onStageStarted);
+        system.on('workflowStageCompleted', onStageCompleted);
+        system.on('workflowStageFailed', onStageFailed);
 
       try {
         const outcome: any = await Promise.race([
@@ -3739,7 +4027,12 @@ hiveMindCmd
 
         const consensusNeeded = shouldRequireConsensus(originalPrompt, config.consensus);
         if (consensusNeeded) {
-          consensusResult = await orchestrateConsensus(system, originalPrompt, outcome);
+          consensusResult = await orchestrateConsensus(
+            system,
+            originalPrompt,
+            outcome,
+            config.consensus
+          );
         }
 
         const totalTime = Date.now() - startTime;
@@ -3856,6 +4149,9 @@ hiveMindCmd
         system.off('workflowStageCompleted', onStageCompleted);
         system.off('workflowStageFailed', onStageFailed);
       }
+    } finally {
+      restoreLogging();
+    }
     });
   }));
 

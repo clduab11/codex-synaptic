@@ -256,6 +256,14 @@ export class ConsensusManager extends EventEmitter {
     };
   }
 
+  getConfig(): ConsensusModeConfig {
+    return { ...this.config };
+  }
+
+  getTimeout(): number {
+    return this.consensusTimeout;
+  }
+
   updateConfig(config: Partial<ConsensusModeConfig>): void {
     this.config = {
       ...this.config,

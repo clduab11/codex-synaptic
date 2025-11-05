@@ -13,6 +13,7 @@ export class SwarmCoordinator extends EventEmitter {
   private currentConfiguration?: SwarmConfiguration;
   private optimizationInterval?: NodeJS.Timeout;
   private particles: Map<string, SwarmParticle> = new Map();
+  private pheromoneMatrix: Map<string, number> = new Map();
   private maxRunDurationMs = 60 * 60 * 1000;
   private runTimeout?: NodeJS.Timeout;
   private runStartedAt?: number;
@@ -45,6 +46,7 @@ export class SwarmCoordinator extends EventEmitter {
     this.runStartedAt = undefined;
 
     this.particles.clear();
+    this.pheromoneMatrix.clear();
     
     this.logger.info('swarm', 'Swarm coordinator shutdown complete');
   }
@@ -61,7 +63,8 @@ export class SwarmCoordinator extends EventEmitter {
 
   startSwarm(config: SwarmConfiguration): void {
     this.currentConfiguration = config;
-    
+    this.pheromoneMatrix.clear();
+
     if (this.optimizationInterval) {
       this.logger.warn('swarm', 'Swarm already active; restarting with new configuration');
       this.stopSwarm('manual');
@@ -136,6 +139,17 @@ export class SwarmCoordinator extends EventEmitter {
     this.particles.set(agentId.id, particle);
     
     this.logger.debug('swarm', 'Particle added to swarm', { agentId: agentId.id });
+
+    for (const other of this.particles.values()) {
+      if (other.agentId.id === agentId.id) {
+        continue;
+      }
+      const key = this.getEdgeKey(agentId.id, other.agentId.id);
+      if (!this.pheromoneMatrix.has(key)) {
+        const base = Number(this.currentConfiguration?.parameters?.initialPheromone ?? 1);
+        this.pheromoneMatrix.set(key, base);
+      }
+    }
   }
 
   private removeParticle(agentId: AgentId): void {
@@ -157,6 +171,9 @@ export class SwarmCoordinator extends EventEmitter {
         break;
       case 'flocking':
         this.performFlockingStep();
+        break;
+      case 'hybrid':
+        this.performHybridStep();
         break;
       default:
         this.logger.warn('swarm', 'Unknown swarm algorithm', { 
@@ -207,8 +224,64 @@ export class SwarmCoordinator extends EventEmitter {
   }
 
   private performACOStep(): void {
-    // Simplified ACO implementation
-    this.logger.debug('swarm', 'ACO step completed');
+    if (!this.currentConfiguration || this.particles.size < 2) {
+      return;
+    }
+
+    const evaporationRate = Number(this.currentConfiguration.parameters.pheromoneEvaporation ?? 0.05);
+    const minPheromone = Number(this.currentConfiguration.parameters.minPheromone ?? 0.01);
+    const depositScale = Number(this.currentConfiguration.parameters.pheromoneDeposit ?? 1);
+
+    for (const [edge, level] of this.pheromoneMatrix.entries()) {
+      const evaporated = level * (1 - evaporationRate);
+      this.pheromoneMatrix.set(edge, Math.max(minPheromone, evaporated));
+    }
+
+    const particles = Array.from(this.particles.values());
+    for (let i = 0; i < particles.length; i++) {
+      for (let j = i + 1; j < particles.length; j++) {
+        const a = particles[i];
+        const b = particles[j];
+        const distance = this.calculateDistance(a.position, b.position) + 1e-3;
+        const bestFitness = Math.max(a.bestFitness, b.bestFitness, 0);
+        const deposit = depositScale / distance + Math.max(0, bestFitness);
+        const key = this.getEdgeKey(a.agentId.id, b.agentId.id);
+        this.pheromoneMatrix.set(key, (this.pheromoneMatrix.get(key) ?? minPheromone) + deposit);
+      }
+    }
+
+    this.logger.debug('swarm', 'ACO step completed', {
+      pheromoneEdges: this.pheromoneMatrix.size
+    });
+  }
+
+  private performHybridStep(): void {
+    this.performPSOStep();
+    this.performACOStep();
+
+    if (!this.currentConfiguration) {
+      return;
+    }
+
+    const influence = Number(this.currentConfiguration.parameters.pheromoneInfluence ?? 0.18);
+    const damping = Number(this.currentConfiguration.parameters.hybridDamping ?? 0.45);
+
+    for (const particle of this.particles.values()) {
+      const bestNeighbor = this.findHighestPheromoneNeighbor(particle);
+      if (!bestNeighbor) {
+        continue;
+      }
+      for (let i = 0; i < particle.position.length; i++) {
+        const delta = bestNeighbor.position[i] - particle.position[i];
+        particle.velocity[i] = damping * particle.velocity[i] + influence * delta;
+        particle.position[i] += particle.velocity[i];
+      }
+      particle.bestFitness = Math.max(particle.bestFitness, this.calculateFitness(particle));
+    }
+
+    this.logger.debug('swarm', 'Hybrid step completed', {
+      particles: this.particles.size
+    });
   }
 
   private performFlockingStep(): void {
@@ -297,6 +370,27 @@ export class SwarmCoordinator extends EventEmitter {
       sum += (pos1[i] - pos2[i]) ** 2;
     }
     return Math.sqrt(sum);
+  }
+
+  private getEdgeKey(a: string, b: string): string {
+    return a < b ? `${a}::${b}` : `${b}::${a}`;
+  }
+
+  private findHighestPheromoneNeighbor(particle: SwarmParticle): SwarmParticle | undefined {
+    let bestNeighbor: SwarmParticle | undefined;
+    let highestPheromone = 0;
+    for (const neighbor of this.particles.values()) {
+      if (neighbor.agentId.id === particle.agentId.id) {
+        continue;
+      }
+      const key = this.getEdgeKey(particle.agentId.id, neighbor.agentId.id);
+      const pheromone = this.pheromoneMatrix.get(key) ?? 0;
+      if (pheromone > highestPheromone) {
+        highestPheromone = pheromone;
+        bestNeighbor = neighbor;
+      }
+    }
+    return bestNeighbor;
   }
 
   private calculateSeparation(particle: SwarmParticle, neighbors: SwarmParticle[], radius: number): number[] {

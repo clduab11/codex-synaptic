@@ -12,6 +12,27 @@ if (DISABLE === '0' || DISABLE === 'false') {
   process.exit(0);
 }
 
+function detectLinkLifecycle() {
+  if (process.env.npm_lifecycle_event === 'link') {
+    return true;
+  }
+  const raw = process.env.npm_config_argv;
+  if (!raw) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const original = Array.isArray(parsed?.original) ? parsed.original : [];
+    return original.includes('link');
+  } catch {
+    return false;
+  }
+}
+
+if (detectLinkLifecycle()) {
+  process.exit(0);
+}
+
 function run(command, args, opts = {}) {
   const result = spawnSync(command, args, {
     stdio: 'pipe',

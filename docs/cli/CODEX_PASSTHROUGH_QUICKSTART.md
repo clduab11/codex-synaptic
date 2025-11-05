@@ -101,6 +101,28 @@ model: gpt-5-codex
 4. **Ask for Examples**: "Show me how to configure a ring mesh topology"
 5. **Multi-step Workflows**: "Plan a complete security audit workflow using available agents"
 
+## Automatic Shell Priming
+
+Keep the Codex CLI warmed up every time a new interactive shell opens:
+
+```bash
+# ~/.zshrc
+source /path/to/codex-synaptic/scripts/codex-shell-prime.zsh
+```
+
+The helper script calls:
+
+```bash
+codex-synaptic --codex "Prime the Codex CLI for Codex-Synaptic orchestration..."
+```
+
+Customize or disable behavior:
+
+- `CODEX_SYNAPTIC_PRIME_PROMPT="Summarize key orchestration commands"` overrides the startup prompt
+- `CODEX_SYNAPTIC_PRIME_DISABLE=1` skips priming (per shell or globally)
+
+The script short-circuits if `codex` or `codex-synaptic` is missing and only runs once per shell session.
+
 ## What Codex Knows About Codex-Synaptic
 
 Thanks to the comprehensive context, Codex understands:

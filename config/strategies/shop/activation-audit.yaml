@@ -1,0 +1,61 @@
+metadata:
+  id: activation_shop
+  name: Activation Audit SHOP Plan
+  version: 1.0.0
+  description: Hierarchical task network capturing the activation remediation flow.
+
+shop:
+  tasks:
+    - activation_audit
+  methods:
+    activation_audit:
+      subtasks:
+        - ensure_system_ready
+        - ensure_mesh_resilient
+        - ensure_consensus_aligned
+        - ensure_swarm_ready
+        - ensure_goap_coverage
+        - ensure_autoscaler_balanced
+
+  operators:
+    ensure_system_ready:
+      preconditions:
+        systemHealth: true
+      effects:
+        systemHealth: true
+      summary: Registry heartbeat and scheduler queue check.
+
+    ensure_mesh_resilient:
+      preconditions:
+        meshHealth: true
+      effects:
+        meshHealth: true
+      summary: Confirm mesh node count and dynamic updates.
+
+    ensure_consensus_aligned:
+      preconditions:
+        consensusHealth: true
+      effects:
+        consensusHealth: true
+      summary: Validate consensus mechanism and idle proposals.
+
+    ensure_swarm_ready:
+      preconditions:
+        swarmReadiness: true
+      effects:
+        swarmReadiness: true
+      summary: Assert swarm particles and optimizer loop status.
+
+    ensure_goap_coverage:
+      preconditions:
+        goapCoverage: true
+      effects:
+        goapCoverage: true
+      summary: Verify GOAP manifest inventory and triggers.
+
+    ensure_autoscaler_balanced:
+      preconditions:
+        autoscalerBalance: true
+      effects:
+        autoscalerBalance: true
+      summary: Confirm resource utilization within thresholds.

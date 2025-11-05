@@ -1836,6 +1836,9 @@ export class CodexSynapticSystem extends EventEmitter {
       /(code|build|implement|function|api|service|module|component|scaffold|engineer)/.test(lower)
       || mentionsRepository
       || wantsReAct;
+    const requiresTesting =
+      /(test|validate|verification|qa|quality|assurance|check|spec)/.test(lower)
+      || wantsReAct;
 
     if (requiresResearch) {
       stages.push({

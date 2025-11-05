@@ -33,6 +33,14 @@ Think of it as **Kubernetes for AI agents**, but with swarm intelligence, Byzant
 
 ---
 
+## 📆 Mini Changelog
+
+**2025-11-05**
+- Mesh + swarm orchestration now primes Codex context automatically and scales core workers, but RAFT-gated hive-mind runs are still timing out because quorum votes are missing.
+- Autoscaler keeps nudging idle worker retirements yet cannot reclaim replicas while the background daemon is off, so follow-on tasks must rebalance manually.
+- Repository mirrors the upstream `clduab11/codex-synaptic` project while local development lives in `codex-synaptic-clone`; final push will require reconciling the directory name and remote URL.
+- **Beta readiness:** ~60% — core orchestration flows stand up reliably, but consensus automation and clean release packaging remain open before lab-preview access.
+
 ## ⚡ Quick Start (5 Minutes to Neural Mesh)
 
 ### 1. Install
@@ -138,6 +146,16 @@ codex-synaptic consensus propose "deploy_feature_x" --mechanism bft --threshold 
 ```
 
 **Why it matters**: Prevents rogue agents from making bad calls. Great for production AI systems where reliability > speed.
+
+### 🧠 Strategy Orchestration
+
+Activation audits can now be executed via multiple reasoning strategies by passing `--strategy` to `codex-synaptic hive-mind spawn`. Supported options include:
+
+- `classic` – Default workflow (Tree-of-Thought & ReAct orchestration).
+- `goap` – Goal-Oriented Action Planning (manifests under `config/goap/`).
+- `behavior-tree`, `fsm`, `strips`, `shop`, `mdp`, `q-learning` – Declarative strategies powered by manifests in `config/strategies/` (see [`docs/reasoning/strategy-manifests.md`](docs/reasoning/strategy-manifests.md)).
+
+Each strategy streams live telemetry and emits stage summaries so remediation paths remain explainable.
 
 ### 🎯 Tool Optimization Engine
 

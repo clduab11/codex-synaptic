@@ -1,0 +1,64 @@
+metadata:
+  id: activation_q_learning
+  name: Activation Audit Q-Learning
+  version: 1.0.0
+  description: Simulates iterative learning over activation remediation pathways.
+
+qLearning:
+  episodes: 60
+  alpha: 0.55
+  gamma: 0.9
+  epsilon: 0.15
+  states:
+    - system
+    - mesh
+    - consensus
+    - swarm
+    - steady
+  transitions:
+    - state: system
+      action: investigate
+      outcomes:
+        - next: mesh
+          reward: 2
+          probability: 0.9
+        - next: system
+          reward: -1
+          probability: 0.1
+
+    - state: mesh
+      action: rebalance
+      outcomes:
+        - next: consensus
+          reward: 2
+          probability: 0.85
+        - next: mesh
+          reward: -1
+          probability: 0.15
+
+    - state: consensus
+      action: synchronize
+      outcomes:
+        - next: swarm
+          reward: 3
+          probability: 0.8
+        - next: system
+          reward: -2
+          probability: 0.2
+
+    - state: swarm
+      action: orchestrate
+      outcomes:
+        - next: steady
+          reward: 4
+          probability: 0.75
+        - next: mesh
+          reward: -2
+          probability: 0.25
+
+    - state: steady
+      action: monitor
+      outcomes:
+        - next: steady
+          reward: 1
+          probability: 1.0

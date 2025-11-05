@@ -3,6 +3,7 @@ dist/
 coverage/
 logs/
 .env
+**/.env
 .env.local
 .env.development.local
 .env.test.local
@@ -18,6 +19,7 @@ yarn-error.log*
 *.swo
 *~
 .tmp/
+tmp/
 temp/
 
 # Build artifacts
@@ -33,6 +35,10 @@ vitest-junit.xml
 *.db-wal
 .codex-synaptic/memory.db
 .codex-synaptic/instructions.db
+.codex-synaptic/*.md
+.codex-synaptic/*.txt
+.codex-synaptic/*.yaml
+.codex-context/
 
 # Memory routing files (generated data)
 memory/routing/*.json

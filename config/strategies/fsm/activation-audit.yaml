@@ -1,0 +1,74 @@
+metadata:
+  id: activation_fsm
+  name: Activation Audit FSM
+  version: 1.0.0
+  description: Finite state machine that escalates readiness checks until all gates are satisfied.
+
+fsm:
+  initial: bootstrap
+  terminal:
+    - ready
+    - remediation
+  maxSteps: 10
+  states:
+    bootstrap:
+      onEnter:
+        - systemHealth
+      transitions:
+        - to: meshAudit
+          condition: systemHealth
+        - to: remediation
+          condition: !systemHealth
+
+    meshAudit:
+      onEnter:
+        - meshHealth
+      transitions:
+        - to: consensusAudit
+          condition: meshHealth
+        - to: remediation
+          condition: !meshHealth
+
+    consensusAudit:
+      onEnter:
+        - consensusHealth
+      transitions:
+        - to: swarmAudit
+          condition: consensusHealth
+        - to: remediation
+          condition: !consensusHealth
+
+    swarmAudit:
+      onEnter:
+        - swarmReadiness
+        - goapCoverage
+      transitions:
+        - to: autoscalerAudit
+          condition: swarmReadiness && goapCoverage
+        - to: remediation
+          condition: !(swarmReadiness && goapCoverage)
+
+    autoscalerAudit:
+      onEnter:
+        - autoscalerBalance
+      transitions:
+        - to: ready
+          condition: autoscalerBalance
+        - to: remediation
+          condition: !autoscalerBalance
+
+    ready:
+      onEnter:
+        - systemHealth
+        - meshHealth
+        - consensusHealth
+        - swarmReadiness
+        - goapCoverage
+        - autoscalerBalance
+
+    remediation:
+      onEnter:
+        - systemHealth
+        - meshHealth
+        - consensusHealth
+        - swarmReadiness

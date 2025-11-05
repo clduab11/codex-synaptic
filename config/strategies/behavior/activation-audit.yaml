@@ -1,0 +1,55 @@
+metadata:
+  id: activation_behavior
+  name: Activation Audit Behavior Tree
+  version: 1.0.0
+  description: Sequentially validates core readiness signals before swarm orchestration.
+
+tree:
+  root: activation_sequence
+  nodes:
+    activation_sequence:
+      type: sequence
+      children:
+        - system_health_node
+        - mesh_health_node
+        - consensus_gate_node
+        - swarm_activation_node
+        - goap_inventory_node
+        - autoscaler_balance_node
+
+    system_health_node:
+      type: task
+      evaluation: systemHealth
+
+    mesh_health_node:
+      type: task
+      evaluation: meshHealth
+
+    consensus_gate_node:
+      type: selector
+      children:
+        - consensus_primary
+        - consensus_fallback
+
+    consensus_primary:
+      type: task
+      evaluation: consensusHealth
+
+    consensus_fallback:
+      type: parallel
+      threshold: 1
+      children:
+        - system_health_node
+        - mesh_health_node
+
+    swarm_activation_node:
+      type: task
+      evaluation: swarmReadiness
+
+    goap_inventory_node:
+      type: task
+      evaluation: goapCoverage
+
+    autoscaler_balance_node:
+      type: task
+      evaluation: autoscalerBalance

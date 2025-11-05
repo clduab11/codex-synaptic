@@ -7,6 +7,7 @@ import * as yaml from 'js-yaml';
 import { writeFile, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import type { StrategyExecutionResult } from '../reasoning/strategies/index.js';
 
 export interface EndpointCapabilities {
   acceptsYAML: boolean;
@@ -421,5 +422,38 @@ export class HiveMindYamlFormatter {
     };
 
     return YamlSchemaUtils.generateFromSchema(formattedStatus);
+  }
+
+  static formatStrategyExecution(result: StrategyExecutionResult): string {
+    const formatted = {
+      version: 1,
+      meta: {
+        timestamp: new Date().toISOString(),
+        strategy_id: result.manifest?.id ?? 'unknown',
+        strategy_name: result.manifest?.name ?? result.manifest?.id ?? 'strategy',
+        strategy_version: result.manifest?.version ?? '1.0.0'
+      },
+      execution: {
+        summary: result.summary,
+        warnings: result.warnings ?? [],
+        stages: result.stages.map((stage) => ({
+          id: stage.stage,
+          task: stage.taskId,
+          status: stage.status,
+          success: stage.success,
+          summary: stage.result.summary,
+          metrics: stage.result.metrics ?? {},
+          observations: stage.result.observations ?? []
+        })),
+        diagnostics: result.diagnostics.map((diagnostic) => ({
+          level: diagnostic.level,
+          message: diagnostic.message,
+          context: diagnostic.context ?? {}
+        })),
+        artifacts: result.artifacts ?? {}
+      }
+    };
+
+    return YamlSchemaUtils.generateFromSchema(formatted);
   }
 }

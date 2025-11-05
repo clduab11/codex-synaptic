@@ -29,6 +29,7 @@ export class Logger {
   private logLevel: LogLevel = LogLevel.INFO;
   private consoleLevel: LogLevel = LogLevel.INFO;
   private logDir = join(process.cwd(), 'logs');
+  private listeners: Set<(entry: LogEntry) => void> = new Set();
 
   private constructor() {
     // Ensure log directory exists
@@ -50,6 +51,17 @@ export class Logger {
 
   setConsoleLevel(level: LogLevel): void {
     this.consoleLevel = level;
+  }
+
+  addListener(listener: (entry: LogEntry) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  clearListeners(): void {
+    this.listeners.clear();
   }
 
   getConsoleLevel(): LogLevel {
@@ -90,6 +102,16 @@ export class Logger {
     // Also write to main log
     const mainWriter = this.getWriter('main');
     mainWriter.write(rawLine + '\n');
+
+    if (this.listeners.size) {
+      for (const listener of Array.from(this.listeners)) {
+        try {
+          listener(entry);
+        } catch {
+          // Listener errors should not disrupt logging pipeline
+        }
+      }
+    }
   }
 
   private formatEntryRaw(entry: LogEntry): string {

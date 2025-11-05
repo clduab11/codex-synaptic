@@ -126,6 +126,20 @@ export class ConfigurationManager {
     this.config = this.getDefaultConfiguration();
   }
 
+  private shouldBypassDisk(): boolean {
+    return process.env.CODEX_CONFIG_SKIP_DISK_IO === '1';
+  }
+
+  private isTimeoutError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const timeoutCodes = new Set(['ETIMEDOUT', 'ETIME']);
+    const err = error as NodeJS.ErrnoException;
+    return Boolean(err.code && timeoutCodes.has(err.code));
+  }
+
   private getDefaultConfiguration(): SystemConfiguration {
     return {
       system: {
@@ -398,6 +412,14 @@ export class ConfigurationManager {
   }
 
   async load(): Promise<void> {
+    const skipDisk = this.shouldBypassDisk();
+
+    if (skipDisk) {
+      this.logger.warn('config', 'Skipping configuration disk access due to CODEX_CONFIG_SKIP_DISK_IO');
+      this.validateConfiguration();
+      return;
+    }
+
     try {
       // Ensure config directory exists
       if (!existsSync(this.configDir)) {
@@ -422,12 +444,24 @@ export class ConfigurationManager {
       this.validateConfiguration();
       
     } catch (error) {
+      if (this.isTimeoutError(error)) {
+        this.logger.warn('config', 'Configuration load timed out, falling back to defaults', undefined, error as Error);
+        this.config = this.getDefaultConfiguration();
+        this.validateConfiguration();
+        return;
+      }
+
       this.logger.error('config', 'Failed to load configuration', undefined, error as Error);
       throw error;
     }
   }
 
   async save(): Promise<void> {
+    if (this.shouldBypassDisk()) {
+      this.logger.warn('config', 'Skipping configuration save due to CODEX_CONFIG_SKIP_DISK_IO');
+      return;
+    }
+
     try {
       const configData = JSON.stringify(this.config, null, 2);
       await writeFileAsync(this.configFile, configData, 'utf8');

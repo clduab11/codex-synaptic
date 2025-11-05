@@ -1,0 +1,67 @@
+metadata:
+  id: activation_mdp
+  name: Activation Audit MDP
+  version: 1.0.0
+  description: Value-iteration model describing activation remediation payoff.
+
+mdp:
+  discount: 0.92
+  iterations: 30
+  states:
+    - id: system
+      reward: 1
+    - id: mesh
+      reward: 1
+    - id: consensus
+      reward: 2
+    - id: swarm
+      reward: 3
+    - id: steady
+      reward: 5
+  actions:
+    - state: system
+      name: harden_system
+      transitions:
+        - to: mesh
+          probability: 0.9
+          reward: 2
+        - to: system
+          probability: 0.1
+          reward: -1
+
+    - state: mesh
+      name: heal_mesh
+      transitions:
+        - to: consensus
+          probability: 0.85
+          reward: 2
+        - to: mesh
+          probability: 0.15
+          reward: -1
+
+    - state: consensus
+      name: align_consensus
+      transitions:
+        - to: swarm
+          probability: 0.8
+          reward: 3
+        - to: system
+          probability: 0.2
+          reward: -2
+
+    - state: swarm
+      name: activate_swarm
+      transitions:
+        - to: steady
+          probability: 0.75
+          reward: 4
+        - to: mesh
+          probability: 0.25
+          reward: -2
+
+    - state: steady
+      name: maintain
+      transitions:
+        - to: steady
+          probability: 1.0
+          reward: 1
