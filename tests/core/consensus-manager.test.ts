@@ -127,7 +127,8 @@ describe('ConsensusManager configuration', () => {
     const proposalId = manager.proposeConsensus('voting-test', {}, consensusAgent.id);
     const proposal = manager.getProposal(proposalId);
     
-    // Should calculate based on 3 voting agents (consensus + review + planning)
+    // Should calculate based on 3 voting agents in this test (1 consensus + 1 review + 1 planning)
+    // Note: bootstrap deploys 4 voting agents total (2 consensus + 1 review + 1 planning)
     // With quorumFactor 0.4, we need ceil(3 * 0.4) = 2 votes minimum
     expect(proposal?.requiredVotes).toBe(2);
     expect(proposal?.mechanism).toBe('raft');

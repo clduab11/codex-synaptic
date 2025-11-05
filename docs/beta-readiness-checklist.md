@@ -285,8 +285,8 @@ Based on current progress and remaining work:
 | **Beta Release** | 95% | Final validation and polish | +1 week |
 | **Post-Beta Enhancements** | → 100% | Performance tuning, security framework, publishing | +6 weeks |
 
-**Beta Release Target:** Q1 2025 (January-February)  
-**Full Production Readiness:** Q2 2025 (April-May)
+**Beta Release Target:** Q1 2026 (February-March)  
+**Full Production Readiness:** Q2 2026 (May-June)
 
 ---
 
