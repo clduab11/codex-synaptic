@@ -1663,7 +1663,10 @@ export class CodexSynapticSystem extends EventEmitter {
       { type: AgentType.KNOWLEDGE_WORKER, count: 1 },
       { type: AgentType.SWARM_COORDINATOR, count: 1 },
       { type: AgentType.TOPOLOGY_COORDINATOR, count: 1 },
-      { type: AgentType.CONSENSUS_COORDINATOR, count: 1 },
+      // Voting agents for RAFT consensus quorum (minimum 3 voting agents required)
+      { type: AgentType.CONSENSUS_COORDINATOR, count: 2 },
+      { type: AgentType.REVIEW_WORKER, count: 1 },
+      { type: AgentType.PLANNING_WORKER, count: 1 },
       { type: AgentType.MCP_BRIDGE, count: 1 },
       { type: AgentType.A2A_BRIDGE, count: 1 }
     ];

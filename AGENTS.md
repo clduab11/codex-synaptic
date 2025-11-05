@@ -6,9 +6,9 @@ The Codex-Synaptic system enhances OpenAI's Codex with advanced multi-agent capa
 
 ## Operator Notes — 2025-11-05
 
-- **Consensus gating:** Recent performance-focused hive-mind rehearsals are stalling at RAFT consensus. Ensure at least three voting coordinators (e.g., `consensus_coordinator`, `review_worker`, `planning_worker`) are online before triggering workflows that require approval gates, or temporarily downgrade the quorum threshold when testing.
-- **Autoscaler behaviour:** With the background daemon disabled, idle worker retirement requests cannot execute. Expect scale-down warnings in logs and manually right-size replicas after experiments.
-- **Repository hygiene:** Active development is running from the local `codex-synaptic-clone` directory, but upstream pushes must target `github.com/clduab11/codex-synaptic`. Align the folder/remote names before release packaging so automation recipes resolve assets correctly.
+- **Consensus gating:** ✅ **RESOLVED** — Hive-mind runs now automatically deploy 3+ voting agents (consensus_coordinator, review_worker, planning_worker) to ensure RAFT consensus quorum is reached. The quorum threshold has been adjusted to 2 votes minimum (40% quorum factor) for improved availability while maintaining consensus integrity.
+- **Autoscaler behaviour:** With the background daemon disabled, idle worker retirement requests cannot execute. Expect scale-down warnings in logs and manually right-size replicas after experiments. See `docs/runbooks/autoscaler-daemon-coordination.md` for operational guidance.
+- **Repository hygiene:** Active development is running from the local `codex-synaptic-clone` directory, but upstream pushes must target `github.com/clduab11/codex-synaptic`. Align the folder/remote names before release packaging so automation recipes resolve assets correctly. See `docs/runbooks/workspace-rename-guide.md` for the step-by-step procedure.
 
 ## Core Agent Types
 
@@ -150,6 +150,27 @@ Base execution units that perform specific computational tasks.
 - **Cheat Code Catalog** – consult `docs/codex-synaptic-cheat-codes.md` for command combos.
 - **Observability Toolkit** – see `docs/observability/README.md` for dashboard + metrics wiring.
 - **Consensus Telemetry** – decisions are archived under `consensus_events` for audit trails.
+
+#### Consensus Voting Roles
+
+The Codex-Synaptic consensus system employs **distributed decision-making** where multiple agent types participate in voting to ensure decisions benefit from diverse domain expertise:
+
+**Voting Agent Types:**
+- **ConsensusCoordinator** – Specialized in consensus protocols and quorum management
+- **ReviewWorker** – Provides quality assurance and code review perspective
+- **PlanningWorker** – Contributes strategic planning and roadmap considerations
+
+**Rationale:**  
+By enabling three distinct agent types to vote, the system achieves more balanced decision-making. Review and planning agents bring domain-specific context that complements pure consensus coordination, reducing the risk of overlooking quality or strategic concerns during approval gates.
+
+**Configuration:**  
+The quorum requirements are defined in `config/system.json` under the `consensus` section:
+- `minVotes`: Minimum number of votes required (default: 2)
+- `quorumFactor`: Fraction of available voting agents needed (default: 0.4 or 40%)
+- With 3+ voting agents deployed by default, this ensures at least 2-of-3 quorum for reliability
+
+**Deployment:**  
+The system automatically deploys voting agents during bootstrap (`bootstrapDefaultAgents()`) and hive-mind spawns (`analyzePromptForAgents()`), ensuring consensus workflows never timeout due to insufficient quorum.
 
 ### 2. Coordinator Agents
 Higher-level agents that manage and orchestrate worker agents.
