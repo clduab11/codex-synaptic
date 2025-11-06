@@ -95,7 +95,7 @@ export function formatMemoryUsage(usage: TelemetrySnapshot['resources']): string
     return memory;
   }
 
-  return Number.isFinite(usage.memoryMB) ? `${usage.memoryMB.toFixed(1)}MB` : 'n/a';
+  return Number.isFinite(usage.memoryMB ?? NaN) ? `${(usage.memoryMB ?? 0).toFixed(1)}MB` : 'n/a';
 }
 
 /**
@@ -109,8 +109,8 @@ export function formatResourceStats(resources?: TelemetrySnapshot['resources']):
   }
 
   const memory = formatMemoryUsage(resources);
-  const cpu = Number.isFinite(resources.cpuPercent)
-    ? resources.cpuPercent.toFixed(2)
+  const cpu = Number.isFinite(resources.cpuPercent ?? NaN)
+    ? (resources.cpuPercent ?? 0).toFixed(2)
     : 'n/a';
 
   lines.push(`  Memory: ${memory} | CPU: ${cpu}% | Tasks: ${resources.concurrentTasks}`);

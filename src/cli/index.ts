@@ -65,6 +65,11 @@ import {
   type TelemetrySnapshot
 } from './telemetry-renderer.js';
 import { executeOrchestrationPhases } from './hive-mind-orchestrator.js';
+import {
+  validateQuotaOptions,
+  buildPolicyInput,
+  type QuotaOptions
+} from './tenant-quota-helpers.js';
 
 function loadEnvFile(filePath: string): boolean {
   if (!existsSync(filePath)) {
@@ -2414,54 +2419,18 @@ tenantCmd
         return;
       }
 
-      const hasQuotaFlags =
-        options.clear ||
-        options.maxConcurrent !== undefined ||
-        options.cpu !== undefined ||
-        options.memory !== undefined;
-
-      if (!hasQuotaFlags) {
-        console.log(chalk.yellow('Provide at least one quota flag (--max-concurrent/--cpu/--memory) or use --clear.'));
+      // Validate quota options
+      const validation = validateQuotaOptions(options as QuotaOptions);
+      if (!validation.hasQuotaFlags) {
+        console.log(chalk.yellow(validation.error));
         return;
       }
-
-      if (options.clear && (options.maxConcurrent !== undefined || options.cpu !== undefined || options.memory !== undefined)) {
-        throw new Error('Cannot combine --clear with quota values.');
+      if (validation.error) {
+        throw new Error(validation.error);
       }
 
-      const policyInput: { tenantId: string; quota?: TenantQuota | null } = { tenantId };
-
-      if (options.clear) {
-        policyInput.quota = null;
-      } else {
-        const quota: TenantQuota = {};
-        if (options.maxConcurrent !== undefined) {
-          const maxConcurrent = parseInteger(options.maxConcurrent, 'maxConcurrent');
-          if (maxConcurrent < 0) {
-            throw new Error('maxConcurrent must be a non-negative integer');
-          }
-          quota.maxConcurrentTasks = maxConcurrent;
-        }
-        if (options.cpu !== undefined) {
-          const cpu = Number.parseFloat(options.cpu);
-          if (!Number.isFinite(cpu) || cpu <= 0 || cpu > 100) {
-            throw new Error('cpu must be a number between 0 and 100');
-          }
-          quota.cpuLimitPercent = cpu;
-        }
-        if (options.memory !== undefined) {
-          const memory = Number.parseFloat(options.memory);
-          if (!Number.isFinite(memory) || memory <= 0) {
-            throw new Error('memory must be a number greater than 0');
-          }
-          quota.memoryLimitMb = memory;
-        }
-        if (!Object.keys(quota).length) {
-          console.log(chalk.yellow('No quota fields provided. Use --clear to remove overrides.'));
-          return;
-        }
-        policyInput.quota = quota;
-      }
+      // Build policy input
+      const policyInput = buildPolicyInput(tenantId, options as QuotaOptions);
 
       const updatedPolicy = await manager.upsertPolicy(policyInput);
       const effectiveQuota = await manager.getQuota(tenantId);

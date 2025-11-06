@@ -9,11 +9,11 @@ import {
   extractComponentStatuses,
   loadGoapManifests,
   extractAgentCounts,
-  evaluateSystemHealth,
+  evaluateSystemHealth as checkSystemHealth,
   evaluateMeshStability,
   evaluateConsensusReadiness,
-  evaluateSwarmReadiness,
-  evaluateAutoscalerBalance,
+  evaluateSwarmReadiness as checkSwarmReadiness,
+  evaluateAutoscalerBalance as checkAutoscalerBalance,
   buildHealthFacts,
   collectWarnings
 } from './activation-helpers.js';
@@ -389,12 +389,12 @@ async function buildActivationSnapshot(
   const { errorAgents, availableAgents } = extractAgentCounts(registryStatus);
 
   // Evaluate health checks
-  const systemHealthy = evaluateSystemHealth(registryStatus, schedulerStatus, errorAgents);
+  const systemHealthy = checkSystemHealth(registryStatus, schedulerStatus, errorAgents);
   const meshStable = evaluateMeshStability(meshStatus, context.agentTarget);
   const consensusReady = evaluateConsensusReadiness(consensusStatus, context.consensusMechanism);
-  const swarmReady = evaluateSwarmReadiness(swarmStatus, availableAgents);
+  const swarmReady = checkSwarmReadiness(swarmStatus, availableAgents);
   const goapPrepared = goapManifests.length > 0;
-  const autoscalerBalanced = evaluateAutoscalerBalance(resourceUsage, context.agentTarget);
+  const autoscalerBalanced = checkAutoscalerBalance(resourceUsage, context.agentTarget);
 
   // Build facts and warnings
   const facts = buildHealthFacts(

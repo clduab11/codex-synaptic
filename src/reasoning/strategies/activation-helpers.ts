@@ -183,7 +183,7 @@ export function buildHealthFacts(
   swarmReady: boolean,
   goapPrepared: boolean,
   autoscalerBalanced: boolean
-): HealthFacts {
+): Record<string, boolean> {
   return {
     systemHealth: systemHealthy,
     meshHealth: meshStable,
