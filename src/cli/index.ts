@@ -42,7 +42,6 @@ import { GoapExecutor } from '../reasoning/goap/executor.js';
 import { goapRegistry } from '../reasoning/goap/registry.js';
 import type { SystemConfiguration } from '../core/config.js';
 import { serviceManager } from '../env/service-manager.js';
-import type { TenantQuota } from '../tenancy/types.js';
 import {
   executeStrategy,
   getSupportedStrategies,

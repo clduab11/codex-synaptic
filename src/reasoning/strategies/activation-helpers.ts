@@ -6,7 +6,6 @@
 import { goapRegistry } from '../goap/registry.js';
 import { Logger } from '../../core/logger.js';
 import { AgentStatus } from '../../core/types.js';
-import type { StrategyExecutionContext } from './index.js';
 
 const logger = Logger.getInstance();
 

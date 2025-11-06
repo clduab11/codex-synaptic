@@ -3,7 +3,6 @@ import { resolve, join } from 'node:path';
 import { load } from 'js-yaml';
 import { CodexSynapticSystem } from '../../core/system.js';
 import { Logger } from '../../core/logger.js';
-import { goapRegistry } from '../goap/registry.js';
 import { AgentStatus } from '../../core/types.js';
 import {
   extractComponentStatuses,
@@ -310,7 +309,7 @@ async function loadStrategyManifest(
     files = (await fs.readdir(dir)).filter((file) =>
       file.endsWith('.yml') || file.endsWith('.yaml')
     );
-  } catch (error) {
+  } catch {
     throw new Error(
       `Strategy directory "${dir}" is missing. Create manifests for the ${strategy} strategy.`
     );
@@ -1285,7 +1284,6 @@ function evaluateCondition(condition: string, facts: Record<string, boolean>): b
     return value ? 'true' : 'false';
   });
   try {
-    // eslint-disable-next-line no-new-func
     return Boolean(new Function(`return (${sanitized});`)());
   } catch {
     return false;
