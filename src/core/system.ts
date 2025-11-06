@@ -77,6 +77,12 @@ import {
   type OpenAIModelCatalogEntry
 } from '../openai/index.js';
 import { OpenAIUsageMonitor, type OpenAIUsageSummary, type OpenAIUsageEvent } from '../openai/usage-monitor.js';
+import {
+  analyzePromptRequirements,
+  extractWorkflowArtifacts,
+  buildWorkflowSummary,
+  extractFinalAnswer
+} from './workflow-helpers.js';
 
 interface WorkflowStage {
   id: string;
@@ -1814,37 +1820,12 @@ export class CodexSynapticSystem extends EventEmitter {
   }
 
   private buildWorkflow(prompt: string): WorkflowStage[] {
-    const lower = prompt.toLowerCase();
     const stages: WorkflowStage[] = [];
 
-    const mentionsRepository = /(repo|repository|codebase|pull request|self-improv|refactor|optim|bug|fix|issue|feature|patch)/.test(lower);
-    const mentionsDocs = /(readme|agents\.md|documentation|docset|docs\/)/.test(lower);
-    const wantsReAct = /(re-?act|plan\/apply\/test|reason\s*and\s*act|react methodology)/.test(lower);
-    const requiresResearch =
-      /(research|recon|discover|investig|intel|survey|learn|context)/.test(lower) ||
-      wantsReAct ||
-      mentionsDocs;
-    const requiresArchitecture =
-      /(architect|design|topology|mesh|blueprint|pipeline|infrastructure|consensus)/.test(lower) ||
-      wantsReAct;
-    const requiresKnowledge =
-      mentionsDocs ||
-      /(knowledge|documentation|brief|report|update|memory)/.test(lower) ||
-      wantsReAct;
-    const requiresDataAnalysis =
-      /(analy|metric|data|stat|insight|learn|context|requirement|plan|evaluate)/.test(lower)
-      || mentionsRepository
-      || mentionsDocs
-      || wantsReAct;
-    const requiresCode =
-      /(code|build|implement|function|api|service|module|component|scaffold|engineer)/.test(lower)
-      || mentionsRepository
-      || wantsReAct;
-    const requiresTesting =
-      /(test|validate|verification|qa|quality|assurance|check|spec)/.test(lower)
-      || wantsReAct;
+    // Analyze prompt requirements
+    const reqs = analyzePromptRequirements(prompt);
 
-    if (requiresResearch) {
+    if (reqs.requiresResearch) {
       stages.push({
         id: 'research-scan',
         label: 'Knowledge Reconnaissance',
@@ -1853,13 +1834,13 @@ export class CodexSynapticSystem extends EventEmitter {
         priority: 12,
         payloadBuilder: (ctx) => ({
           prompt: ctx.prompt,
-          focusAreas: mentionsDocs ? ['documentation', 'agents'] : [],
+          focusAreas: reqs.mentionsDocs ? ['documentation', 'agents'] : [],
           context: ctx.stageResults['data-analysis']?.result ?? null
         })
       });
     }
 
-    if (requiresDataAnalysis) {
+    if (reqs.requiresDataAnalysis) {
       stages.push({
         id: 'data-analysis',
         label: 'Requirement Analysis',
@@ -1873,7 +1854,7 @@ export class CodexSynapticSystem extends EventEmitter {
       });
     }
 
-    if (wantsReAct) {
+    if (reqs.wantsReAct) {
       stages.push({
         id: 'react-plan',
         label: 'ReAcT Plan Synthesis',
@@ -1888,7 +1869,7 @@ export class CodexSynapticSystem extends EventEmitter {
       });
     }
 
-    if (requiresArchitecture) {
+    if (reqs.requiresArchitecture) {
       stages.push({
         id: 'architecture-blueprint',
         label: 'Architecture Blueprint',
@@ -1903,7 +1884,7 @@ export class CodexSynapticSystem extends EventEmitter {
       });
     }
 
-    if (requiresCode) {
+    if (reqs.requiresCode) {
       stages.push({
         id: 'code-generation',
         label: 'Code Generation',
@@ -1928,10 +1909,10 @@ export class CodexSynapticSystem extends EventEmitter {
       });
     }
 
-    if (requiresCode || requiresTesting) {
+    if (reqs.requiresCode || reqs.requiresTesting) {
       stages.push({
         id: 'validation',
-        label: requiresCode ? 'Validation & Quality Gate' : 'Validation Strategy',
+        label: reqs.requiresCode ? 'Validation & Quality Gate' : 'Validation Strategy',
         taskType: 'validate_code',
         requiredCapabilities: ['validate_code'],
         priority: 5,
@@ -1943,7 +1924,7 @@ export class CodexSynapticSystem extends EventEmitter {
       });
     }
 
-    if (requiresKnowledge) {
+    if (reqs.requiresKnowledge) {
       stages.push({
         id: 'knowledge-distillation',
         label: 'Knowledge Distillation',
@@ -2012,51 +1993,19 @@ export class CodexSynapticSystem extends EventEmitter {
     context: WorkflowContext,
     stageOutputs: Array<{ stage: string; taskId: string; result: any }>
   ): any {
-    const research = context.stageResults['research-scan']?.result ?? null;
-    const reactPlan = context.stageResults['react-plan']?.result ?? null;
-    const architecture = context.stageResults['architecture-blueprint']?.result ?? null;
-    const code = context.stageResults['code-generation']?.result?.generatedCode ?? null;
-    const lintIssues = context.stageResults['code-lint']?.result?.issues ?? [];
-    const validation = context.stageResults['validation']?.result ?? null;
-    const insight = context.stageResults['insight-summary']?.result ?? null;
-    const knowledge = context.stageResults['knowledge-distillation']?.result ?? null;
-  const openaiSynthesis = context.stageResults['openai-synthesis']?.result ?? null;
+    // Extract artifacts from stage results
+    const artifacts = extractWorkflowArtifacts(context.stageResults);
 
-    const summaryParts: string[] = [];
-    if (research?.summary) summaryParts.push(research.summary);
-    if (reactPlan?.summary) summaryParts.push(reactPlan.summary);
-    if (architecture?.summary) summaryParts.push(architecture.summary);
-    if (code) summaryParts.push('Generated implementation scaffold.');
-    if (lintIssues.length === 0) summaryParts.push('Code lint checks passed.');
-    if (validation?.passed) summaryParts.push('Validation gates satisfied.');
-    if (knowledge?.summary) summaryParts.push(knowledge.summary);
-    if (insight?.summary) summaryParts.push(insight.summary);
-    if (openaiSynthesis?.summary) summaryParts.push(openaiSynthesis.summary);
-
-    if (summaryParts.length === 0) {
-      summaryParts.push('Workflow executed with available agents.');
-    }
-
-    const finalAnswer = typeof openaiSynthesis?.finalAnswer === 'string'
-      ? openaiSynthesis.finalAnswer
-      : undefined;
+    // Build summary and extract final answer
+    const summary = buildWorkflowSummary(artifacts);
+    const finalAnswer = extractFinalAnswer(artifacts.openaiSynthesis);
 
     return {
       prompt,
-      summary: summaryParts.join(' '),
+      summary,
       finalAnswer,
       stages: stageOutputs,
-      artifacts: {
-        research,
-        reactPlan,
-        architecture,
-        code,
-        lintIssues,
-        validation,
-        insight,
-        knowledge,
-        openaiSynthesis
-      },
+      artifacts,
       mesh: this.neuralMesh.getStatus(),
       swarm: this.swarmCoordinator.getStatus(),
       consensus: this.consensusManager.getStatus()
