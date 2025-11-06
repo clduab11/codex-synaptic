@@ -17,6 +17,12 @@ import {
   buildHealthFacts,
   collectWarnings
 } from './activation-helpers.js';
+import {
+  evaluateSequenceNode,
+  evaluateSelectorNode,
+  evaluateParallelNode,
+  evaluateTaskNode
+} from './behavior-tree-helpers.js';
 
 const STRATEGY_ROOT = resolve(process.cwd(), 'config', 'strategies');
 
@@ -664,44 +670,20 @@ function executeBehaviorTreeStrategy(
       throw new Error(`Behavior tree node "${nodeId}" not defined.`);
     }
     pathTrace.push(nodeId);
+
     switch (node.type) {
-      case 'sequence': {
-        const children = node.children ?? [];
-        for (const child of children) {
-          if (!evaluateNode(child)) {
-            return false;
-          }
-        }
-        return true;
-      }
-      case 'selector': {
-        const children = node.children ?? [];
-        for (const child of children) {
-          if (evaluateNode(child)) {
-            return true;
-          }
-        }
-        return false;
-      }
-      case 'parallel': {
-        const children = node.children ?? [];
-        const threshold = node.threshold ?? children.length;
-        let successes = 0;
-        for (const child of children) {
-          if (evaluateNode(child)) {
-            successes += 1;
-          }
-        }
-        return successes >= threshold;
-      }
-      case 'task': {
-        if (!node.evaluation) {
-          throw new Error(`Behavior tree task node "${nodeId}" missing evaluation reference.`);
-        }
-        const stage = evaluate(node.evaluation);
-        recordStage(stage);
-        return stage.success;
-      }
+      case 'sequence':
+        return evaluateSequenceNode(node.children ?? [], evaluateNode);
+      case 'selector':
+        return evaluateSelectorNode(node.children ?? [], evaluateNode);
+      case 'parallel':
+        return evaluateParallelNode(
+          node.children ?? [],
+          node.threshold ?? (node.children ?? []).length,
+          evaluateNode
+        );
+      case 'task':
+        return evaluateTaskNode(nodeId, node.evaluation, evaluate, recordStage);
       default:
         throw new Error(`Unsupported behavior tree node type "${node.type}".`);
     }
