@@ -93,10 +93,20 @@ export function analyzePromptForAgents(prompt: string): Array<{ type: AgentType,
   composition.push({ type: AgentType.SWARM_COORDINATOR, count: 1 });
   composition.push({ type: AgentType.TOPOLOGY_COORDINATOR, count: 1 });
 
+  // Always include voting agents for RAFT consensus quorum (requires minVotes=2, config default)
+  // These three agent types participate in consensus voting to prevent timeout
+  // Note: bootstrap deploys multiple voting agents (2 consensus, 1 review, 1 planning) for redundancy
+  composition.push({ type: AgentType.CONSENSUS_COORDINATOR, count: 1 });
+  composition.push({ type: AgentType.REVIEW_WORKER, count: 1 });
+  composition.push({ type: AgentType.PLANNING_WORKER, count: 1 });
+
   return composition.length > 2 ? composition : [
     { type: AgentType.CODE_WORKER, count: 2 },
     { type: AgentType.DATA_WORKER, count: 1 },
-    { type: AgentType.SWARM_COORDINATOR, count: 1 }
+    { type: AgentType.SWARM_COORDINATOR, count: 1 },
+    { type: AgentType.CONSENSUS_COORDINATOR, count: 1 },
+    { type: AgentType.REVIEW_WORKER, count: 1 },
+    { type: AgentType.PLANNING_WORKER, count: 1 }
   ];
 }
 

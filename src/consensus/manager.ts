@@ -66,7 +66,12 @@ export class ConsensusManager extends EventEmitter {
   }
 
   proposeConsensus(type: string, data: any, proposer: AgentId): string {
-    const consensusAgents = this.agentRegistry.getAgentsByType(AgentType.CONSENSUS_COORDINATOR);
+    // Gather voting agents from all three agent types that participate in consensus
+    // (consensus_coordinator, review_worker, planning_worker) as documented in AGENTS.md
+    const consensusCoordinators = this.agentRegistry.getAgentsByType(AgentType.CONSENSUS_COORDINATOR);
+    const reviewWorkers = this.agentRegistry.getAgentsByType(AgentType.REVIEW_WORKER);
+    const planningWorkers = this.agentRegistry.getAgentsByType(AgentType.PLANNING_WORKER);
+    const consensusAgents = [...consensusCoordinators, ...reviewWorkers, ...planningWorkers];
     const calculation = this.calculateRequirements(consensusAgents);
     const tenantId =
       typeof data === 'object' && data

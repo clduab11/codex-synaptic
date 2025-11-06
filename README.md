@@ -36,10 +36,10 @@ Think of it as **Kubernetes for AI agents**, but with swarm intelligence, Byzant
 ## 📆 Mini Changelog
 
 **2025-11-05**
-- Mesh + swarm orchestration now primes Codex context automatically and scales core workers, but RAFT-gated hive-mind runs are still timing out because quorum votes are missing.
-- Autoscaler keeps nudging idle worker retirements yet cannot reclaim replicas while the background daemon is off, so follow-on tasks must rebalance manually.
-- Repository mirrors the upstream `clduab11/codex-synaptic` project while local development lives in `codex-synaptic-clone`; final push will require reconciling the directory name and remote URL.
-- **Beta readiness:** ~60% — core orchestration flows stand up reliably, but consensus automation and clean release packaging remain open before lab-preview access.
+- ✅ **RAFT consensus stabilized:** Hive-mind runs now deploy 3+ voting agents (consensus_coordinator, review_worker, planning_worker) automatically, ensuring quorum is reached without timeouts.
+- Autoscaler behavior during daemon offline state is now documented in `docs/runbooks/autoscaler-daemon-coordination.md`.
+- Repository naming aligned with upstream; workspace rename guide available in `docs/runbooks/workspace-rename-guide.md`.
+- **Beta readiness:** ~75% — core orchestration and consensus automation are stable; remaining work focuses on test coverage, security hardening, and release automation (see `docs/beta-readiness-checklist.md`).
 
 ## ⚡ Quick Start (5 Minutes to Neural Mesh)
 

@@ -59,8 +59,8 @@
   "consensus": {
     "mechanism": "raft",
     "timeout": 10000,
-    "minVotes": 3,
-    "quorumFactor": 0.5,
+    "minVotes": 2,
+    "quorumFactor": 0.4,
     "stakeThreshold": 0.67,
     "fallbackMechanism": "raft",
     "stakeTable": {}
