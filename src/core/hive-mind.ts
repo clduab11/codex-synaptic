@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { scanRepository, type ScanReport } from './scanner.js';
 import chalk from 'chalk';
+import { analyzePromptForAgents, type AgentComposition } from './agent-composition-strategy.js';
 
 export async function executeHiveMindSpawn(prompt: string, options: any): Promise<void> {
   const system = new CodexSynapticSystem();
@@ -73,42 +74,12 @@ export async function executeHiveMindSpawn(prompt: string, options: any): Promis
   await system.shutdown();
 }
 
-export function analyzePromptForAgents(prompt: string): Array<{ type: AgentType, count: number }> {
-  const promptLower = prompt.toLowerCase();
-  const composition: Array<{ type: AgentType, count: number }> = [];
-
-  if (promptLower.includes('code') || promptLower.includes('program') || promptLower.includes('develop')) {
-    composition.push({ type: AgentType.CODE_WORKER, count: 3 });
-  }
-
-  if (promptLower.includes('data') || promptLower.includes('analyze') || promptLower.includes('process')) {
-    composition.push({ type: AgentType.DATA_WORKER, count: 2 });
-  }
-
-  if (promptLower.includes('test') || promptLower.includes('validate') || promptLower.includes('check')) {
-    composition.push({ type: AgentType.VALIDATION_WORKER, count: 1 });
-  }
-
-  // Always include coordinators for hive-mind
-  composition.push({ type: AgentType.SWARM_COORDINATOR, count: 1 });
-  composition.push({ type: AgentType.TOPOLOGY_COORDINATOR, count: 1 });
-
-  // Always include voting agents for RAFT consensus quorum (requires minVotes=2, config default)
-  // These three agent types participate in consensus voting to prevent timeout
-  // Note: bootstrap deploys multiple voting agents (2 consensus, 1 review, 1 planning) for redundancy
-  composition.push({ type: AgentType.CONSENSUS_COORDINATOR, count: 1 });
-  composition.push({ type: AgentType.REVIEW_WORKER, count: 1 });
-  composition.push({ type: AgentType.PLANNING_WORKER, count: 1 });
-
-  return composition.length > 2 ? composition : [
-    { type: AgentType.CODE_WORKER, count: 2 },
-    { type: AgentType.DATA_WORKER, count: 1 },
-    { type: AgentType.SWARM_COORDINATOR, count: 1 },
-    { type: AgentType.CONSENSUS_COORDINATOR, count: 1 },
-    { type: AgentType.REVIEW_WORKER, count: 1 },
-    { type: AgentType.PLANNING_WORKER, count: 1 }
-  ];
-}
+/**
+ * Analyze prompt and determine agent composition
+ * Refactored to use strategy pattern (RF-1.3)
+ * Re-exported for backward compatibility
+ */
+export { analyzePromptForAgents, type AgentComposition };
 
 function extractTargetPathFromPrompt(prompt: string): string | null {
   // First, look for explicit mention of the-fantasizer-1 and resolve common locations

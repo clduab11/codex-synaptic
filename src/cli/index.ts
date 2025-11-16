@@ -55,6 +55,7 @@ import {
   normalizeConsensusMechanism,
   parseLogLevelOption
 } from './utils/runtime-helpers.js';
+import { renderTelemetrySnapshot, type TelemetrySnapshot } from './utils/telemetry-formatters.js';
 
 function loadEnvFile(filePath: string): boolean {
   if (!existsSync(filePath)) {
@@ -1546,53 +1547,14 @@ function renderConsensusStatus(system: CodexSynapticSystem): void {
   }
 }
 
+/**
+ * Render telemetry snapshot to console
+ * Refactored to use extracted formatters (RF-1.1)
+ * Reduces cyclomatic complexity from 19 → 2
+ */
 function renderTelemetry(): void {
-  const snapshot = session.getTelemetry();
-  console.log(chalk.blue('📊 Telemetry Snapshot'));
-  console.log(`  Agents: ${snapshot.agents.total} total (${snapshot.agents.available} available)`);
-  console.log(`  By Type: ${Object.entries(snapshot.agents.byType).map(([key, value]) => `${key}:${value}`).join(' | ') || 'none'}`);
-  console.log(`  By Status: ${Object.entries(snapshot.agents.byStatus).map(([key, value]) => `${key}:${value}`).join(' | ') || 'none'}`);
-  if (snapshot.resources) {
-    const usage = snapshot.resources;
-    let memory: string;
-    if (usage.memoryStatus) {
-      const stateLabel = usage.memoryStatus.state === 'critical'
-        ? chalk.red('critical')
-        : usage.memoryStatus.state === 'elevated'
-          ? chalk.yellow('elevated')
-          : chalk.green('normal');
-      const limit = usage.memoryStatus.limitMB;
-      memory = `${usage.memoryStatus.usageMB.toFixed(1)}MB / ${limit}MB (${stateLabel})`;
-      const headroom = usage.memoryStatus.headroomMB;
-      if (Number.isFinite(headroom)) {
-        memory += `, headroom ${headroom.toFixed(1)}MB`;
-      }
-    } else {
-      memory = Number.isFinite(usage.memoryMB) ? `${usage.memoryMB.toFixed(1)}MB` : 'n/a';
-    }
-    const cpu = Number.isFinite(usage.cpuPercent) ? usage.cpuPercent.toFixed(2) : 'n/a';
-    console.log(`  Memory: ${memory} | CPU: ${cpu}% | Tasks: ${usage.concurrentTasks}`);
-    if (usage.gpu) {
-      const gpu = usage.gpu;
-      const label = gpu.selectedBackend === 'cpu' ? 'CPU only' : `${gpu.selectedBackend.toUpperCase()} (${gpu.devices.map((d) => d.name).join(', ') || 'detected'})`;
-      console.log(`  GPU: ${label}`);
-    }
-  }
-  if (snapshot.mesh) {
-    console.log(`  Mesh: ${snapshot.mesh.nodeCount} nodes / ${snapshot.mesh.connectionCount} connections`);
-  }
-  if (snapshot.swarm) {
-    console.log(`  Swarm: algo=${snapshot.swarm.algorithm} optimizing=${snapshot.swarm.isOptimizing}`);
-  }
-  if (snapshot.consensus) {
-    console.log(`  Last consensus: ${(snapshot.consensus.proposal?.id ?? 'n/a')} accepted=${snapshot.consensus.accepted}`);
-  }
-  if (snapshot.recentTasks.length) {
-    console.log('  Recent tasks:');
-    for (const task of snapshot.recentTasks.slice(0, 5)) {
-      console.log(`    • ${task.id} (${task.status}) — ${task.summary}`);
-    }
-  }
+  const snapshot = session.getTelemetry() as TelemetrySnapshot;
+  renderTelemetrySnapshot(snapshot);
 }
 
 function emitContextLogs(logs: ContextLogEntry[]): void {
