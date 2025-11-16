@@ -6,7 +6,7 @@
 
 ### **Distributed AI Agent Orchestration • Built by [Parallax Analytics](https://parallax-ai.app)**
 
-*Wire up AI agents into living neural networks that think, coordinate, and evolve together*
+_Wire up AI agents into living neural networks that think, coordinate, and evolve together_
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm version](https://badge.fury.io/js/codex-synaptic.svg)](https://badge.fury.io/js/codex-synaptic)
@@ -36,6 +36,7 @@ Think of it as **Kubernetes for AI agents**, but with swarm intelligence, Byzant
 ## 📆 Mini Changelog
 
 **2025-11-05**
+
 - ✅ **RAFT consensus stabilized:** Hive-mind runs now deploy 3+ voting agents (consensus_coordinator, review_worker, planning_worker) automatically, ensuring quorum is reached without timeouts.
 - Autoscaler behavior during daemon offline state is now documented in `docs/runbooks/autoscaler-daemon-coordination.md`.
 - Repository naming aligned with upstream; workspace rename guide available in `docs/runbooks/workspace-rename-guide.md`.
@@ -107,13 +108,17 @@ Wire agents into self-organizing topologies (ring, mesh, star, tree). Connection
 
 ```typescript
 // Create a mesh with 8 nodes
-await system.createNeuralMesh('mesh', 8);
+await system.createNeuralMesh("mesh", 8);
 
 // Deploy specialized agents
-await system.deployAgents(['code', 'data', 'validation', 'security'], 'my-mesh');
+await system.deployAgents(
+  ["code", "data", "validation", "security"],
+  "my-mesh",
+);
 ```
 
 **What you get**:
+
 - Self-healing networks (nodes fail? mesh rewires)
 - Dynamic topology adaptation (load spikes? mesh reshapes)
 - Synaptic bandwidth optimization (hot paths get priority)
@@ -131,6 +136,7 @@ codex-synaptic swarm start aco --agents data,analyst --iterations 50
 ```
 
 **Use cases**:
+
 - Multi-agent code refactoring
 - Distributed data analysis
 - Automated security scanning
@@ -173,6 +179,7 @@ codex-synaptic tools review
 ```
 
 **Under the hood**:
+
 - Multi-factor scoring (success rate × recency × agent affinity)
 - SQLite-backed usage history
 - Intent-based matching with embeddings
@@ -193,6 +200,7 @@ codex-synaptic reasoning list --limit 20
 ```
 
 **What you get**:
+
 - Branching exploration (explores 5 alternative paths per decision)
 - Consensus gating (agents vote on which branch to take)
 - Checkpoint system (resume after failures)
@@ -215,7 +223,7 @@ triggers:
     - bug zapper
     - bounty hunter
   patterns:
-    - 'hunt.*vulnerabilities'
+    - "hunt.*vulnerabilities"
 
 goal:
   id: scaffold_lab
@@ -257,6 +265,7 @@ codex-synaptic tenant show acme
 ```
 
 **Features**:
+
 - Per-tenant resource quotas (CPU, memory, concurrent tasks)
 - Policy-based access control
 - Usage tracking and telemetry
@@ -269,18 +278,19 @@ First-class support for OpenAI's **Responses API**, including GPT-5 models, Sora
 ```typescript
 // Auto-select best model for task
 const response = await system.getOpenAIClient().responses.create({
-  model: 'auto', // or 'gpt-5-pro', 'gpt-oss-120b', etc.
-  messages: [{ role: 'user', content: 'Optimize this SQL query...' }]
+  model: "auto", // or 'gpt-5-pro', 'gpt-oss-120b', etc.
+  messages: [{ role: "user", content: "Optimize this SQL query..." }],
 });
 
 // Generate image
 const image = await system.getOpenAIClient().generateImage({
-  prompt: 'Neural network visualization',
-  model: 'gpt-image-1'
+  prompt: "Neural network visualization",
+  model: "gpt-image-1",
 });
 ```
 
 **Model catalog includes**:
+
 - GPT-5 (Pro/Mini/Nano tiers)
 - GPT-OSS (20B/120B open-source variants)
 - Sora-2 (video generation)
@@ -297,7 +307,7 @@ graph TB
         API[REST API :4242]
         CLI[CLI Interface]
         Core[Core System]
-        
+
         Core --> Agents[Agent Pool<br/>25+ Agent Types]
         Core --> Mesh[Neural Mesh<br/>Ring/Mesh/Star/Tree]
         Core --> Swarm[Swarm Controller<br/>PSO/ACO/Flocking]
@@ -306,34 +316,128 @@ graph TB
         Core --> Tools[Tool Optimizer<br/>Intent Scoring]
         Core --> Router[Router<br/>Persona Alignment]
         Core --> Reasoning[Reasoning Planner<br/>ToT/ReAcT/GOAP]
-        
+
         Agents --> OpenAI[OpenAI Client<br/>GPT-5/Sora/Whisper]
         Agents --> MCP[MCP Bridge<br/>Filesystem/GitHub/etc]
-        
+
         Memory --> Telemetry[Prometheus/Jaeger<br/>Observability]
     end
-    
+
     User[Developer/API Client] --> API
     User --> CLI
 ```
 
 **Key Components**:
 
-| Component | What It Does |
-|-----------|-------------|
-| **Core System** | Orchestrates agents, meshes, swarms, consensus, memory |
-| **Agent Pool** | 25+ specialized agent types (code, data, research, ops, security, etc.) |
-| **Neural Mesh** | Self-organizing network topologies for distributed reasoning |
-| **Swarm Controller** | PSO/ACO/Flocking algorithms for collective intelligence |
-| **Consensus Engine** | RAFT/BFT/PoS/PoW voting mechanisms for distributed decisions |
-| **Tool Optimizer** | Tracks tool usage, scores effectiveness, recommends based on intent |
-| **Reasoning Planner** | Tree-of-Thought, ReAcT, GOAP for multi-step planning |
-| **Router** | Persona-aligned agent selection (technical, creative, analytical) |
-| **Memory System** | SQLite-backed persistence for telemetry, plans, tenants |
-| **REST API** | Lightweight HTTP server (:4242) for tool scoring, health checks |
-| **OpenAI Client** | Responses API integration with model routing and usage tracking |
-| **MCP Bridge** | Model Context Protocol support for tool integrations |
-| **Observability** | Prometheus metrics, Jaeger tracing, Grafana dashboards |
+| Component             | What It Does                                                            |
+| --------------------- | ----------------------------------------------------------------------- |
+| **Core System**       | Orchestrates agents, meshes, swarms, consensus, memory                  |
+| **Agent Pool**        | 25+ specialized agent types (code, data, research, ops, security, etc.) |
+| **Neural Mesh**       | Self-organizing network topologies for distributed reasoning            |
+| **Swarm Controller**  | PSO/ACO/Flocking algorithms for collective intelligence                 |
+| **Consensus Engine**  | RAFT/BFT/PoS/PoW voting mechanisms for distributed decisions            |
+| **Tool Optimizer**    | Tracks tool usage, scores effectiveness, recommends based on intent     |
+| **Reasoning Planner** | Tree-of-Thought, ReAcT, GOAP for multi-step planning                    |
+| **Router**            | Persona-aligned agent selection (technical, creative, analytical)       |
+| **Memory System**     | SQLite-backed persistence for telemetry, plans, tenants                 |
+| **REST API**          | Lightweight HTTP server (:4242) for tool scoring, health checks         |
+| **OpenAI Client**     | Responses API integration with model routing and usage tracking         |
+| **MCP Bridge**        | Model Context Protocol support for tool integrations                    |
+| **Observability**     | Prometheus metrics, Jaeger tracing, Grafana dashboards                  |
+
+### Agent Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant CLI
+    participant System
+    participant Registry
+    participant Agent as CodeWorker
+    participant Mesh
+
+    CLI->>System: spawnAgent('code_worker', capabilities)
+    System->>Registry: register(agentId, metadata)
+    System->>Agent: initialize(config)
+    Agent->>Agent: loadCapabilities()
+    Agent->>Registry: updateStatus(READY)
+    System->>Mesh: connectAgent(agentId)
+    Mesh-->>Agent: connection established
+    Agent-->>System: ready signal
+    System-->>CLI: agentId
+
+    Note over Agent: Agent is now active
+
+    CLI->>System: executeTask(agentId, task)
+    System->>Agent: processTask(task)
+    Agent->>Agent: execute logic
+    Agent-->>System: task result
+    System-->>CLI: result
+
+    CLI->>System: terminateAgent(agentId)
+    System->>Mesh: disconnectAgent(agentId)
+    System->>Agent: shutdown()
+    Agent->>Registry: updateStatus(TERMINATED)
+    Agent-->>System: shutdown complete
+    System-->>CLI: agent terminated
+```
+
+### Swarm Intelligence Workflow (PSO)
+
+```mermaid
+graph LR
+    A[Initialize Swarm] --> B[Deploy Particles<br/>5-50 agents]
+    B --> C{Evaluate Fitness<br/>Each particle}
+    C --> D[Update Personal Best]
+    C --> E[Update Global Best]
+    D --> F[Adjust Velocity<br/>& Position]
+    E --> F
+    F --> G{Converged?}
+    G -->|No| C
+    G -->|Yes| H[Return Optimal<br/>Solution]
+
+    style A fill:#e1f5ff
+    style H fill:#d4edda
+    style G fill:#fff3cd
+```
+
+### Consensus Decision Flow (RAFT)
+
+```mermaid
+sequenceDiagram
+    participant P as Proposer Agent
+    participant C as Consensus Coordinator
+    participant A1 as Agent 1 (Voter)
+    participant A2 as Agent 2 (Voter)
+    participant A3 as Agent 3 (Voter)
+
+    P->>C: propose("deploy_feature_x", metadata)
+    C->>C: createProposal(id, requiredVotes=3)
+
+    par Broadcast to voters
+        C->>A1: requestVote(proposalId)
+        C->>A2: requestVote(proposalId)
+        C->>A3: requestVote(proposalId)
+    end
+
+    A1->>A1: evaluate(proposal)
+    A1->>C: vote(proposalId, approve=true)
+
+    A2->>A2: evaluate(proposal)
+    A2->>C: vote(proposalId, approve=true)
+
+    A3->>A3: evaluate(proposal)
+    A3->>C: vote(proposalId, approve=false)
+
+    C->>C: tallyVotes(2 yes, 1 no)
+    C->>C: checkQuorum(threshold=0.66)
+
+    alt Quorum Reached
+        C->>P: decision(ACCEPTED)
+        C->>C: executeProposal()
+    else Quorum Not Reached
+        C->>P: decision(REJECTED)
+    end
+```
 
 ---
 
@@ -458,11 +562,13 @@ The system runs a lightweight HTTP server on port **4242** (configurable).
 ### Endpoints
 
 #### Health Check
+
 ```bash
 GET /healthz
 ```
 
 **Response**:
+
 ```json
 {
   "status": "healthy",
@@ -477,6 +583,7 @@ GET /healthz
 ```
 
 #### Score Tool Usage
+
 ```bash
 POST /v1/tools/score
 Authorization: Bearer <token>
@@ -493,6 +600,7 @@ Content-Type: application/json
 ```
 
 **Response**:
+
 ```json
 {
   "recorded": true,
@@ -502,6 +610,7 @@ Content-Type: application/json
 ```
 
 #### Record Outcome
+
 ```bash
 POST /v1/tools/outcome
 Authorization: Bearer <token>
@@ -518,6 +627,7 @@ Content-Type: application/json
 ```
 
 #### Tenant Management (if multi-tenancy enabled)
+
 ```bash
 # Create tenant
 POST /v1/tenants
@@ -557,34 +667,34 @@ Authorization: Bearer <admin-token>
 
 Agents are the workhorses of the system. Each type specializes in specific tasks:
 
-| Agent Type | Capabilities |
-|------------|--------------|
-| **CodeWorker** | Write, refactor, review code across multiple languages |
-| **DataWorker** | Parse, transform, analyze structured/unstructured data |
-| **ValidationWorker** | Run tests, lint code, validate outputs |
-| **ResearchWorker** | Gather information, synthesize research, summarize docs |
-| **ArchitectWorker** | Design system architecture, create diagrams |
-| **KnowledgeWorker** | Manage knowledge bases, retrieve context |
-| **AnalystWorker** | Data analysis, report generation, insights |
-| **SecurityWorker** | Scan for vulnerabilities, audit code, enforce policies |
-| **OpsWorker** | Deploy services, manage infrastructure |
-| **PerformanceWorker** | Profile code, optimize performance |
-| **IntegrationWorker** | Connect external APIs, handle webhooks |
-| **SimulationWorker** | Run Monte Carlo sims, scenario planning |
-| **MemoryWorker** | Manage persistent memory, embeddings |
-| **PlanningWorker** | Multi-step planning, GOAP execution |
-| **ReviewWorker** | Peer review, quality assurance |
-| **CommunicationWorker** | Generate reports, send notifications |
-| **AutomationWorker** | Execute scripts, schedule tasks |
-| **ObservabilityWorker** | Collect metrics, trace calls, alert on anomalies |
-| **ComplianceWorker** | Audit for compliance, generate reports |
-| **ReliabilityWorker** | Monitor SLAs, trigger failovers |
-| **SwarmCoordinator** | Orchestrate swarm behaviors |
-| **ConsensusCoordinator** | Manage voting, tally results |
-| **TopologyCoordinator** | Optimize mesh topology |
-| **MCPBridgeAgent** | Model Context Protocol integrations |
-| **A2ABridgeAgent** | Agent-to-Agent communication bridge |
-| **TrainingCoordinator** | Fine-tuning workflows, model eval |
+| Agent Type               | Capabilities                                            |
+| ------------------------ | ------------------------------------------------------- |
+| **CodeWorker**           | Write, refactor, review code across multiple languages  |
+| **DataWorker**           | Parse, transform, analyze structured/unstructured data  |
+| **ValidationWorker**     | Run tests, lint code, validate outputs                  |
+| **ResearchWorker**       | Gather information, synthesize research, summarize docs |
+| **ArchitectWorker**      | Design system architecture, create diagrams             |
+| **KnowledgeWorker**      | Manage knowledge bases, retrieve context                |
+| **AnalystWorker**        | Data analysis, report generation, insights              |
+| **SecurityWorker**       | Scan for vulnerabilities, audit code, enforce policies  |
+| **OpsWorker**            | Deploy services, manage infrastructure                  |
+| **PerformanceWorker**    | Profile code, optimize performance                      |
+| **IntegrationWorker**    | Connect external APIs, handle webhooks                  |
+| **SimulationWorker**     | Run Monte Carlo sims, scenario planning                 |
+| **MemoryWorker**         | Manage persistent memory, embeddings                    |
+| **PlanningWorker**       | Multi-step planning, GOAP execution                     |
+| **ReviewWorker**         | Peer review, quality assurance                          |
+| **CommunicationWorker**  | Generate reports, send notifications                    |
+| **AutomationWorker**     | Execute scripts, schedule tasks                         |
+| **ObservabilityWorker**  | Collect metrics, trace calls, alert on anomalies        |
+| **ComplianceWorker**     | Audit for compliance, generate reports                  |
+| **ReliabilityWorker**    | Monitor SLAs, trigger failovers                         |
+| **SwarmCoordinator**     | Orchestrate swarm behaviors                             |
+| **ConsensusCoordinator** | Manage voting, tally results                            |
+| **TopologyCoordinator**  | Optimize mesh topology                                  |
+| **MCPBridgeAgent**       | Model Context Protocol integrations                     |
+| **A2ABridgeAgent**       | Agent-to-Agent communication bridge                     |
+| **TrainingCoordinator**  | Fine-tuning workflows, model eval                       |
 
 ---
 
@@ -592,14 +702,14 @@ Agents are the workhorses of the system. Each type specializes in specific tasks
 
 ### Benchmarks (Tested on M1 MacBook Pro, 16GB RAM)
 
-| Metric | Value |
-|--------|-------|
-| **Agent Boot Time** | ~50ms per agent |
-| **Mesh Formation** | ~200ms for 8-node mesh |
-| **Swarm Convergence** | ~3s for PSO (50 iterations) |
-| **Consensus Latency** | ~100ms (RAFT), ~500ms (BFT) |
-| **Tool Lookup** | ~5ms (SQLite index) |
-| **Memory Query** | ~10ms (avg, with 10k records) |
+| Metric                | Value                         |
+| --------------------- | ----------------------------- |
+| **Agent Boot Time**   | ~50ms per agent               |
+| **Mesh Formation**    | ~200ms for 8-node mesh        |
+| **Swarm Convergence** | ~3s for PSO (50 iterations)   |
+| **Consensus Latency** | ~100ms (RAFT), ~500ms (BFT)   |
+| **Tool Lookup**       | ~5ms (SQLite index)           |
+| **Memory Query**      | ~10ms (avg, with 10k records) |
 
 ### Scaling Tips
 
@@ -615,12 +725,14 @@ Agents are the workhorses of the system. Each type specializes in specific tasks
 [![Star History Chart](https://api.star-history.com/svg?repos=clduab11/codex-synaptic&type=Date)](https://star-history.com/#clduab11/codex-synaptic&Date)
 
 **GitHub Stats**:
+
 - ⭐ **Stars**: Growing fast (thank you!)
 - 🍴 **Forks**: Open-source contributions welcome
 - 🐛 **Issues**: Active triage and response
 - 🚀 **PRs**: We review within 48 hours
 
 **Milestones**:
+
 - ✅ 100 stars → Added multi-tenancy
 - ✅ 250 stars → OpenAI Responses API integration
 - ✅ 500 stars → GOAP planning engine
@@ -766,6 +878,7 @@ We're actively looking for contributors! Whether you're fixing typos, adding tes
 ## 🎉 What's New (Recent Updates)
 
 ### v2.2.0 (Latest)
+
 - ✅ **Multi-Tenancy**: Full tenant isolation, quotas, policies, REST API
 - ✅ **OpenAI Responses API**: First-class GPT-5 integration with model routing
 - ✅ **GOAP Planning**: Goal-Oriented Action Planning with YAML manifests
@@ -773,12 +886,14 @@ We're actively looking for contributors! Whether you're fixing typos, adding tes
 - ✅ **Directory Restructure**: `user-projects/` for GOAP workflows
 
 ### v2.1.0
+
 - ✅ **Tool Optimization Engine**: Intent-based scoring, telemetry tracking
 - ✅ **Reasoning Planner**: Tree-of-Thought, ReAcT, Monte Carlo simulation
 - ✅ **REST API**: Lightweight HTTP server for tool scoring and health checks
 - ✅ **Enhanced Observability**: Prometheus metrics, Jaeger tracing
 
 ### v2.0.0
+
 - ✅ **Neural Mesh Networking**: Self-organizing topologies (ring, mesh, star, tree)
 - ✅ **Swarm Intelligence**: PSO, ACO, flocking algorithms
 - ✅ **Consensus Mechanisms**: RAFT, BFT, PoS, PoW
@@ -789,18 +904,21 @@ We're actively looking for contributors! Whether you're fixing typos, adding tes
 ## 🗺️ Roadmap (What's Next)
 
 ### Q1 2025
+
 - 🎯 **Distributed Vector Store**: Embedding-based memory across mesh nodes
 - 🎯 **WebSocket Swarm Coordination**: Real-time swarm state sync
 - 🎯 **Web Dashboard**: React-based UI for system monitoring and control
 - 🎯 **Plugin System**: Community-contributed agent types and tools
 
 ### Q2 2025
+
 - 🎯 **Multi-Cloud Support**: Deploy meshes across AWS, Azure, GCP
 - 🎯 **Agent Marketplace**: Pre-built agent templates for common workflows
 - 🎯 **Enhanced GOAP**: Visual plan editor, debugging tools
 - 🎯 **Fine-Tuning Pipelines**: Automated model training workflows
 
 ### Backlog
+
 - 🎯 **Federated Learning**: Train models collaboratively across meshes
 - 🎯 **Blockchain Consensus**: On-chain voting for critical decisions
 - 🎯 **Voice Control**: CLI via speech recognition
@@ -821,6 +939,7 @@ MIT License - see [LICENSE](./LICENSE) for details.
 Built with ❤️ by **[Parallax Analytics](https://parallax-ai.app)**
 
 Special thanks to:
+
 - OpenAI for GPT-5 and the Responses API
 - The open-source community for inspiration and feedback
 - Early adopters who filed bugs and feature requests
@@ -844,6 +963,6 @@ Special thanks to:
 
 **[Explore Docs](./docs/README.md)** • **[Open an Issue](https://github.com/clduab11/codex-synaptic/issues)** • **[Join Discussions](https://github.com/clduab11/codex-synaptic/discussions)**
 
-*Built by [Parallax Analytics](https://parallax-ai.app) • Powered by AI Agents • Licensed MIT*
+_Built by [Parallax Analytics](https://parallax-ai.app) • Powered by AI Agents • Licensed MIT_
 
 </div>
