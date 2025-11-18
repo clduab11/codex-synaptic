@@ -42,7 +42,6 @@ import { GoapExecutor } from '../reasoning/goap/executor.js';
 import { goapRegistry } from '../reasoning/goap/registry.js';
 import type { SystemConfiguration } from '../core/config.js';
 import { serviceManager } from '../env/service-manager.js';
-import type { TenantQuota } from '../tenancy/types.js';
 import {
   executeStrategy,
   getSupportedStrategies,
@@ -55,6 +54,21 @@ import {
   normalizeConsensusMechanism,
   parseLogLevelOption
 } from './utils/runtime-helpers.js';
+import {
+  formatAgentStats,
+  formatResourceStats,
+  formatMeshStats,
+  formatSwarmStats,
+  formatConsensusStats,
+  formatRecentTasks,
+  type TelemetrySnapshot
+} from './telemetry-renderer.js';
+import { executeOrchestrationPhases } from './hive-mind-orchestrator.js';
+import {
+  validateQuotaOptions,
+  buildPolicyInput,
+  type QuotaOptions
+} from './tenant-quota-helpers.js';
 
 function loadEnvFile(filePath: string): boolean {
   if (!existsSync(filePath)) {
@@ -1547,52 +1561,35 @@ function renderConsensusStatus(system: CodexSynapticSystem): void {
 }
 
 function renderTelemetry(): void {
-  const snapshot = session.getTelemetry();
+  const snapshot = session.getTelemetry() as TelemetrySnapshot;
   console.log(chalk.blue('📊 Telemetry Snapshot'));
-  console.log(`  Agents: ${snapshot.agents.total} total (${snapshot.agents.available} available)`);
-  console.log(`  By Type: ${Object.entries(snapshot.agents.byType).map(([key, value]) => `${key}:${value}`).join(' | ') || 'none'}`);
-  console.log(`  By Status: ${Object.entries(snapshot.agents.byStatus).map(([key, value]) => `${key}:${value}`).join(' | ') || 'none'}`);
-  if (snapshot.resources) {
-    const usage = snapshot.resources;
-    let memory: string;
-    if (usage.memoryStatus) {
-      const stateLabel = usage.memoryStatus.state === 'critical'
-        ? chalk.red('critical')
-        : usage.memoryStatus.state === 'elevated'
-          ? chalk.yellow('elevated')
-          : chalk.green('normal');
-      const limit = usage.memoryStatus.limitMB;
-      memory = `${usage.memoryStatus.usageMB.toFixed(1)}MB / ${limit}MB (${stateLabel})`;
-      const headroom = usage.memoryStatus.headroomMB;
-      if (Number.isFinite(headroom)) {
-        memory += `, headroom ${headroom.toFixed(1)}MB`;
-      }
-    } else {
-      memory = Number.isFinite(usage.memoryMB) ? `${usage.memoryMB.toFixed(1)}MB` : 'n/a';
-    }
-    const cpu = Number.isFinite(usage.cpuPercent) ? usage.cpuPercent.toFixed(2) : 'n/a';
-    console.log(`  Memory: ${memory} | CPU: ${cpu}% | Tasks: ${usage.concurrentTasks}`);
-    if (usage.gpu) {
-      const gpu = usage.gpu;
-      const label = gpu.selectedBackend === 'cpu' ? 'CPU only' : `${gpu.selectedBackend.toUpperCase()} (${gpu.devices.map((d) => d.name).join(', ') || 'detected'})`;
-      console.log(`  GPU: ${label}`);
-    }
+
+  // Render agent stats
+  formatAgentStats(snapshot.agents).forEach((line) => console.log(line));
+
+  // Render resource stats
+  formatResourceStats(snapshot.resources).forEach((line) => console.log(line));
+
+  // Render mesh stats
+  const meshStats = formatMeshStats(snapshot.mesh);
+  if (meshStats) {
+    console.log(meshStats);
   }
-  if (snapshot.mesh) {
-    console.log(`  Mesh: ${snapshot.mesh.nodeCount} nodes / ${snapshot.mesh.connectionCount} connections`);
+
+  // Render swarm stats
+  const swarmStats = formatSwarmStats(snapshot.swarm);
+  if (swarmStats) {
+    console.log(swarmStats);
   }
-  if (snapshot.swarm) {
-    console.log(`  Swarm: algo=${snapshot.swarm.algorithm} optimizing=${snapshot.swarm.isOptimizing}`);
+
+  // Render consensus stats
+  const consensusStats = formatConsensusStats(snapshot.consensus);
+  if (consensusStats) {
+    console.log(consensusStats);
   }
-  if (snapshot.consensus) {
-    console.log(`  Last consensus: ${(snapshot.consensus.proposal?.id ?? 'n/a')} accepted=${snapshot.consensus.accepted}`);
-  }
-  if (snapshot.recentTasks.length) {
-    console.log('  Recent tasks:');
-    for (const task of snapshot.recentTasks.slice(0, 5)) {
-      console.log(`    • ${task.id} (${task.status}) — ${task.summary}`);
-    }
-  }
+
+  // Render recent tasks
+  formatRecentTasks(snapshot.recentTasks).forEach((line) => console.log(line));
 }
 
 function emitContextLogs(logs: ContextLogEntry[]): void {
@@ -2421,54 +2418,18 @@ tenantCmd
         return;
       }
 
-      const hasQuotaFlags =
-        options.clear ||
-        options.maxConcurrent !== undefined ||
-        options.cpu !== undefined ||
-        options.memory !== undefined;
-
-      if (!hasQuotaFlags) {
-        console.log(chalk.yellow('Provide at least one quota flag (--max-concurrent/--cpu/--memory) or use --clear.'));
+      // Validate quota options
+      const validation = validateQuotaOptions(options as QuotaOptions);
+      if (!validation.hasQuotaFlags) {
+        console.log(chalk.yellow(validation.error));
         return;
       }
-
-      if (options.clear && (options.maxConcurrent !== undefined || options.cpu !== undefined || options.memory !== undefined)) {
-        throw new Error('Cannot combine --clear with quota values.');
+      if (validation.error) {
+        throw new Error(validation.error);
       }
 
-      const policyInput: { tenantId: string; quota?: TenantQuota | null } = { tenantId };
-
-      if (options.clear) {
-        policyInput.quota = null;
-      } else {
-        const quota: TenantQuota = {};
-        if (options.maxConcurrent !== undefined) {
-          const maxConcurrent = parseInteger(options.maxConcurrent, 'maxConcurrent');
-          if (maxConcurrent < 0) {
-            throw new Error('maxConcurrent must be a non-negative integer');
-          }
-          quota.maxConcurrentTasks = maxConcurrent;
-        }
-        if (options.cpu !== undefined) {
-          const cpu = Number.parseFloat(options.cpu);
-          if (!Number.isFinite(cpu) || cpu <= 0 || cpu > 100) {
-            throw new Error('cpu must be a number between 0 and 100');
-          }
-          quota.cpuLimitPercent = cpu;
-        }
-        if (options.memory !== undefined) {
-          const memory = Number.parseFloat(options.memory);
-          if (!Number.isFinite(memory) || memory <= 0) {
-            throw new Error('memory must be a number greater than 0');
-          }
-          quota.memoryLimitMb = memory;
-        }
-        if (!Object.keys(quota).length) {
-          console.log(chalk.yellow('No quota fields provided. Use --clear to remove overrides.'));
-          return;
-        }
-        policyInput.quota = quota;
-      }
+      // Build policy input
+      const policyInput = buildPolicyInput(tenantId, options as QuotaOptions);
 
       const updatedPolicy = await manager.upsertPolicy(policyInput);
       const effectiveQuota = await manager.getQuota(tenantId);
@@ -3888,114 +3849,8 @@ hiveMindCmd
           await primeCodexWithRetry(system, codexContext, codexEnvelope);
         }
 
-        // Phase 1: Infrastructure Setup
-        console.log(chalk.cyan('📡 Phase 1: Infrastructure Setup'));
-
-        // Configure neural mesh topology
-        await system.createNeuralMesh(config.meshTopology, config.agents);
-        console.log(
-          chalk.green(`  ✓ Neural mesh configured (${config.meshTopology}, ${config.agents} nodes)`)
-        );
-
-        // Deploy coordinators first
-        if (config.queenCoordinator) {
-          await system.deployAgent(AgentType.SWARM_COORDINATOR, 1);
-          await system.deployAgent(AgentType.TOPOLOGY_COORDINATOR, 1);
-          console.log(chalk.green('  ✓ Queen coordinator deployed'));
-        }
-
-        // Deploy consensus coordinators
-        await system.deployAgent(AgentType.CONSENSUS_COORDINATOR, 1);
-        console.log(chalk.green(`  ✓ Consensus coordinator deployed (${config.consensus})`));
-
-        // Phase 2: Agent Deployment
-        console.log(chalk.cyan('🤖 Phase 2: Agent Deployment'));
-
-        // Calculate optimal worker distribution with specialised roles
-        const workerTypes: AgentType[] = [
-          AgentType.RESEARCH_WORKER,
-          AgentType.ARCHITECT_WORKER,
-          AgentType.ANALYST_WORKER,
-          AgentType.SECURITY_WORKER,
-          AgentType.CODE_WORKER,
-          AgentType.DATA_WORKER,
-          AgentType.VALIDATION_WORKER,
-          AgentType.PERFORMANCE_WORKER,
-          AgentType.OPS_WORKER,
-          AgentType.INTEGRATION_WORKER,
-          AgentType.SIMULATION_WORKER,
-          AgentType.KNOWLEDGE_WORKER,
-          AgentType.COMMUNICATION_WORKER,
-          AgentType.AUTOMATION_WORKER,
-          AgentType.OBSERVABILITY_WORKER,
-          AgentType.COMPLIANCE_WORKER,
-          AgentType.MEMORY_WORKER,
-          AgentType.RELIABILITY_WORKER,
-          AgentType.PLANNING_WORKER,
-          AgentType.REVIEW_WORKER
-        ];
-
-        const workerBudget = Math.min(config.maxWorkers, Math.max(config.agents - 3, 0));
-        const deploymentPlan = new Map<AgentType, number>();
-
-        for (let i = 0; i < workerTypes.length && i < workerBudget; i += 1) {
-          deploymentPlan.set(workerTypes[i], (deploymentPlan.get(workerTypes[i]) ?? 0) + 1);
-        }
-
-        let remainingWorkers = workerBudget - Math.min(workerTypes.length, workerBudget);
-        const reinforcementOrder: AgentType[] = [
-          AgentType.RESEARCH_WORKER,
-          AgentType.ARCHITECT_WORKER,
-          AgentType.ANALYST_WORKER,
-          AgentType.CODE_WORKER,
-          AgentType.VALIDATION_WORKER,
-          AgentType.KNOWLEDGE_WORKER,
-          AgentType.SECURITY_WORKER,
-          AgentType.DATA_WORKER,
-          AgentType.PERFORMANCE_WORKER,
-          AgentType.OPS_WORKER,
-          AgentType.INTEGRATION_WORKER,
-          AgentType.MEMORY_WORKER,
-          AgentType.REVIEW_WORKER
-        ];
-
-        let reinforcementIndex = 0;
-        while (remainingWorkers > 0) {
-          const type = reinforcementOrder[reinforcementIndex % reinforcementOrder.length];
-          deploymentPlan.set(type, (deploymentPlan.get(type) ?? 0) + 1);
-          remainingWorkers -= 1;
-          reinforcementIndex += 1;
-        }
-
-        for (const [workerType, count] of deploymentPlan.entries()) {
-          if (count > 0) {
-            await system.deployAgent(workerType, count);
-            console.log(chalk.green(`  ✓ Deployed ${count} ${workerType} agents`));
-          }
-        }
-
-        // Phase 3: Bridge Configuration
-        if (config.mcp) {
-          console.log(chalk.cyan('🌉 Phase 3: Bridge Configuration'));
-          await system.deployAgent(AgentType.MCP_BRIDGE, 1);
-          await system.deployAgent(AgentType.A2A_BRIDGE, 1);
-          console.log(chalk.green('  ✓ MCP and A2A bridges activated'));
-        }
-
-        // Phase 4: Swarm Activation
-        console.log(chalk.cyan('🐝 Phase 4: Swarm Activation'));
-
-        const objectives = ['code_quality', 'execution_speed', 'resource_efficiency'];
-        if (config.faultTolerance) {
-          objectives.push('fault_tolerance');
-        }
-
-        await system.startSwarm(config.algorithm, objectives);
-        console.log(
-          chalk.green(
-            `  ✓ Swarm activated (${config.algorithm}, objectives: ${objectives.join(', ')})`
-          )
-        );
+        // Execute orchestration phases using helper service
+        await executeOrchestrationPhases(system, config);
 
         // Phase 5: Task Execution
         console.log(chalk.cyan('⚡ Phase 5: Task Execution'));

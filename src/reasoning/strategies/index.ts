@@ -3,8 +3,25 @@ import { resolve, join } from 'node:path';
 import { load } from 'js-yaml';
 import { CodexSynapticSystem } from '../../core/system.js';
 import { Logger } from '../../core/logger.js';
-import { goapRegistry } from '../goap/registry.js';
 import { AgentStatus } from '../../core/types.js';
+import {
+  extractComponentStatuses,
+  loadGoapManifests,
+  extractAgentCounts,
+  evaluateSystemHealth as checkSystemHealth,
+  evaluateMeshStability,
+  evaluateConsensusReadiness,
+  evaluateSwarmReadiness as checkSwarmReadiness,
+  evaluateAutoscalerBalance as checkAutoscalerBalance,
+  buildHealthFacts,
+  collectWarnings
+} from './activation-helpers.js';
+import {
+  evaluateSequenceNode,
+  evaluateSelectorNode,
+  evaluateParallelNode,
+  evaluateTaskNode
+} from './behavior-tree-helpers.js';
 
 const STRATEGY_ROOT = resolve(process.cwd(), 'config', 'strategies');
 
@@ -292,7 +309,7 @@ async function loadStrategyManifest(
     files = (await fs.readdir(dir)).filter((file) =>
       file.endsWith('.yml') || file.endsWith('.yaml')
     );
-  } catch (error) {
+  } catch {
     throw new Error(
       `Strategy directory "${dir}" is missing. Create manifests for the ${strategy} strategy.`
     );
@@ -353,107 +370,53 @@ async function buildActivationSnapshot(
   manifestPath?: string
 ): Promise<ActivationSnapshot> {
   const status = context.system.getStatus();
-  const components = status.components ?? {};
-  const registryStatus = components.agentRegistry ?? {};
-  const schedulerStatus = components.taskScheduler ?? {};
-  const meshStatus = components.neuralMesh ?? {};
-  const swarmStatus = components.swarmCoordinator ?? {};
-  const consensusStatus = components.consensusManager ?? {};
-  const resourceUsage = components.resources ?? undefined;
+  
+  // Extract component statuses
+  const {
+    registryStatus,
+    schedulerStatus,
+    meshStatus,
+    swarmStatus,
+    consensusStatus,
+    resourceUsage
+  } = extractComponentStatuses(status);
 
-  let goapManifests: Array<{ id: string; name?: string; version?: string }> = [];
-  const goapWarnings: string[] = [];
-  try {
-    const manifests = await goapRegistry.listManifests();
-    goapManifests = manifests.map((manifest) => ({
-      id: manifest.id,
-      name: manifest.metadata?.name ?? manifest.id,
-      version: manifest.metadata?.version
-    }));
-    if (!goapManifests.length) {
-      goapWarnings.push('No GOAP manifests detected in config/goap.');
-    }
-  } catch (error) {
-    goapWarnings.push('Unable to enumerate GOAP manifests.');
-    logger.warn('strategy', 'Failed to list GOAP manifests', { reason: (error as Error).message });
-  }
+  // Load GOAP manifests
+  const { manifests: goapManifests, warnings: goapWarnings } = await loadGoapManifests();
 
-  const errorAgents =
-    registryStatus.statusCounts?.[AgentStatus.ERROR] ??
-    registryStatus.statusCounts?.error ??
-    0;
-  const offlineAgents =
-    registryStatus.statusCounts?.[AgentStatus.OFFLINE] ??
-    registryStatus.statusCounts?.offline ??
-    0;
-  const availableAgents = registryStatus.availableAgents ?? 0;
+  // Extract agent counts
+  const { errorAgents, availableAgents } = extractAgentCounts(registryStatus);
 
-  const systemHealthy =
-    Boolean(registryStatus.isRunning) &&
-    Boolean(schedulerStatus.isRunning) &&
-    errorAgents === 0;
-
-  const meshStable =
-    Boolean(meshStatus.isRunning) &&
-    (meshStatus.nodeCount ?? 0) >= Math.max(3, Math.floor(context.agentTarget * 0.6)) &&
-    (meshStatus.averageConnections ?? 0) >= 2;
-
-  const consensusReady =
-    (consensusStatus.mechanism ?? '').toLowerCase() ===
-      context.consensusMechanism.toLowerCase() && (consensusStatus.activeProposals ?? 0) === 0;
-
-  const swarmReady =
-    Boolean(swarmStatus.isRunning ?? swarmStatus.isOptimizing) &&
-    (swarmStatus.particleCount ?? 0) >= Math.max(1, availableAgents);
-
+  // Evaluate health checks
+  const systemHealthy = checkSystemHealth(registryStatus, schedulerStatus, errorAgents);
+  const meshStable = evaluateMeshStability(meshStatus, context.agentTarget);
+  const consensusReady = evaluateConsensusReadiness(consensusStatus, context.consensusMechanism);
+  const swarmReady = checkSwarmReadiness(swarmStatus, availableAgents);
   const goapPrepared = goapManifests.length > 0;
+  const autoscalerBalanced = checkAutoscalerBalance(resourceUsage, context.agentTarget);
 
-  const cpuUtilization =
-    resourceUsage && resourceUsage.cpuPercent && resourceUsage.cpuPercent > 0
-      ? resourceUsage.cpuPercent
-      : 0;
-  const memoryHeadroom =
-    resourceUsage?.memoryStatus?.headroomMB ?? resourceUsage?.memoryStatus?.headroom ?? 0;
-  const autoscalerBalanced =
-    cpuUtilization >= 10 &&
-    cpuUtilization <= 80 &&
-    memoryHeadroom >= 256 &&
-    (resourceUsage?.activeAgents ?? 0) >= Math.min(context.agentTarget, 3);
+  // Build facts and warnings
+  const facts = buildHealthFacts(
+    systemHealthy,
+    meshStable,
+    consensusReady,
+    swarmReady,
+    goapPrepared,
+    autoscalerBalanced
+  );
 
-  const facts: Record<string, boolean> = {
-    systemHealth: systemHealthy,
-    meshHealth: meshStable,
-    consensusHealth: consensusReady,
-    swarmReadiness: swarmReady,
-    goapCoverage: goapPrepared,
-    autoscalerBalance: autoscalerBalanced
-  };
-
-  const warnings: string[] = [];
-  if (!systemHealthy) {
-    warnings.push('System health check failed.');
-  }
-  if (!meshStable) {
-    warnings.push('Neural mesh topology requires attention.');
-  }
-  if (!consensusReady) {
-    warnings.push(
-      `Consensus mechanism mismatch. Expected ${context.consensusMechanism.toUpperCase()}, received ${String(consensusStatus.mechanism ?? 'unknown').toUpperCase()}.`
-    );
-  }
-  if (!swarmReady) {
-    warnings.push('Swarm coordinator is not actively optimizing.');
-  }
-  if (!goapPrepared) {
-    warnings.push('GOAP manifest coverage unavailable.');
-  }
-  if (!autoscalerBalanced) {
-    warnings.push('Autoscaler metrics outside desired envelope.');
-  }
-  warnings.push(...goapWarnings);
-  if (manifestPath) {
-    warnings.push(`Strategy manifest loaded from ${manifestPath}`);
-  }
+  const warnings = collectWarnings(
+    systemHealthy,
+    meshStable,
+    consensusReady,
+    swarmReady,
+    goapPrepared,
+    autoscalerBalanced,
+    context.consensusMechanism,
+    String(consensusStatus.mechanism ?? 'unknown'),
+    goapWarnings,
+    manifestPath
+  );
 
   return {
     status,
@@ -706,44 +669,20 @@ function executeBehaviorTreeStrategy(
       throw new Error(`Behavior tree node "${nodeId}" not defined.`);
     }
     pathTrace.push(nodeId);
+
     switch (node.type) {
-      case 'sequence': {
-        const children = node.children ?? [];
-        for (const child of children) {
-          if (!evaluateNode(child)) {
-            return false;
-          }
-        }
-        return true;
-      }
-      case 'selector': {
-        const children = node.children ?? [];
-        for (const child of children) {
-          if (evaluateNode(child)) {
-            return true;
-          }
-        }
-        return false;
-      }
-      case 'parallel': {
-        const children = node.children ?? [];
-        const threshold = node.threshold ?? children.length;
-        let successes = 0;
-        for (const child of children) {
-          if (evaluateNode(child)) {
-            successes += 1;
-          }
-        }
-        return successes >= threshold;
-      }
-      case 'task': {
-        if (!node.evaluation) {
-          throw new Error(`Behavior tree task node "${nodeId}" missing evaluation reference.`);
-        }
-        const stage = evaluate(node.evaluation);
-        recordStage(stage);
-        return stage.success;
-      }
+      case 'sequence':
+        return evaluateSequenceNode(node.children ?? [], evaluateNode);
+      case 'selector':
+        return evaluateSelectorNode(node.children ?? [], evaluateNode);
+      case 'parallel':
+        return evaluateParallelNode(
+          node.children ?? [],
+          node.threshold ?? (node.children ?? []).length,
+          evaluateNode
+        );
+      case 'task':
+        return evaluateTaskNode(nodeId, node.evaluation, evaluate, recordStage);
       default:
         throw new Error(`Unsupported behavior tree node type "${node.type}".`);
     }
@@ -1345,7 +1284,6 @@ function evaluateCondition(condition: string, facts: Record<string, boolean>): b
     return value ? 'true' : 'false';
   });
   try {
-    // eslint-disable-next-line no-new-func
     return Boolean(new Function(`return (${sanitized});`)());
   } catch {
     return false;

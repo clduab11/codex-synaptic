@@ -14,12 +14,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dynamic star history chart integration** - Replaced ASCII chart with live GitHub star history
 - **Mini-changelog section in README** - Added recent changes summary for better project transparency
 - **Unified agent documentation**: Consolidated GEMINI.md and docs/AGENTS.md into a single comprehensive AGENTS.md file in the root directory, creating a unified source of truth for agent documentation
+- **Helper modules for code quality**: Created specialized helper modules to reduce complexity:
+  - `activation-helpers.ts` - System health and activation snapshot helpers
+  - `workflow-helpers.ts` - Workflow building and artifact extraction helpers
+  - `behavior-tree-helpers.ts` - Behavior tree node evaluation helpers
+  - `hive-mind-orchestrator.ts` - Agent deployment and orchestration helpers
+  - `telemetry-renderer.ts` - Telemetry formatting and rendering helpers
+  - `tenant-quota-helpers.ts` - Tenant quota validation and parsing helpers
+- **Comprehensive test coverage**: Added 68 tests for all refactored helper modules
 
 ### Changed
 - Project name from "codex-synaptic" to "codex-synaptic"
 - Author attribution to Parallax Analytics
 - Updated project description to emphasize distributed AI orchestration
 - Enhanced documentation with neural networking concepts
+- **Code quality improvements**: Refactored high complexity methods across CLI, core system, and reasoning strategies:
+  - Reduced `buildActivationSnapshot` complexity from 35 to ~10
+  - Reduced `buildWorkflow` complexity from 17 to ~8
+  - Reduced `buildWorkflowOutcome` complexity from 20 to ~5
+  - Reduced hive-mind spawn command complexity from 33 to ~10
+  - Reduced `renderTelemetry` complexity from 19 to ~5
+  - Reduced tenant quota command complexity from 21 to ~8
+  - Reduced `evaluateNode` complexity from 17 to ~8
+- **Removed unused variables** in reasoning strategies module
+
+### Fixed
+- Type safety improvements in telemetry rendering
+- Naming conflicts in activation helper imports
 
 ### Technical
 - Maintained all existing distributed AI system functionality
