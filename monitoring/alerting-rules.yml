@@ -1,0 +1,253 @@
+# Codex-Synaptic Alerting Rules
+# Configure these in Prometheus Alertmanager or Grafana Alerting
+
+groups:
+  - name: codex-synaptic-p1-critical
+    rules:
+      # P1: Page immediately (<1min response)
+      - alert: ServiceDown
+        expr: up{job="codex-synaptic"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+        annotations:
+          summary: "Codex-Synaptic service is down"
+          description: "The service has been unreachable for more than 1 minute"
+          runbook: "https://docs.yourdomain.com/runbooks/service-down"
+
+      - alert: HighErrorRate
+        expr: (rate(http_request_errors_total[2m]) / rate(http_requests_total[2m])) * 100 > 5
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+        annotations:
+          summary: "High error rate detected (>5%)"
+          description: 'Error rate is {{ $value | printf "%.2f" }}%'
+          runbook: "https://docs.yourdomain.com/runbooks/high-error-rate"
+
+      - alert: AllHealthChecksFailing
+        expr: sum(health_check_status{status="unhealthy"}) == count(health_check_status)
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+        annotations:
+          summary: "All health checks are failing"
+          description: "All system health checks are reporting unhealthy status"
+
+      - alert: CriticalCPUUsage
+        expr: system_cpu_usage_percent > 95
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+        annotations:
+          summary: "Critical CPU usage (>95%)"
+          description: 'CPU usage is {{ $value | printf "%.1f" }}%'
+
+      - alert: CriticalMemoryUsage
+        expr: (system_memory_usage_bytes / system_memory_total_bytes) * 100 > 95
+        for: 3m
+        labels:
+          severity: critical
+          priority: P1
+        annotations:
+          summary: "Critical memory usage (>95%)"
+          description: 'Memory usage is {{ $value | printf "%.1f" }}%'
+
+      - alert: DiskSpaceCritical
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+        annotations:
+          summary: "Disk space critical (<10% free)"
+          description: 'Only {{ $value | printf "%.1f" }}% disk space remaining'
+
+  - name: codex-synaptic-p2-high
+    rules:
+      # P2: Notify on-call (<15min response)
+      - alert: ElevatedErrorRate
+        expr: (rate(http_request_errors_total[10m]) / rate(http_requests_total[10m])) * 100 > 1
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+        annotations:
+          summary: "Elevated error rate (>1%)"
+          description: 'Error rate is {{ $value | printf "%.2f" }}% for the past 10 minutes'
+
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_ms_bucket[5m])) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+        annotations:
+          summary: "High response time (p95 >1000ms)"
+          description: '95th percentile response time is {{ $value | printf "%.0f" }}ms'
+
+      - alert: HighCPUUsage
+        expr: system_cpu_usage_percent > 80
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+        annotations:
+          summary: "High CPU usage (>80%)"
+          description: 'CPU usage is {{ $value | printf "%.1f" }}%'
+
+      - alert: HighMemoryUsage
+        expr: (system_memory_usage_bytes / system_memory_total_bytes) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+        annotations:
+          summary: "High memory usage (>85%)"
+          description: 'Memory usage is {{ $value | printf "%.1f" }}%'
+
+      - alert: ConsensusManagerUnhealthy
+        expr: health_check_status{component="consensus_manager", status="unhealthy"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+        annotations:
+          summary: "Consensus manager is unhealthy"
+          description: "The consensus manager component has been unhealthy for 5 minutes"
+
+      - alert: NeuralMeshDegraded
+        expr: health_check_status{component="neural_mesh", status="degraded"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+        annotations:
+          summary: "Neural mesh is degraded"
+          description: "The neural mesh component is reporting degraded status"
+
+  - name: codex-synaptic-p3-medium
+    rules:
+      # P3: Create ticket (<4hrs response)
+      - alert: ModerateErrorRate
+        expr: (rate(http_request_errors_total[30m]) / rate(http_requests_total[30m])) * 100 > 0.5
+        for: 30m
+        labels:
+          severity: info
+          priority: P3
+        annotations:
+          summary: "Moderate error rate (>0.5%)"
+          description: 'Error rate is {{ $value | printf "%.2f" }}% for the past 30 minutes'
+
+      - alert: ModerateResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_ms_bucket[15m])) > 500
+        for: 15m
+        labels:
+          severity: info
+          priority: P3
+        annotations:
+          summary: "Moderate response time (p95 >500ms)"
+          description: '95th percentile response time is {{ $value | printf "%.0f" }}ms'
+
+      - alert: AgentFailureRate
+        expr: (rate(agent_errors_total[1h]) / rate(agent_tasks_total[1h])) * 100 > 10
+        for: 1h
+        labels:
+          severity: info
+          priority: P3
+        annotations:
+          summary: "Agent failure rate >10%"
+          description: '{{ $value | printf "%.1f" }}% of agent tasks are failing'
+
+      - alert: SwarmOptimizationDegraded
+        expr: swarm_best_fitness < 0.5
+        for: 30m
+        labels:
+          severity: info
+          priority: P3
+        annotations:
+          summary: "Swarm optimization performance degraded"
+          description: 'Best fitness value is {{ $value | printf "%.2f" }}'
+
+      - alert: LowActiveAgents
+        expr: agents_active < 3
+        for: 15m
+        labels:
+          severity: info
+          priority: P3
+        annotations:
+          summary: "Low number of active agents"
+          description: "Only {{ $value }} agents are active"
+
+  - name: codex-synaptic-slo
+    rules:
+      # SLO Tracking
+      - alert: SLOResponseTimeViolation
+        expr: |
+          (
+            sum(rate(http_request_duration_ms_bucket{le="250"}[5m])) /
+            sum(rate(http_request_duration_ms_count[5m]))
+          ) < 0.95
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+        annotations:
+          summary: "SLO violation: <95% requests under 250ms"
+          description: 'Only {{ $value | printf "%.1f" }}% of requests are under 250ms (target: 95%)'
+
+      - alert: SLOAvailabilityViolation
+        expr: |
+          (
+            sum(rate(http_requests_total[5m])) -
+            sum(rate(http_request_errors_total[5m]))
+          ) / sum(rate(http_requests_total[5m])) < 0.999
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+        annotations:
+          summary: "SLO violation: Availability below 99.9%"
+          description: 'Current availability is {{ $value | printf "%.3f" }}%'
+# Alertmanager routing configuration
+# Configure this in your Alertmanager config.yml
+#
+# route:
+#   group_by: ['alertname', 'priority']
+#   group_wait: 30s
+#   group_interval: 5m
+#   repeat_interval: 4h
+#   receiver: 'default'
+#   routes:
+#     - match:
+#         priority: P1
+#       receiver: 'pagerduty-critical'
+#       continue: true
+#     - match:
+#         priority: P2
+#       receiver: 'slack-urgent'
+#       group_wait: 5m
+#       repeat_interval: 30m
+#     - match:
+#         priority: P3
+#       receiver: 'slack-info'
+#       group_wait: 15m
+#       repeat_interval: 4h
+#
+# receivers:
+#   - name: 'default'
+#     slack_configs:
+#       - channel: '#alerts'
+#   - name: 'pagerduty-critical'
+#     pagerduty_configs:
+#       - service_key: '<your-pagerduty-service-key>'
+#   - name: 'slack-urgent'
+#     slack_configs:
+#       - channel: '#alerts-urgent'
+#   - name: 'slack-info'
+#     slack_configs:
+#       - channel: '#alerts-info'
