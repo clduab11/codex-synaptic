@@ -4,7 +4,7 @@
 
 ![Neural Network Architecture](https://github.com/user-attachments/assets/a960ff4b-78d1-440c-af65-c9b6c2add389)
 
-### **Distributed AI Agent Orchestration • Built by [Parallax Analytics](https://parallax-ai.app)**
+### **Supercharge Codex for macOS with Swarm Intelligence, Neural Mesh Networking, and Distributed Consensus**
 
 *Wire up AI agents into living neural networks that think, coordinate, and evolve together*
 
@@ -20,9 +20,27 @@
 
 ## 🎯 What is This Thing?
 
-**codex-synaptic** is the nervous system for autonomous AI agents. Instead of one lonely bot grinding away in isolation, you get a **distributed neural mesh** where agents collaborate, vote on decisions, optimize tools in real-time, and coordinate multi-step plans like a hive mind on espresso.
+**codex-synaptic** is the enhancer layer for **Codex for macOS** and the nervous system for autonomous AI agents. Instead of one lonely bot grinding away in isolation, you get a **distributed neural mesh** where agents collaborate, vote on decisions, optimize tools in real-time, and coordinate multi-step plans like a hive mind on espresso.
 
-Think of it as **Kubernetes for AI agents**, but with swarm intelligence, Byzantine consensus, and enough GPU juice to make neural networks feel at home.
+Think of it as **Kubernetes for AI agents**, upgraded for Codex for macOS with swarm intelligence, Byzantine consensus, and observability baked in.
+
+## 🍎 Codex for macOS Enhancer Layer
+
+We’re refactoring **codex-synaptic** into a **modular, language-agnostic enhancer layer** that plugs into the macOS app and upgrades it with swarm intelligence, consensus gating, and observability.
+
+**Why it matters**:
+- ✅ **Instant swarm augmentation** for complex tasks
+- ✅ **Consensus-backed decisions** for higher quality
+- ✅ **Telemetry + memory** to make outcomes repeatable
+- ✅ **Adapter-friendly design** for future clients (CLI, API, MCP)
+
+**Refactor artifacts**: See the plan and architecture in [`/refactor`](./refactor/README.md).
+
+### Personas & Value Propositions
+
+- **Codex for macOS Users**: “Transform single-agent tasks into coordinated swarms that finish faster with consensus-backed quality.”
+- **AI Product Builders**: “Production-ready orchestration with language-agnostic APIs (gRPC/REST) and enterprise observability.”
+- **Research Hackers**: “Experiment with PSO/ACO/flocking, RAFT/BFT/PoS/PoW, and rUv ecosystem integrations.”
 
 ### Who's This For?
 
@@ -41,7 +59,7 @@ Think of it as **Kubernetes for AI agents**, but with swarm intelligence, Byzant
 - Repository naming aligned with upstream; workspace rename guide available in `docs/runbooks/workspace-rename-guide.md`.
 - **Beta readiness:** ~75% — core orchestration and consensus automation are stable; remaining work focuses on test coverage, security hardening, and release automation (see `docs/beta-readiness-checklist.md`).
 
-## ⚡ Quick Start (5 Minutes to Neural Mesh)
+## ⚡ Quick Start (Enhancer Mode Preview)
 
 ### 1. Install
 
@@ -52,52 +70,69 @@ git clone https://github.com/clduab11/codex-synaptic.git
 cd codex-synaptic && npm install && npm link
 ```
 
-### 2. Configure
-
-Create `config/system.json` (or let the CLI scaffold it):
-
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "model": "gpt-4o",
-    "apiKey": "${OPENAI_API_KEY}"
-  },
-  "agents": {
-    "maxActiveAgents": 10
-  },
-  "mesh": {
-    "topology": "mesh",
-    "nodeCount": 6
-  },
-  "tenancy": {
-    "enabled": false
-  }
-}
-```
-
-**Pro tip**: Set `OPENAI_API_KEY` in your environment or `.env` file.
-
-### 3. Spin Up Your First Swarm
+### 2. Initialize as Enhancer
 
 ```bash
-# Initialize the system
-codex-synaptic system init
-
-# Check health
-codex-synaptic system status
-
-# Deploy a neural mesh (6 agents, mesh topology)
-codex-synaptic mesh create --topology mesh --nodes 6
-
-# Start a swarm with specific agent types
-codex-synaptic swarm start pso --agents code,data,research
-
-# Or use the hive-mind orchestrator to spawn and coordinate agents dynamically
-codex-synaptic hive-mind spawn --agents 8 --strategy pso
+codex-synaptic init --mode enhancer --codex-path /Applications/Codex.app
 ```
 
+### 3. Start the Enhancer Service
+
+```bash
+codex-synaptic service start
+```
+
+### 4. Enable Swarm Mode in Codex for macOS
+
+- Settings → Extensions → Enable “Codex-Synaptic Swarm Intelligence”
+
+### 5. Deploy Your First Swarm
+
+```bash
+codex-synaptic swarm create --agents 8 --topology adaptive-mesh --algorithm pso
+```
+
+### 6. Monitor Live Progress
+
+```bash
+codex-synaptic monitor --live
+```
+
+> Note: Enhancer mode CLI flags are part of the refactor roadmap and may change as the adapter ships.
+
 ---
+
+## 🎬 Demo Scenarios
+
+1. **Parallel Code Refactoring**
+   - 8 CodeWorker agents refactor a large codebase in parallel.
+   - Consensus vote approves refactor decisions.
+   - Reported speedup vs. single-agent runs.
+2. **Distributed Security Audit**
+   - SecurityWorker swarm scans multiple repos simultaneously.
+   - AnalystWorker prioritizes findings with consensus gating.
+3. **Multi-Agent Research Synthesis**
+   - ResearchWorker swarm gathers sources.
+   - Swarm converges via PSO to extract top insights.
+
+## 📸 Screenshots & Visual Assets Plan
+
+**Screenshots**:
+- Codex for macOS integration settings with enhancer enabled.
+- Neural mesh visualization with node health indicators.
+- Swarm coordination dashboard (convergence + consensus timeline).
+- CLI session showing `swarm create` and live monitoring.
+
+**Diagrams**:
+- Architecture overview with Codex for macOS + bounded contexts.
+- Swarm coordination flow (task → swarm → consensus → result).
+
+## 🎞️ GIF & Video Plan
+
+- **GIF 1**: Swarm deployment (mesh nodes appear, links connect).
+- **GIF 2**: Consensus voting (votes cast, quorum reached).
+- **GIF 3**: Codex for macOS integration (task → swarm → result).
+- **Video**: 3-minute demo covering refactor value, swarm, and consensus.
 
 ## 🧬 Core Features (The Good Stuff)
 
@@ -293,47 +328,45 @@ const image = await system.getOpenAIClient().generateImage({
 
 ```mermaid
 graph TB
-    subgraph "Codex-Synaptic System"
-        API[REST API :4242]
-        CLI[CLI Interface]
-        Core[Core System]
-        
-        Core --> Agents[Agent Pool<br/>25+ Agent Types]
-        Core --> Mesh[Neural Mesh<br/>Ring/Mesh/Star/Tree]
-        Core --> Swarm[Swarm Controller<br/>PSO/ACO/Flocking]
-        Core --> Consensus[Consensus Engine<br/>RAFT/BFT/PoS/PoW]
-        Core --> Memory[SQLite Memory<br/>Tool Usage/Plans/Tenants]
-        Core --> Tools[Tool Optimizer<br/>Intent Scoring]
-        Core --> Router[Router<br/>Persona Alignment]
-        Core --> Reasoning[Reasoning Planner<br/>ToT/ReAcT/GOAP]
-        
-        Agents --> OpenAI[OpenAI Client<br/>GPT-5/Sora/Whisper]
-        Agents --> MCP[MCP Bridge<br/>Filesystem/GitHub/etc]
-        
-        Memory --> Telemetry[Prometheus/Jaeger<br/>Observability]
+    User[Codex for macOS User] --> Codex[Codex for macOS]
+    Codex --> Enhancer[codex-synaptic Enhancer Layer]
+
+    subgraph "Bounded Contexts"
+        Swarm[Swarm Coordination]
+        Mesh[Neural Mesh]
+        Consensus[Consensus & Governance]
+        Agents[Agent Lifecycle]
+        Memory[Memory & Knowledge]
+        Reasoning[Reasoning & Planning]
+        Obs[Observability & Telemetry]
     end
-    
-    User[Developer/API Client] --> API
-    User --> CLI
+
+    Enhancer --> Swarm
+    Enhancer --> Mesh
+    Enhancer --> Consensus
+    Enhancer --> Agents
+    Enhancer --> Memory
+    Enhancer --> Reasoning
+    Enhancer --> Obs
+
+    Swarm --> Mesh
+    Swarm --> Consensus
+    Agents --> Obs
+    Memory --> Reasoning
 ```
 
 **Key Components**:
 
 | Component | What It Does |
 |-----------|-------------|
-| **Core System** | Orchestrates agents, meshes, swarms, consensus, memory |
-| **Agent Pool** | 25+ specialized agent types (code, data, research, ops, security, etc.) |
-| **Neural Mesh** | Self-organizing network topologies for distributed reasoning |
-| **Swarm Controller** | PSO/ACO/Flocking algorithms for collective intelligence |
-| **Consensus Engine** | RAFT/BFT/PoS/PoW voting mechanisms for distributed decisions |
-| **Tool Optimizer** | Tracks tool usage, scores effectiveness, recommends based on intent |
-| **Reasoning Planner** | Tree-of-Thought, ReAcT, GOAP for multi-step planning |
-| **Router** | Persona-aligned agent selection (technical, creative, analytical) |
-| **Memory System** | SQLite-backed persistence for telemetry, plans, tenants |
-| **REST API** | Lightweight HTTP server (:4242) for tool scoring, health checks |
-| **OpenAI Client** | Responses API integration with model routing and usage tracking |
-| **MCP Bridge** | Model Context Protocol support for tool integrations |
-| **Observability** | Prometheus metrics, Jaeger tracing, Grafana dashboards |
+| **Enhancer Layer** | Integration hub that connects Codex for macOS to bounded contexts |
+| **Swarm Coordination** | PSO/ACO/flocking algorithms and task distribution |
+| **Neural Mesh** | Self-organizing topology management and bandwidth optimization |
+| **Consensus & Governance** | RAFT/BFT/PoS/PoW voting, quorum and audit trails |
+| **Agent Lifecycle** | Agent registry, provisioning, health monitoring, autoscaling |
+| **Memory & Knowledge** | Persistent storage, embeddings, retrieval, and RAG |
+| **Reasoning & Planning** | Tree-of-Thought, ReAct, GOAP, Monte Carlo planning |
+| **Observability & Telemetry** | Metrics, tracing, alerting, health checks |
 
 ---
 
