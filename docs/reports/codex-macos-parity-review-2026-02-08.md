@@ -89,7 +89,7 @@ From the Codex changelog page, the macOS app entries within the past 7 days:
 
 **ReAct framework (Reason → Act → Observe → Update)**
 
-1. **Reason:** Identify parity gaps by mapping each app capability to repo subsystems (swarm, CLI, automations, skills, Git/worktree handling, file attachments, steering).
+1. **Reason:** Identify parity gaps by mapping each app capability to repo subsystems (swarm, CLI, automations, skills, Git/worktree handling, file attachments, mid-turn steering).
 2. **Act:** Add instrumentation and tests in the CLI and swarm layers to validate shell semantics, environment detection, and execution safety.
 3. **Observe:** Collect telemetry/log outputs for real shell runs, plus regression tests for pipelines/redirects.
 4. **Update:** Tighten environment adapters, add macOS‑specific profiles, and align docs/UX accordingly.
