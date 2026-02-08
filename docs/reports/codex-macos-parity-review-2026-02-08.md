@@ -99,7 +99,7 @@ From the Codex changelog page, the macOS app entries within the past 7 days:
 1. **Source‑of‑truth mapping**
    - Create a parity checklist that maps macOS app features to repo modules (swarm orchestration, CLI command runner, automation/skills, Git tooling).
 2. **Environment parity harness**
-   - Add a shell‑compatibility test suite to run representative commands (pipes, redirects, regex). Use `bash -lc` today; add a macOS `zsh` profile option and compare outputs.
+   - Add a shell-compatibility test suite to run representative commands (pipes, redirects, regex, path resolution). Use `bash -lc` today; add a macOS `zsh` profile option and compare outputs.
 3. **Swarm execution profile**
    - Introduce a “macOS local” swarm profile that:
      - Uses local filesystem paths and process execution constraints.
