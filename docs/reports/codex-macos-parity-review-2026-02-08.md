@@ -1,4 +1,4 @@
-# Codex for macOS — official documentation & 7‑day changelog review
+# Codex for macOS — official documentation & 7-day changelog review
 
 Date: 2026-02-08 (UTC)
 
