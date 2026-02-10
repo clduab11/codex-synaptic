@@ -1,17 +1,32 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { homedir } from 'os';
-import { fork } from 'child_process';
+import { fork, ChildProcess } from 'child_process';
+import type { InterfaceMode, InterfaceTier } from '../core/config.js';
+
+/**
+ * IPC message types for daemon communication
+ */
+export type DaemonIPCMessage =
+  | { type: 'setMode'; mode: InterfaceMode }
+  | { type: 'getMode' }
+  | { type: 'modeChanged'; mode: InterfaceMode; tier: InterfaceTier }
+  | { type: 'setTier'; tier: InterfaceTier }
+  | { type: 'shutdown' };
 
 interface DaemonStateFile {
   pid: number;
   startedAt: string;
+  interfaceMode: InterfaceMode;
+  tier: InterfaceTier;
 }
 
 export interface BackgroundStatus {
   running: boolean;
   pid?: number;
   startedAt?: string;
+  interfaceMode?: InterfaceMode;
+  tier?: InterfaceTier;
 }
 
 const STATE_DIR = join(homedir(), '.codex-synaptic');
@@ -87,7 +102,13 @@ export function getBackgroundStatus(): BackgroundStatus {
     return { running: false };
   }
 
-  return { running: true, pid: state.pid, startedAt: state.startedAt };
+  return {
+    running: true,
+    pid: state.pid,
+    startedAt: state.startedAt,
+    interfaceMode: state.interfaceMode,
+    tier: state.tier
+  };
 }
 
 export async function startBackgroundSystem(): Promise<BackgroundStatus> {
@@ -132,8 +153,10 @@ export async function startBackgroundSystem(): Promise<BackgroundStatus> {
         if (typeof child.disconnect === 'function') {
           child.disconnect();
         }
-        writeState({ pid: child.pid!, startedAt });
-      resolvePromise({ running: true, pid: child.pid!, startedAt });
+        const interfaceMode = message.interfaceMode || 'cli';
+        const tier = message.tier || 'intermediate';
+        writeState({ pid: child.pid!, startedAt, interfaceMode, tier });
+        resolvePromise({ running: true, pid: child.pid!, startedAt, interfaceMode, tier });
       } else if (message.type === 'error') {
         cleanup();
         rejectPromise(new Error(message.error));
@@ -218,4 +241,131 @@ function addTsNodeRegister(execArgv: string[]): string[] {
 function filterExecArgv(execArgv: string[]): string[] {
   // Remove debugging flags that would prevent daemonizing cleanly
   return execArgv.filter((arg) => !arg.startsWith('--inspect'));
+}
+
+/**
+ * Get the current interface mode from daemon state
+ */
+export function getInterfaceMode(): InterfaceMode {
+  const state = readState();
+  return state?.interfaceMode ?? 'cli';
+}
+
+/**
+ * Get the current interface tier from daemon state
+ */
+export function getInterfaceTier(): InterfaceTier {
+  const state = readState();
+  return state?.tier ?? 'intermediate';
+}
+
+/**
+ * Update the daemon state with new interface mode
+ */
+export function setInterfaceMode(mode: InterfaceMode): boolean {
+  const state = readState();
+  if (!state) {
+    return false;
+  }
+  
+  writeState({
+    ...state,
+    interfaceMode: mode
+  });
+  
+  return true;
+}
+
+/**
+ * Update the daemon state with new interface tier
+ */
+export function setInterfaceTier(tier: InterfaceTier): boolean {
+  const state = readState();
+  if (!state) {
+    return false;
+  }
+  
+  writeState({
+    ...state,
+    tier
+  });
+  
+  return true;
+}
+
+/**
+ * Update multiple daemon state properties at once
+ */
+export function updateDaemonState(updates: Partial<Pick<DaemonStateFile, 'interfaceMode' | 'tier'>>): boolean {
+  const state = readState();
+  if (!state) {
+    return false;
+  }
+  
+  writeState({
+    ...state,
+    ...updates
+  });
+  
+  return true;
+}
+
+/**
+ * Send an IPC message to the running daemon
+ * Returns false if daemon is not running or message fails to send
+ */
+export async function sendDaemonMessage(message: DaemonIPCMessage): Promise<boolean> {
+  const state = readState();
+  if (!state || !processAlive(state.pid)) {
+    return false;
+  }
+  
+  // Note: Direct IPC messaging requires a connected child process
+  // For now, we update state file which daemon can poll
+  // Future: implement proper IPC channel reconnection
+  
+  if (message.type === 'setMode') {
+    return setInterfaceMode(message.mode);
+  }
+  
+  if (message.type === 'setTier') {
+    return setInterfaceTier(message.tier);
+  }
+  
+  return false;
+}
+
+/**
+ * Request interface mode switch through the daemon
+ * This updates state and can trigger mode transition
+ */
+export async function requestModeSwitch(
+  targetMode: InterfaceMode,
+  options: { tier?: InterfaceTier } = {}
+): Promise<{ success: boolean; currentMode: InterfaceMode; currentTier: InterfaceTier }> {
+  const status = getBackgroundStatus();
+  
+  if (!status.running) {
+    return {
+      success: false,
+      currentMode: 'cli',
+      currentTier: 'intermediate'
+    };
+  }
+  
+  const updates: Partial<Pick<DaemonStateFile, 'interfaceMode' | 'tier'>> = {
+    interfaceMode: targetMode
+  };
+  
+  if (options.tier) {
+    updates.tier = options.tier;
+  }
+  
+  const success = updateDaemonState(updates);
+  
+  return {
+    success,
+    currentMode: success ? targetMode : (status.interfaceMode ?? 'cli'),
+    currentTier: success ? (options.tier ?? status.tier ?? 'intermediate') : (status.tier ?? 'intermediate')
+  };
 }

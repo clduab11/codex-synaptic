@@ -12,6 +12,66 @@ import { OPENAI_BACKENDS, type OpenAIConfiguration } from '../openai/types.js';
 const readFileAsync = promisify(readFile);
 const writeFileAsync = promisify(writeFile);
 
+/**
+ * Interface mode types for dual-interface architecture
+ */
+export type InterfaceMode = 'cli' | 'tui' | 'gui';
+
+/**
+ * Progressive disclosure tier for UI complexity
+ */
+export type InterfaceTier = 'beginner' | 'intermediate' | 'advanced';
+
+/**
+ * TUI-specific configuration
+ */
+export interface TuiConfig {
+  /** Color theme for TUI */
+  theme: 'dark' | 'light' | 'high-contrast';
+  /** Refresh interval for telemetry updates in milliseconds */
+  refreshInterval: number;
+  /** Progressive disclosure tier */
+  tier: InterfaceTier;
+  /** Enable keyboard shortcut hints */
+  showShortcuts: boolean;
+  /** Enable animations */
+  animations: boolean;
+}
+
+/**
+ * GUI-specific configuration
+ */
+export interface GuiConfig {
+  /** Window width in pixels */
+  windowWidth: number;
+  /** Window height in pixels */
+  windowHeight: number;
+  /** Port for daemon communication */
+  port: number;
+  /** Color theme for GUI */
+  theme: 'dark' | 'light' | 'system';
+  /** Progressive disclosure tier */
+  tier: InterfaceTier;
+  /** Auto-launch GUI when daemon starts (if mode is gui) */
+  autoLaunch: boolean;
+  /** Enable system tray integration */
+  systemTray: boolean;
+}
+
+/**
+ * Interface configuration for dual-interface architecture
+ */
+export interface InterfaceConfig {
+  /** Current interface mode */
+  mode: InterfaceMode;
+  /** Enabled interface modes */
+  enabledModes: InterfaceMode[];
+  /** TUI-specific settings */
+  tui: TuiConfig;
+  /** GUI-specific settings */
+  gui: GuiConfig;
+}
+
 export interface SystemConfiguration {
   system: {
     logLevel: string;
@@ -114,6 +174,8 @@ export interface SystemConfiguration {
     disableProbeCache: boolean;
   };
   openai?: OpenAIConfiguration;
+  /** Interface configuration for dual-interface architecture */
+  interface?: InterfaceConfig;
 }
 
 export class ConfigurationManager {
@@ -407,6 +469,26 @@ export class ConfigurationManager {
             }
           ]
         }
+      },
+      interface: {
+        mode: 'cli',
+        enabledModes: ['cli', 'tui', 'gui'],
+        tui: {
+          theme: 'dark',
+          refreshInterval: 1000,
+          tier: 'intermediate',
+          showShortcuts: true,
+          animations: true
+        },
+        gui: {
+          windowWidth: 1200,
+          windowHeight: 800,
+          port: 4242,
+          theme: 'system',
+          tier: 'intermediate',
+          autoLaunch: false,
+          systemTray: true
+        }
       }
     };
   }
@@ -610,6 +692,48 @@ export class ConfigurationManager {
       }
     }
 
+    // Interface configuration validation
+    if (this.config.interface) {
+      const iface = this.config.interface;
+      const validModes: InterfaceMode[] = ['cli', 'tui', 'gui'];
+      const validTiers: InterfaceTier[] = ['beginner', 'intermediate', 'advanced'];
+      
+      if (!validModes.includes(iface.mode)) {
+        errors.push('interface.mode must be one of: cli, tui, gui');
+      }
+      if (!Array.isArray(iface.enabledModes) || iface.enabledModes.some(m => !validModes.includes(m))) {
+        errors.push('interface.enabledModes must be an array of valid modes (cli, tui, gui)');
+      }
+      if (iface.tui) {
+        if (!['dark', 'light', 'high-contrast'].includes(iface.tui.theme)) {
+          errors.push('interface.tui.theme must be one of: dark, light, high-contrast');
+        }
+        if (iface.tui.refreshInterval < 100) {
+          errors.push('interface.tui.refreshInterval must be at least 100ms');
+        }
+        if (!validTiers.includes(iface.tui.tier)) {
+          errors.push('interface.tui.tier must be one of: beginner, intermediate, advanced');
+        }
+      }
+      if (iface.gui) {
+        if (iface.gui.windowWidth < 400) {
+          errors.push('interface.gui.windowWidth must be at least 400');
+        }
+        if (iface.gui.windowHeight < 300) {
+          errors.push('interface.gui.windowHeight must be at least 300');
+        }
+        if (iface.gui.port < 1 || iface.gui.port > 65535) {
+          errors.push('interface.gui.port must be between 1 and 65535');
+        }
+        if (!['dark', 'light', 'system'].includes(iface.gui.theme)) {
+          errors.push('interface.gui.theme must be one of: dark, light, system');
+        }
+        if (!validTiers.includes(iface.gui.tier)) {
+          errors.push('interface.gui.tier must be one of: beginner, intermediate, advanced');
+        }
+      }
+    }
+
     if (errors.length > 0) {
       const error = new Error(`Configuration validation failed: ${errors.join(', ')}`);
       this.logger.error('config', 'Configuration validation failed', { errors });
@@ -671,5 +795,9 @@ export class ConfigurationManager {
 
   getOpenAIConfig() {
     return this.config.openai;
+  }
+
+  getInterfaceConfig() {
+    return this.config.interface;
   }
 }
