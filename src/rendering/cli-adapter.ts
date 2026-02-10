@@ -591,13 +591,16 @@ export class CliOutputAdapter extends BaseOutputAdapter {
           break;
         }
           
-        default:
+        default: {
+          // Cast to base InputRequest since TypeScript infers 'never' when all cases are handled
+          const fallbackRequest = request as unknown as { id: string; default?: unknown };
           cleanup();
           resolve({
-            id: request.id,
-            value: request.default as T,
+            id: fallbackRequest.id,
+            value: fallbackRequest.default as T,
             cancelled: true,
           });
+        }
       }
     });
   }
