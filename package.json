@@ -14,11 +14,13 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write src/**/*.ts",
-    "cli": "ts-node src/cli/index.ts",
+    "cli": "node dist/cli/index.js",
+    "cli:dev": "ts-node src/cli/index.ts",
     "cli:link": "node scripts/dev-cli-link.mjs",
     "prepare": "npm run build",
     "test:watch": "vitest",
-    "export:metrics": "ts-node scripts/observability/exporter.ts"
+    "export:metrics": "ts-node scripts/observability/exporter.ts",
+    "release:preflight": "node scripts/release-preflight.mjs"
   },
   "keywords": [
     "codex-synaptic",

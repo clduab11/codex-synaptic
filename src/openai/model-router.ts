@@ -31,20 +31,20 @@ export interface OpenAIModelRouterOptions {
 }
 
 const DEFAULT_ROUTING: OpenAIModelRoutingConfig = {
-  defaultModel: 'gpt-4o-mini',
-  highComplexityModel: 'gpt-5',
-  evaluationModel: 'gpt-5-mini',
+  defaultModel: 'gpt-5.3-codex',
+  highComplexityModel: 'gpt-5-pro',
+  evaluationModel: 'gpt-5-codex',
   allowDynamicFallback: true,
   stageOverrides: [
     {
       stageId: 'openai-synthesis',
-      model: 'gpt-5-mini',
-      rationale: 'Executive synthesis benefits from higher reasoning fidelity.'
+      model: 'gpt-5-codex',
+      rationale: 'OpenAI synthesis should prioritize codex-tuned reasoning.'
     },
     {
       stageId: 'insight-summary',
-      model: 'gpt-4.1-mini',
-      rationale: 'Insight synthesis favors wider multimodal context windows.'
+      model: 'gpt-5-mini',
+      rationale: 'Insight synthesis balances throughput and reasoning quality.'
     },
     {
       stageId: 'moderation',
@@ -122,7 +122,7 @@ export class OpenAIModelRouter {
     this.baselineDefault = options.baselineDefaultModel ?? this.routing.defaultModel ?? catalog[0]?.id;
     this.fallbackDefaults = options.fallbackDefaults?.length
       ? options.fallbackDefaults
-      : ['gpt-4o-mini', 'gpt-4o', 'gpt-5-nano', 'gpt-4.1-mini'];
+      : ['gpt-5-codex', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano'];
 
     this.listModelsFn = options.listModels;
     this.cacheTtlMs = options.cacheTtlMs ?? 10 * 60 * 1000; // 10 minutes
@@ -225,12 +225,12 @@ export class OpenAIModelRouter {
     }
 
     if (highComplexity) {
-      const heavyModel = this.routing.highComplexityModel ?? 'gpt-5';
+      const heavyModel = this.routing.highComplexityModel ?? 'gpt-5-pro';
       return this.resolveSelection(heavyModel, 'High complexity heuristic triggered');
     }
 
     if (isCodeTask) {
-      return this.resolveSelection('gpt-oss-120b', 'Code-oriented stage prefers OSS 120B for wider context');
+      return this.resolveSelection('gpt-5-codex', 'Code-oriented stage prefers Codex-tuned reasoning');
     }
 
     return null;
@@ -241,7 +241,7 @@ export class OpenAIModelRouter {
     const reason = baseline
       ? 'Default routing preference'
       : 'Fallback to catalog baseline';
-    return this.resolveSelection(baseline ?? 'gpt-oss-20b', reason);
+    return this.resolveSelection(baseline ?? 'gpt-5-codex', reason);
   }
 
   private resolveSelection(modelId: string, reason: string): OpenAIModelSelection {
@@ -262,7 +262,7 @@ export class OpenAIModelRouter {
       }
     }
 
-    const finalModel = this.baselineDefault ?? 'gpt-oss-20b';
+    const finalModel = this.baselineDefault ?? 'gpt-5-codex';
     return {
       model: finalModel,
       reason: `${reason} → exhausted fallbacks, using baseline ${finalModel}`,

@@ -1,8 +1,28 @@
 import type { OpenAIModelCatalogEntry } from './types.js';
 
-// Consolidated catalog aligned with OpenAI multimodal API documentation (Oct 2025).
+// Consolidated catalog aligned with OpenAI multimodal API documentation (Feb 2026 refresh).
 // Includes text/code, search, moderation, audio, image, video, and realtime models.
 export const OFFICIAL_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
+  {
+    id: 'gpt-5.3-codex',
+    label: 'GPT-5.3 Codex',
+    tier: 'pro',
+    modalities: ['text', 'code'],
+    defaultUseCases: ['agentic coding orchestration', 'multi-step repository upgrades'],
+    recommendedStages: ['openai-synthesis', 'validation', 'consensus'],
+    capabilities: ['reasoning', 'code_generation', 'tool_use'],
+    fallback: ['gpt-5-codex', 'gpt-5-pro', 'gpt-5']
+  },
+  {
+    id: 'gpt-5-codex',
+    label: 'GPT-5 Codex',
+    tier: 'flagship',
+    modalities: ['text', 'code'],
+    defaultUseCases: ['agentic coding tasks', 'code review and refactoring'],
+    recommendedStages: ['openai-synthesis', 'validation'],
+    capabilities: ['reasoning', 'code_generation', 'tool_use'],
+    fallback: ['gpt-5-mini', 'gpt-5']
+  },
   {
     id: 'gpt-5-pro',
     label: 'GPT-5 Pro',

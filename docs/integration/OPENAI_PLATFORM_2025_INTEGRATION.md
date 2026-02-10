@@ -1,5 +1,7 @@
 # OpenAI Platform 2025 Integration Guide for Codex-Synaptic
 
+> Archived planning artifact (2025). Superseded for active execution by `docs/roadmaps/codex-macos-2026-rekick.md` (2026-02-10).
+
 **Document Version:** 1.0  
 **Last Updated:** October 17, 2025  
 **Status:** Strategic Planning & Implementation Roadmap

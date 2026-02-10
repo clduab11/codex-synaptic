@@ -34,6 +34,7 @@ interface DaemonState {
 }
 
 async function main() {
+  process.env.CODEX_SYNAPTIC_DAEMON_ACTIVE = '1';
   const system = new CodexSynapticSystem();
   const configManager = new ConfigurationManager();
   

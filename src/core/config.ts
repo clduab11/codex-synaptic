@@ -312,12 +312,12 @@ export class ConfigurationManager {
         },
         responses: {
           enabled: true,
-          defaultModel: 'gpt-oss-20b',
+          defaultModel: 'gpt-5.3-codex',
           requestTimeoutMs: 60000
         },
         agents: {
           enabled: false,
-          defaultModel: 'gpt-4o-mini',
+          defaultModel: 'gpt-5-codex',
           maxHandoffDepth: 3,
           enableGuardrails: true
         },
@@ -326,6 +326,22 @@ export class ConfigurationManager {
           sampleRate: 1
         },
         modelCatalog: [
+          {
+            id: 'gpt-5.3-codex',
+            label: 'GPT-5.3 Codex',
+            tier: 'pro',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['agentic coding orchestration', 'internal release hardening'],
+            fallback: ['gpt-5-codex', 'gpt-5-pro', 'gpt-5']
+          },
+          {
+            id: 'gpt-5-codex',
+            label: 'GPT-5 Codex',
+            tier: 'flagship',
+            modalities: ['text', 'code'],
+            defaultUseCases: ['agentic coding tasks', 'multi-step repository upgrades'],
+            fallback: ['gpt-5-mini', 'gpt-5']
+          },
           {
             id: 'gpt-oss-20b',
             label: 'GPT-OSS 20B',
@@ -432,20 +448,20 @@ export class ConfigurationManager {
           }
         ],
         modelRouting: {
-          defaultModel: 'gpt-oss-20b',
-          highComplexityModel: 'gpt-5',
-          evaluationModel: 'gpt-5-mini',
+          defaultModel: 'gpt-5.3-codex',
+          highComplexityModel: 'gpt-5-pro',
+          evaluationModel: 'gpt-5-codex',
           allowDynamicFallback: true,
           stageOverrides: [
             {
               stageId: 'openai-synthesis',
-              model: 'gpt-5-mini',
-              rationale: 'Executive synthesis benefits from higher reasoning fidelity.'
+              model: 'gpt-5-codex',
+              rationale: 'OpenAI synthesis should prioritize codex-tuned reasoning.'
             },
             {
               stageId: 'insight-summary',
-              model: 'gpt-oss-120b',
-              rationale: 'Insight synthesis prefers OSS breadth.'
+              model: 'gpt-5-mini',
+              rationale: 'Insight synthesis balances throughput and reasoning quality.'
             }
           ],
           keywordOverrides: [

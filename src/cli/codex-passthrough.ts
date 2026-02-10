@@ -803,10 +803,10 @@ export async function executeCodexPassthrough(
     console.error(chalk.gray(`Tried npx packages: ${DEFAULT_NPX_PACKAGE}`));
     console.error('');
     console.error(chalk.cyan('Installation options:'));
-    console.error(chalk.gray('  npm install -g @openai/codex-cli'));
+    console.error(chalk.gray('  npm install -g @openai/codex'));
     console.error(chalk.gray('  # or'));
-    console.error(chalk.gray('  brew install openai/tap/codex-cli'));
-    console.error(chalk.gray('  # or ensure npx can reach @openai/codex-cli@latest'));
+    console.error(chalk.gray('  brew install codex'));
+    console.error(chalk.gray(`  # or ensure npx can reach ${DEFAULT_NPX_PACKAGE}`));
     return {
       success: false,
       exitCode: 1,

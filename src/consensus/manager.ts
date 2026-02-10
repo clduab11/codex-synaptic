@@ -162,14 +162,15 @@ export class ConsensusManager extends EventEmitter {
 
     const yesVotes = votes.filter(v => v.vote).length;
     const noVotes = votes.filter(v => !v.vote).length;
+    const votingPopulation = this.resolveVotingPopulation(proposal);
 
     // Check if we have enough votes for consensus
     if (yesVotes >= proposal.requiredVotes) {
       this.finalizeConsensus(proposalId, true);
     } else if (noVotes >= proposal.requiredVotes) {
       this.finalizeConsensus(proposalId, false);
-    } else if (votes.length >= this.agentRegistry.getAgentCount()) {
-      // All agents voted but no consensus reached
+    } else if (votes.length >= votingPopulation) {
+      // All eligible voters participated but no consensus reached
       this.finalizeConsensus(proposalId, false);
     }
   }
@@ -280,6 +281,18 @@ export class ConsensusManager extends EventEmitter {
     this.logger.info('consensus', 'Consensus configuration updated', this.config);
   }
 
+  private resolveVotingPopulation(proposal: ConsensusProposal): number {
+    const metadata = proposal.metadata as Record<string, unknown> | undefined;
+    const storedPopulation = Number(metadata?.votingPopulation);
+    if (Number.isFinite(storedPopulation) && storedPopulation > 0) {
+      return Math.floor(storedPopulation);
+    }
+
+    const consensusPopulation = this.agentRegistry.getAgentsByType(AgentType.CONSENSUS_COORDINATOR).length;
+    const totalPopulation = this.agentRegistry.getAgentCount();
+    return Math.max(consensusPopulation || totalPopulation, 1);
+  }
+
   private calculateRequirements(consensusAgents: any[]): {
     requiredVotes: number;
     requiredStake?: number;
@@ -288,12 +301,14 @@ export class ConsensusManager extends EventEmitter {
     quorumFactor?: number;
     metadata?: Record<string, any>;
   } {
-    const votingPopulation = consensusAgents.length || this.agentRegistry.getAgentCount();
+    const votingPopulation = Math.max(consensusAgents.length || this.agentRegistry.getAgentCount(), 1);
     const mechanism = this.config.mechanism;
     const quorumFactor = this.config.quorumFactor ?? 0.5;
     let requiredVotes = Math.max(this.config.minVotes, Math.ceil(votingPopulation * quorumFactor));
     let requiredStake: number | undefined;
-    const metadata: Record<string, any> = {};
+    const metadata: Record<string, any> = {
+      votingPopulation
+    };
 
     if (mechanism === 'bft') {
       const faultTolerance = this.config.faultTolerance ?? Math.floor(Math.max(votingPopulation - 1, 0) / 3);
@@ -321,6 +336,18 @@ export class ConsensusManager extends EventEmitter {
       const threshold = this.config.stakeThreshold ?? 0.67;
       requiredStake = totalStake * threshold;
       metadata.totalStake = totalStake;
+    }
+
+    if (requiredVotes > votingPopulation) {
+      metadata.quorumDowngraded = true;
+      metadata.originalRequiredVotes = requiredVotes;
+      requiredVotes = votingPopulation;
+      this.logger.warn('consensus', 'Consensus requiredVotes exceeded available voters; downgrading to avoid deadlock', {
+        mechanism,
+        votingPopulation,
+        requiredVotes,
+        originalRequiredVotes: metadata.originalRequiredVotes
+      });
     }
 
     return {

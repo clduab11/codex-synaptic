@@ -1,5 +1,7 @@
 # Week 3 Backlog – Multi-Tenancy & Analytics Expansion
 
+> Archived planning artifact (2025). Active roadmap moved to `docs/roadmaps/codex-macos-2026-rekick.md` (2026-02-10).
+
 ## Objectives
 - Introduce foundational multi-tenancy controls so Codex-Synaptic can isolate customer workloads.
 - Expand analytics coverage across reasoning planner + validation gating to validate production readiness.

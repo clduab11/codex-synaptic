@@ -40,3 +40,25 @@ codex-synaptic env down mcp-github
 ```
 
 Add or modify compose fragments under `docker/mcp/` and they will show up automatically in `codex-synaptic env list`.
+
+## Codex CLI / App Integration
+
+Codex-Synaptic MCP profiles can be used alongside Codex app/CLI workflows:
+
+```bash
+# Inspect configured MCP servers in Codex CLI
+codex mcp list
+
+# Add a server (example: local filesystem MCP)
+codex mcp add filesystem -- node dist/mcp/codex-mcp-server.js
+
+# Inspect one entry
+codex mcp get filesystem
+```
+
+Expected output indicators:
+
+- `codex mcp list` returns one or more registered MCP server labels.
+- `env status ...` reports `running`/`healthy` for Docker-backed MCP services.
+
+For macOS mode guidance (Local/Worktree/Cloud + automation guardrails), see [`docs/guides/codex-macos-workflows.md`](../guides/codex-macos-workflows.md).

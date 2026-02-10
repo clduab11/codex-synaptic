@@ -1,75 +1,38 @@
-# 📚 Codex-Synaptic Documentation
+# Codex-Synaptic Docs
 
-Welcome to the comprehensive documentation for Codex-Synaptic, the ultimate AI agent orchestration platform.
+This documentation set tracks the Codex macOS 2026 readiness path and operational workflows for Codex-Synaptic.
 
-## 🗂️ Documentation Structure
+## Start Here
 
-### Core Documentation
-- [**Architecture Overview**](./architecture.md) - System architecture and design principles
-- [**Quick Start Guide**](./guides/quick-start.md) - Get up and running in minutes
-- [**CLI Reference**](./cli-reference.md) - Complete command-line interface guide
+1. [Quick Start](./guides/quick-start.md)
+2. [Codex macOS Workflows](./guides/codex-macos-workflows.md)
+3. [2026 Rekick Roadmap](./roadmaps/codex-macos-2026-rekick.md)
 
-### Agent System
-- [**Agents & Neural Mesh**](./agents-and-mesh.md) - Agent framework and neural networking
-- [**Swarm Intelligence**](./swarm-and-optimization.md) - Collective optimization algorithms
-- [**Consensus Mechanisms**](./consensus.md) - Distributed decision making protocols
+## Core References
 
-### Integration & Development
-- [**Memory & Bridging**](./memory-and-bridge.md) - Persistent storage and protocol bridges
-- [**API Reference**](./api/) - Complete API documentation
-- [**Development Guide**](./guides/development.md) - Setting up development environment
-- [**Contributing**](./guides/contributing.md) - How to contribute to the project
-- [**Adaptive Tooling & Validation**](./guides/adaptive-tooling.md) - Tool optimiser, reasoning planner, and consensus gating workflows
-- [**Authentication CLI**](../README.md#authentication-cli) - Generate bearer tokens for secured endpoints
-- [**Multi-Tenancy Architecture (Draft)**](./architecture/multi-tenancy.md) - Tenant isolation design notes and rollout strategy
+- [Architecture Overview](./architecture.md)
+- [Adaptive Tooling + Validation](./guides/adaptive-tooling.md)
+- [MCP Service Catalog](./mcp/README.md)
+- [Observability Toolkit](./observability/README.md)
+- [Validation Gating Runbook](./runbooks/validation-gating.md)
+- [Telemetry Exporter Runbook](./runbooks/telemetry-exporters.md)
 
-### Operations & Monitoring
-- [**Security**](./security.md) - Security model and best practices
-- [**Telemetry**](./telemetry.md) - Monitoring and observability
-- [**Testing**](./testing.md) - Testing strategies and guidelines
-- [**Deployment**](./guides/deployment.md) - Production deployment guide
-- [**Telemetry Exporter Runbook**](./runbooks/telemetry-exporters.md) - Exporting metrics snapshots for dashboards
-- [**Validation Gating Runbook**](./runbooks/validation-gating.md) - Operating the consensus approval gates
-- [**Week 3 Test Checklist**](./tests/week-3-prep.md) - Upcoming regression and integration suites
+## CLI References
 
-## 🚀 Getting Started
+- [Codex passthrough guide](./cli/codex-passthrough.md)
+- [Codex passthrough quick start](./cli/CODEX_PASSTHROUGH_QUICKSTART.md)
+- [Instructions cache commands](./cli/instructions.md)
+- [Interactive mode notes](./cli/interactive-mode-enhancements.md)
 
-If you're new to Codex-Synaptic, we recommend starting with:
+## Historical / Archived Planning
 
-1. [**Quick Start Guide**](./guides/quick-start.md) - Basic setup and first steps
-2. [**Architecture Overview**](./architecture.md) - Understanding the system design
-3. [**CLI Reference**](./cli-reference.md) - Essential commands
-4. [**Examples**](../examples/) - Practical code examples
+The following docs remain for historical context and are explicitly archived:
 
-## 🎯 Popular Topics
+- [OpenAI Platform 2025 integration plan](./integration/OPENAI_PLATFORM_2025_INTEGRATION.md)
+- [Sprint 2 implementation plan](./plans/sprint-2-implementation-plan.md)
+- [Week 3 backlog](./plans/week-3-backlog.md)
 
-- **Neural Mesh Configuration** - [Agents & Neural Mesh](./agents-and-mesh.md#neural-mesh-topologies)
-- **Swarm Algorithms** - [Swarm Intelligence](./swarm-and-optimization.md#algorithms)
-- **GPT-5-Codex Integration** - [Quick Start Guide](./guides/quick-start.md#gpt-5-codex)
-- **Production Deployment** - [Deployment Guide](./guides/deployment.md)
+## Notes
 
-## 📖 Documentation Status
-
-| Document | Status | Last Updated |
-|----------|--------|--------------|
-| Architecture | 🚧 In Progress | TBD |
-| Quick Start | ✅ Complete | TBD |
-| CLI Reference | 🚧 In Progress | TBD |
-| API Documentation | 📝 Planned | TBD |
-| Security Guide | 📝 Planned | TBD |
-
-> **Note**: Documentation is actively being developed. Some sections may be incomplete or under construction.
-
-## 🤝 Contributing to Documentation
-
-Found an error or want to improve the documentation? See our [Contributing Guide](./guides/contributing.md) for details on how to help.
-
-## 📞 Support & Community
-
-- 💬 **Discord**: Join our community for real-time help
-- 🐛 **Issues**: Report bugs and request features on GitHub
-- 📧 **Email**: [support@parallaxanalytics.io](mailto:support@parallaxanalytics.io)
-
----
-
-**[← Back to Main README](../README.md)**
+- For Codex-family model guidance, prefer Responses API flows.
+- For release packaging, run `npm run release:preflight` before cut/tag.

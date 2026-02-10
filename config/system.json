@@ -127,7 +127,7 @@
     },
     "responses": {
       "enabled": true,
-      "defaultModel": "gpt-4o-mini",
+      "defaultModel": "gpt-5.3-codex",
       "defaultImageModel": "gpt-image-1",
       "defaultVideoModel": "sora-2",
       "defaultSpeechModel": "gpt-voice-1",
@@ -139,7 +139,7 @@
     },
     "agents": {
       "enabled": false,
-      "defaultModel": "gpt-4o-mini",
+      "defaultModel": "gpt-5-codex",
       "maxHandoffDepth": 3,
       "enableGuardrails": true
     },
@@ -148,6 +148,41 @@
       "sampleRate": 1
     },
     "modelCatalog": [
+      {
+        "id": "gpt-5.3-codex",
+        "label": "GPT-5.3 Codex",
+        "tier": "pro",
+        "modalities": [
+          "text",
+          "code"
+        ],
+        "defaultUseCases": [
+          "agentic coding orchestration",
+          "internal release hardening"
+        ],
+        "fallback": [
+          "gpt-5-codex",
+          "gpt-5-pro",
+          "gpt-5"
+        ]
+      },
+      {
+        "id": "gpt-5-codex",
+        "label": "GPT-5 Codex",
+        "tier": "flagship",
+        "modalities": [
+          "text",
+          "code"
+        ],
+        "defaultUseCases": [
+          "agentic coding tasks",
+          "multi-step repository upgrades"
+        ],
+        "fallback": [
+          "gpt-5-mini",
+          "gpt-5"
+        ]
+      },
       {
         "id": "gpt-5-pro",
         "label": "GPT-5 Pro",
@@ -461,20 +496,20 @@
       }
     ],
     "modelRouting": {
-      "defaultModel": "gpt-4o-mini",
-      "highComplexityModel": "gpt-5",
-      "evaluationModel": "gpt-5-mini",
+      "defaultModel": "gpt-5.3-codex",
+      "highComplexityModel": "gpt-5-pro",
+      "evaluationModel": "gpt-5-codex",
       "allowDynamicFallback": true,
       "stageOverrides": [
         {
           "stageId": "openai-synthesis",
-          "model": "gpt-5-mini",
-          "rationale": "Executive synthesis benefits from higher reasoning fidelity."
+          "model": "gpt-5-codex",
+          "rationale": "OpenAI synthesis should prioritize codex-tuned reasoning."
         },
         {
           "stageId": "insight-summary",
-          "model": "gpt-4.1-mini",
-          "rationale": "Insight synthesis prefers wide multimodal context windows."
+          "model": "gpt-5-mini",
+          "rationale": "Insight synthesis balances throughput and reasoning quality."
         },
         {
           "stageId": "moderation",

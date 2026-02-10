@@ -1,5 +1,7 @@
 # Sprint 2 Implementation Plan – Adaptive Tooling & Reasoning
 
+> Archived planning artifact (2025). Active roadmap moved to `docs/roadmaps/codex-macos-2026-rekick.md` (2026-02-10).
+
 ## Sprint Goal
 Deliver adaptive tool-call optimisation and reasoning workflow orchestration that leverage instruction context and routing telemetry to improve autonomous execution quality.
 

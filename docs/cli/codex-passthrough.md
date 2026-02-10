@@ -25,10 +25,10 @@ First, install the OpenAI Codex CLI:
 
 ```bash
 # npm
-npm install -g @openai/codex-cli
+npm install -g @openai/codex
 
 # or Homebrew
-brew install openai/tap/codex-cli
+brew install codex
 ```
 
 ## Usage Examples
@@ -188,7 +188,7 @@ which codex
 codex --version
 
 # If not installed:
-npm install -g @openai/codex-cli
+npm install -g @openai/codex
 ```
 
 ### Context Too Large
