@@ -149,14 +149,14 @@ const loadedEnvSources = bootstrapCliEnv();
 
 function resolveCliAutoShutdown(): boolean {
   const raw = process.env.CODEX_CLI_AUTO_SHUTDOWN;
-  if (raw === undefined) {
+  // Default to auto-shutdown if the variable is not set or is an empty string.
+  if (raw == null || raw.trim() === '') {
     return true;
   }
+
   const normalized = raw.trim().toLowerCase();
-  if (!normalized) {
-    return true;
-  }
-  return normalized !== '0' && normalized !== 'false' && normalized !== 'no';
+  const disablingValues = ['0', 'false', 'no'];
+  return !disablingValues.includes(normalized);
 }
 
 const program = new Command();
