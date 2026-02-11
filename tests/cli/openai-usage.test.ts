@@ -10,11 +10,11 @@ function runCli(args: string[], envOverrides: Record<string, string> = {}) {
     encoding: 'utf8',
     env: {
       ...process.env,
-      CODEX_CLI_AUTO_SHUTDOWN: '1',
       CODEX_CLI_SILENT: '1',
       ...envOverrides,
       CODEX_DEBUG: '0'
-    }
+    },
+    timeout: 20000
   });
 
   if (result.error) {
@@ -61,6 +61,8 @@ describe('codex-synaptic openai usage', () => {
 
     const payload = JSON.parse(stdout);
     expect(payload).toHaveProperty('summary');
+    expect(payload).toHaveProperty('diagnostics');
+    expect(Array.isArray(payload.diagnostics)).toBe(true);
     expect(payload.summary).toHaveProperty('totals');
     expect(payload.summary).toHaveProperty('throughput');
     expect(typeof payload.windowMinutes).toBe('number');
@@ -83,6 +85,13 @@ describe('codex-synaptic openai usage', () => {
     const payload = JSON.parse(stdout);
     expect(payload.configured).toBe(true);
     expect(payload.clientReady).toBe(false);
+    expect(payload.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'missing_api_key'
+        })
+      ])
+    );
   });
 
   it('rejects non-positive window values', () => {

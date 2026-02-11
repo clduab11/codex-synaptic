@@ -40,6 +40,8 @@ npm test
 npm run release:preflight
 ```
 
+Non-interactive CLI commands run in one-shot mode by default (the process exits after command completion). Set `CODEX_CLI_AUTO_SHUTDOWN=0` only when you explicitly want to keep the in-process foreground session alive for debugging.
+
 ## Model + Runtime Guidance (Codex-Focused)
 
 Use **Responses API** for agentic coding flows.

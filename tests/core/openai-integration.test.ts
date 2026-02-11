@@ -160,8 +160,16 @@ describe('OpenAI integration workflow hooks', () => {
 
       expect(catalogSpy).toHaveBeenCalledTimes(1);
       expect(isReadySpy).toHaveBeenCalled();
-      expect((system as any).openaiResponsesClient).toBeUndefined();
+      expect((system as any).openaiResponsesClient).toBeDefined();
+      expect((system as any).openaiResponsesClient.isReady()).toBe(false);
       expect((system as any).openaiModelRouter).toBeDefined();
+      const readinessIssues = (system as any).getOpenAIReadinessIssues();
+      expect(readinessIssues.length).toBeGreaterThan(0);
+      expect(
+        readinessIssues.some((issue: any) =>
+          issue?.code === 'invalid_credentials' || issue?.code === 'client_unavailable'
+        )
+      ).toBe(true);
 
       const selection = await (system as any).openaiModelRouter.selectModel({
         prompt: 'Summarize the release status',
