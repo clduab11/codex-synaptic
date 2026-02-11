@@ -92,4 +92,21 @@ describe('codex-synaptic CLI smoke suite', () => {
     expect(stdout).toContain('Codex CLI Passthrough Mode Activated');
     expect(stdout).toContain('Mock Codex passthrough enabled (tests only)');
   });
+
+  it('emits startup auth warnings for invalid OpenAI credentials without stack trace noise', () => {
+    const { status, stderr } = runCli(['openai', 'usage', '--json'], {
+      allowFailure: true,
+      env: {
+        OPENAI_API_KEY: 'sk-proj-invalid-key',
+        CODEX_CONFIG_SKIP_DISK_IO: '0',
+        CODEX_CLI_SILENT: '0',
+        CODEX_DEBUG: '0'
+      }
+    });
+
+    expect(status).toBe(0);
+    expect(stderr).toContain('OpenAI credentials rejected while listing models; responses client disabled for this session.');
+    expect(stderr).not.toMatch(/\n\s*at\s+[^\n]+/);
+    expect(stderr).not.toMatch(/\bError:\s/);
+  });
 });

@@ -12,17 +12,29 @@ npm run build
 ## 2. Verify CLI health
 
 ```bash
-node dist/cli/index.js system status
+npm run cli -- system status
 ```
 
-Expected output includes JSON with system, agent, mesh, swarm, and consensus state.
+Expected output in a cold shell:
+
+```text
+System not started. Run `codex-synaptic system start` first.
+```
+
+Expected output after startup:
+
+```bash
+npm run cli -- system start
+```
+
+This command prints a telemetry snapshot and then exits cleanly in one-shot mode.
 
 ## 3. Run a minimal local workflow
 
 ```bash
-node dist/cli/index.js system start
-node dist/cli/index.js reasoning plan "Stabilize codex-synaptic release readiness" --require-consensus
-node dist/cli/index.js openai usage --json
+npm run cli -- reasoning plan "Stabilize codex-synaptic release readiness" --require-consensus --json
+npm run cli -- openai usage --json
+npm run cli -- hive-mind spawn "Verify macOS readiness smoke flow" --codex --dry-run
 ```
 
 ## 4. Use Codex passthrough
@@ -37,6 +49,12 @@ codex-synaptic --codex --dry-run "Inspect current readiness blockers and propose
 npm run lint
 npm test
 npm run release:preflight
+```
+
+If preflight needs to ignore additional known local runtime artifacts for your environment, use:
+
+```bash
+CODEX_RELEASE_PREFLIGHT_EPHEMERAL_ALLOWLIST=".codex-synaptic/runtime.pid,tmp/runtime.lock" npm run release:preflight
 ```
 
 ## Next docs

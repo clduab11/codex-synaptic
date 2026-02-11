@@ -400,16 +400,23 @@ export class CodexSynapticSystem extends EventEmitter {
       });
 
       if (!this.openaiResponsesClient?.isReady()) {
-        this.logger.warn('openai', 'OpenAI responses client failed to initialize due to missing API key');
+        this.logger.warn('openai', 'OpenAI responses client unavailable during initialization; continuing without API-backed responses.', {
+          reason: this.openaiResponsesClient?.getUnavailableReason?.() ?? 'unknown'
+        });
         this.openaiResponsesClient = undefined;
       } else {
         try {
           const snapshot = await this.openaiResponsesClient.getModelCatalogSnapshot();
           this.openaiModelCatalog = snapshot;
-          this.logger.info('openai', 'Fetched OpenAI model catalog from API', {
-            modelCount: snapshot.models.length,
-            fetchedAt: snapshot.fetchedAt.toISOString()
-          });
+          if (this.openaiResponsesClient?.isReady()) {
+            this.logger.info('openai', 'Fetched OpenAI model catalog from API', {
+              modelCount: snapshot.models.length,
+              fetchedAt: snapshot.fetchedAt.toISOString()
+            });
+          } else {
+            this.logger.info('openai', 'OpenAI responses client became unavailable during startup validation; using static model catalog only.');
+            this.openaiResponsesClient = undefined;
+          }
         } catch (error) {
           this.logger.warn('openai', 'Failed to retrieve OpenAI model catalog from API', undefined, error as Error);
         }

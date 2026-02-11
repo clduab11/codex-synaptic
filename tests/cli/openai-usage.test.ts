@@ -72,6 +72,19 @@ describe('codex-synaptic openai usage', () => {
     });
   });
 
+  it('reports clientReady=false when API key is missing', () => {
+    const { status, stdout, stderr } = runCli(['openai', 'usage', '--json'], {
+      OPENAI_API_KEY: ''
+    });
+
+    expect(status).toBe(0);
+    expect(stderr).toBe('');
+
+    const payload = JSON.parse(stdout);
+    expect(payload.configured).toBe(true);
+    expect(payload.clientReady).toBe(false);
+  });
+
   it('rejects non-positive window values', () => {
     const { status, stderr } = runCli(['openai', 'usage', '--window', '0']);
 

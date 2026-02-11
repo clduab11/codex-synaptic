@@ -116,3 +116,55 @@ Re-kickstart Codex-Synaptic toward internal release readiness by modernizing mod
 - `src/openai/model-catalog.ts`
 - `src/openai/model-router.ts`
 - `tests/core/consensus-manager.test.ts`
+
+## Session Delta — 2026-02-11
+
+### Track 1 — Lint Cleanup (Reasoning Strategies)
+
+- `src/reasoning/strategies/index.ts`
+  - Replaced unused `catch (error)` binding with `catch`.
+  - Removed unused `offlineAgents` local.
+  - Removed stale `eslint-disable` directive above `new Function`.
+
+### Track 2 — OpenAI Startup Hardening (Invalid/Missing Credentials)
+
+- `src/openai/client.ts`
+  - Added explicit availability state for missing key vs invalid credentials.
+  - `isReady()` now reflects credential health, not only client object initialization.
+  - Added auth failure detection (`401`/`403`) in model-list paths.
+  - Invalid credentials now disable the OpenAI client for the current session.
+  - Warning output for auth failures is concise and no longer emits stack traces in normal CLI output.
+- `src/core/system.ts`
+  - Startup now handles a client that becomes unavailable during model-catalog bootstrap.
+  - Falls back to static catalog routing when auth fails, without hard-failing initialization.
+- `tests/openai/openai-client-readiness.test.ts`
+  - Added coverage for missing key, invalid credential disablement, and non-auth failures.
+- `tests/cli/openai-usage.test.ts`
+  - Added assertion that missing API key still returns JSON with `clientReady=false`.
+
+### Track 3 — Release Readiness Accuracy (Docs + Preflight Parser)
+
+- `scripts/release-preflight.mjs`
+  - Fixed porcelain path parsing to avoid trimming status metadata before extracting paths.
+  - Added rename-target normalization (`old -> new`) before ephemeral filtering.
+  - Added configurable ephemeral allowlist support from env (`CODEX_RELEASE_PREFLIGHT_EPHEMERAL_ALLOWLIST`) and config (`releasePreflight.ephemeralAllowlist`).
+  - Exported parser helpers for focused unit tests while preserving CLI script behavior.
+- `tests/scripts/release-preflight.test.ts`
+  - Added parser regression tests for leading-space rows, trimmed rows, rename rows, and ephemeral filtering.
+- `README.md`
+  - Updated quick-start smoke commands to match actual CLI behavior in one-shot mode.
+  - Updated release checklist smoke command set to include deterministic commands used in this milestone.
+- `docs/guides/quick-start.md`
+  - Replaced inaccurate `system status` JSON expectation with cold-shell and startup-realistic output guidance.
+  - Added required dry-run smoke command (`hive-mind spawn ... --codex --dry-run`) to the minimal workflow.
+
+### Verification — This Session (2026-02-11)
+
+- `npm run lint` → pass (`0`).
+- `npm test` → pass (`0`, 33 files / 142 tests).
+- `npm run build` → pass (`0`).
+- `npm run cli -- hive-mind spawn "Verify macOS readiness smoke flow" --codex --dry-run` → pass (`0`).
+- `npm run release:preflight` → expected fail (`1`) because working tree contains intentional tracked edits for this increment.
+  - Confirmed parser fix: `.codex-synaptic/memory.db` is no longer misclassified as non-ephemeral.
+- Additional startup behavior check:
+  - `OPENAI_API_KEY='sk-proj-invalid-key' npm run cli -- openai usage --json` → pass (`0`), `clientReady=false`, one concise auth warning, no stack trace emitted.

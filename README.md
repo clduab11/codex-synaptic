@@ -2,7 +2,7 @@
 
 Distributed agent orchestration for coding workflows: mesh + swarm + consensus + Codex passthrough.
 
-## Current Status (2026-02-10)
+## Current Status (2026-02-11)
 
 - Release track: **Codex macOS 2026 readiness** (from beta-hardening toward internal release).
 - Package version: **`1.0.0`** (source of truth is `package.json`).
@@ -28,8 +28,11 @@ Distributed agent orchestration for coding workflows: mesh + swarm + consensus +
 npm install
 npm run build
 
-# verify CLI health
-node dist/cli/index.js system status
+# verify CLI health from a cold shell
+npm run cli -- system status
+
+# run a one-shot startup smoke
+npm run cli -- system start
 
 # run release gates
 npm run lint
@@ -90,7 +93,20 @@ codex cloud apply <task-id>
 | --- | --- | --- |
 | Consensus quorum gating reliability | Mitigated | Quorum requirements clamp to feasible voter population; finalization now uses eligible voters, not total agents. |
 | Autoscaler scale-down when daemon inactive | Mitigated (guarded fallback) | Deferred reduction telemetry + non-daemon informative logging instead of opaque failure warnings. |
-| Packaging/release hygiene + remote alignment | Mitigated | `npm run release:preflight` checks directory name, origin remote, working tree cleanliness (excluding ephemeral DB files), and `npm pack --dry-run`. |
+| Packaging/release hygiene + remote alignment | Mitigated | `npm run release:preflight` checks directory name, origin remote, working tree cleanliness (excluding configurable ephemeral runtime artifacts), and `npm pack --dry-run`. |
+
+### Release Preflight Ephemeral Allowlist
+
+`npm run release:preflight` ignores a default set of local runtime SQLite artifacts and supports additional ephemeral paths via env/config:
+
+- Environment: `CODEX_RELEASE_PREFLIGHT_EPHEMERAL_ALLOWLIST` as a comma/newline/semicolon-delimited list.
+- Config: `releasePreflight.ephemeralAllowlist` array in `config/system.json` (or alternate config path via `CODEX_RELEASE_PREFLIGHT_CONFIG`).
+
+Example:
+
+```bash
+CODEX_RELEASE_PREFLIGHT_EPHEMERAL_ALLOWLIST=".codex-synaptic/runtime.pid,tmp/runtime.lock" npm run release:preflight
+```
 
 ## Release Readiness Checklist
 
@@ -98,7 +114,7 @@ A release is considered internally ready only when all gates pass:
 
 - [ ] `npm run lint` exits `0`.
 - [ ] `npm test` exits `0`.
-- [ ] Representative CLI smoke flow succeeds (`system status`, `reasoning plan --require-consensus --json`, `openai usage --json`).
+- [ ] Representative CLI smoke flow succeeds (`npm run cli -- system start`, `npm run cli -- reasoning plan "Stabilize codex-synaptic release readiness" --require-consensus --json`, `npm run cli -- openai usage --json`, `npm run cli -- hive-mind spawn "Verify macOS readiness smoke flow" --codex --dry-run`).
 - [ ] `npm run release:preflight` exits `0`.
 - [ ] README, roadmap, and changelog dates are current and consistent with package version.
 - [ ] No active roadmap section references 2025 phases without an explicit archival note.

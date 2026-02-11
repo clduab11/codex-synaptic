@@ -22,6 +22,8 @@ export type OpenAIResponseRequest = Record<string, unknown> & {
   model?: string;
 };
 
+type OpenAIClientAvailabilityReason = 'missing_api_key' | 'invalid_credentials';
+
 export class OpenAIResponsesClient {
   private readonly client: OpenAI | null;
   private readonly logger: Logger;
@@ -34,21 +36,23 @@ export class OpenAIResponsesClient {
   private readonly defaultSearchModel?: string;
   private readonly requestTimeoutMs?: number;
   private readonly usageMonitor?: OpenAIUsageMonitor;
+  private unavailableReason?: OpenAIClientAvailabilityReason;
 
   constructor(options: OpenAIClientOptions) {
     this.logger = options.logger ?? Logger.getInstance('openai');
     this.defaultModel = options.defaultModel;
-  this.defaultImageModel = options.defaultImageModel ?? 'gpt-image-1';
-  this.defaultVideoModel = options.defaultVideoModel ?? 'sora-2';
-  this.defaultSpeechModel = options.defaultSpeechModel ?? 'gpt-voice-1';
-  this.defaultTranscriptionModel = options.defaultTranscriptionModel ?? 'whisper-hd';
-  this.defaultModerationModel = options.defaultModerationModel ?? 'omni-moderation-latest';
-  this.defaultSearchModel = options.defaultSearchModel ?? 'gpt-search-1';
+    this.defaultImageModel = options.defaultImageModel ?? 'gpt-image-1';
+    this.defaultVideoModel = options.defaultVideoModel ?? 'sora-2';
+    this.defaultSpeechModel = options.defaultSpeechModel ?? 'gpt-voice-1';
+    this.defaultTranscriptionModel = options.defaultTranscriptionModel ?? 'whisper-hd';
+    this.defaultModerationModel = options.defaultModerationModel ?? 'omni-moderation-latest';
+    this.defaultSearchModel = options.defaultSearchModel ?? 'gpt-search-1';
     this.requestTimeoutMs = options.requestTimeoutMs;
     this.usageMonitor = options.usageMonitor;
 
     if (!options.apiKey) {
       this.logger.warn('openai', 'OpenAI API key not provided. Responses client is disabled.');
+      this.unavailableReason = 'missing_api_key';
       this.client = null;
       return;
     }
@@ -72,7 +76,56 @@ export class OpenAIResponsesClient {
   }
 
   isReady(): boolean {
-    return this.client !== null;
+    return this.client !== null && !this.unavailableReason;
+  }
+
+  getUnavailableReason(): OpenAIClientAvailabilityReason | undefined {
+    return this.unavailableReason;
+  }
+
+  private resolveHttpStatus(error: unknown): number | undefined {
+    if (!error || typeof error !== 'object') {
+      return undefined;
+    }
+
+    const candidate = error as { status?: unknown; statusCode?: unknown };
+    if (typeof candidate.status === 'number') {
+      return candidate.status;
+    }
+    if (typeof candidate.statusCode === 'number') {
+      return candidate.statusCode;
+    }
+    return undefined;
+  }
+
+  private isAuthFailure(error: unknown): boolean {
+    const status = this.resolveHttpStatus(error);
+    return status === 401 || status === 403;
+  }
+
+  private resolveErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return 'unknown_error';
+  }
+
+  private disableForSession(reason: OpenAIClientAvailabilityReason, message: string, data?: Record<string, unknown>): void {
+    if (this.unavailableReason === reason) {
+      return;
+    }
+    this.unavailableReason = reason;
+    this.logger.warn('openai', message, data);
+  }
+
+  private ensureClient(action: string): OpenAI {
+    if (!this.client || this.unavailableReason === 'missing_api_key') {
+      throw new Error(`OpenAI client not initialized. Configure the API key before invoking ${action}.`);
+    }
+    if (this.unavailableReason === 'invalid_credentials') {
+      throw new Error(`OpenAI client disabled for this session due to invalid credentials. Configure a valid API key before invoking ${action}.`);
+    }
+    return this.client;
   }
 
   getDefaultModel(): string | undefined {
@@ -80,7 +133,7 @@ export class OpenAIResponsesClient {
   }
 
   async ping(): Promise<boolean> {
-    if (!this.client) {
+    if (!this.client || this.unavailableReason === 'invalid_credentials') {
       return false;
     }
 
@@ -88,13 +141,25 @@ export class OpenAIResponsesClient {
       await this.client.models.list();
       return true;
     } catch (error) {
-      this.logger.warn('openai', 'OpenAI models listing failed during ping', undefined, error as Error);
+      const status = this.resolveHttpStatus(error);
+      if (this.isAuthFailure(error)) {
+        this.disableForSession(
+          'invalid_credentials',
+          'OpenAI credentials rejected; responses client disabled for this session.',
+          { statusCode: status ?? 'unknown' }
+        );
+        return false;
+      }
+      this.logger.warn('openai', 'OpenAI models listing failed during ping', {
+        reason: this.resolveErrorMessage(error),
+        statusCode: status ?? 'unknown'
+      });
       return false;
     }
   }
 
   async listAvailableModels(): Promise<string[]> {
-    if (!this.client) {
+    if (!this.client || this.unavailableReason === 'invalid_credentials') {
       return [];
     }
 
@@ -105,7 +170,19 @@ export class OpenAIResponsesClient {
         .map((entry: { id?: string }) => entry?.id)
         .filter((value: string | undefined): value is string => typeof value === 'string' && Boolean(value.trim()));
     } catch (error) {
-      this.logger.warn('openai', 'Failed to enumerate OpenAI models', undefined, error as Error);
+      const status = this.resolveHttpStatus(error);
+      if (this.isAuthFailure(error)) {
+        this.disableForSession(
+          'invalid_credentials',
+          'OpenAI credentials rejected while listing models; responses client disabled for this session.',
+          { statusCode: status ?? 'unknown' }
+        );
+        return [];
+      }
+      this.logger.warn('openai', 'Failed to enumerate OpenAI models', {
+        reason: this.resolveErrorMessage(error),
+        statusCode: status ?? 'unknown'
+      });
       return [];
     }
   }
@@ -117,9 +194,7 @@ export class OpenAIResponsesClient {
   }
 
   async generateImage(request: Record<string, unknown>): Promise<unknown> {
-    if (!this.client) {
-      throw new Error('OpenAI client not initialized. Configure the API key before invoking image generation.');
-    }
+    const client = this.ensureClient('image generation');
 
     const payload = {
       model: request.model ?? this.defaultImageModel,
@@ -128,13 +203,11 @@ export class OpenAIResponsesClient {
     this.logger.debug('openai', 'Dispatching OpenAI images.generate call', {
       model: payload.model
     });
-  return this.client.images.generate(payload as never);
+    return client.images.generate(payload as never);
   }
 
   async generateVideo(request: Record<string, unknown>): Promise<unknown> {
-    if (!this.client) {
-      throw new Error('OpenAI client not initialized. Configure the API key before invoking video generation.');
-    }
+    const client = this.ensureClient('video generation');
 
     const payload = {
       model: request.model ?? this.defaultVideoModel,
@@ -144,13 +217,11 @@ export class OpenAIResponsesClient {
     this.logger.debug('openai', 'Dispatching OpenAI responses.create call for video generation', {
       model: payload.model
     });
-  return this.client.responses.create(payload as never);
+    return client.responses.create(payload as never);
   }
 
   async generateSpeech(request: Record<string, unknown>): Promise<unknown> {
-    if (!this.client) {
-      throw new Error('OpenAI client not initialized. Configure the API key before invoking speech generation.');
-    }
+    const client = this.ensureClient('speech generation');
 
     const payload = {
       model: request.model ?? this.defaultSpeechModel,
@@ -159,13 +230,11 @@ export class OpenAIResponsesClient {
     this.logger.debug('openai', 'Dispatching OpenAI audio.speech.create call', {
       model: payload.model
     });
-  return this.client.audio.speech.create(payload as never);
+    return client.audio.speech.create(payload as never);
   }
 
   async transcribeAudio(request: Record<string, unknown>): Promise<unknown> {
-    if (!this.client) {
-      throw new Error('OpenAI client not initialized. Configure the API key before invoking transcription.');
-    }
+    const client = this.ensureClient('transcription');
 
     const payload = {
       model: request.model ?? this.defaultTranscriptionModel,
@@ -174,13 +243,11 @@ export class OpenAIResponsesClient {
     this.logger.debug('openai', 'Dispatching OpenAI audio.transcriptions.create call', {
       model: payload.model
     });
-  return this.client.audio.transcriptions.create(payload as never);
+    return client.audio.transcriptions.create(payload as never);
   }
 
   async moderateContent(request: Record<string, unknown>): Promise<unknown> {
-    if (!this.client) {
-      throw new Error('OpenAI client not initialized. Configure the API key before invoking moderation.');
-    }
+    const client = this.ensureClient('moderation');
 
     const payload = {
       model: request.model ?? this.defaultModerationModel,
@@ -189,13 +256,11 @@ export class OpenAIResponsesClient {
     this.logger.debug('openai', 'Dispatching OpenAI moderations.create call', {
       model: payload.model
     });
-  return this.client.moderations.create(payload as never);
+    return client.moderations.create(payload as never);
   }
 
   async executeSearch(request: Record<string, unknown>): Promise<unknown> {
-    if (!this.client) {
-      throw new Error('OpenAI client not initialized. Configure the API key before invoking search.');
-    }
+    const client = this.ensureClient('search');
 
     const payload = {
       model: request.model ?? this.defaultSearchModel,
@@ -205,13 +270,11 @@ export class OpenAIResponsesClient {
     this.logger.debug('openai', 'Dispatching OpenAI responses.create call for search workflow', {
       model: payload.model
     });
-  return this.client.responses.create(payload as never);
+    return client.responses.create(payload as never);
   }
 
   async createRealtimeSession(request: Record<string, unknown>): Promise<unknown> {
-    if (!this.client) {
-      throw new Error('OpenAI client not initialized. Configure the API key before creating realtime sessions.');
-    }
+    const client = this.ensureClient('creating realtime sessions');
 
     const payload = {
       model: request.model ?? this.defaultModel ?? 'gpt-4o-realtime-preview-2024-12-17',
@@ -220,7 +283,9 @@ export class OpenAIResponsesClient {
     this.logger.debug('openai', 'Dispatching OpenAI realtime.sessions.create call', {
       model: payload.model
     });
-    const realtime = (this.client as unknown as { realtime?: { sessions?: { create?: (params: Record<string, unknown>) => Promise<unknown> } } }).realtime;
+    const realtime = (
+      client as unknown as { realtime?: { sessions?: { create?: (params: Record<string, unknown>) => Promise<unknown> } } }
+    ).realtime;
     if (!realtime?.sessions?.create) {
       throw new Error('OpenAI realtime sessions API is unavailable in the current SDK version.');
     }
@@ -228,9 +293,7 @@ export class OpenAIResponsesClient {
   }
 
   async createResponse<T = unknown>(request: OpenAIResponseRequest): Promise<T> {
-    if (!this.client) {
-      throw new Error('OpenAI responses client is not initialized. Ensure the API key is configured.');
-    }
+    const client = this.ensureClient('response generation');
 
     const payload = { ...request };
     if (!payload.model) {
@@ -255,7 +318,7 @@ export class OpenAIResponsesClient {
         }
       }
 
-      const response = await this.client.responses.create(payload, {
+      const response = await client.responses.create(payload, {
         signal: controller?.signal
       });
 

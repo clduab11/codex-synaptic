@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { CodexSynapticSystem } from '../../src/core/system';
+import { OpenAIResponsesClient } from '../../src/openai/client';
+import { getStaticOpenAIModelCatalog } from '../../src/openai/model-catalog';
 
 describe('OpenAI integration workflow hooks', () => {
   beforeEach(() => {
@@ -125,5 +127,54 @@ describe('OpenAI integration workflow hooks', () => {
 
     expect(risky).toBe(true);
     expect(routine).toBe(false);
+  });
+
+  it('initializes router fallback when OpenAI auth fails during startup validation', async () => {
+    const system = new CodexSynapticSystem();
+    const originalApiKey = process.env.OPENAI_API_KEY;
+    const catalogSnapshot = {
+      fetchedAt: new Date('2026-01-01T00:00:00.000Z'),
+      models: getStaticOpenAIModelCatalog()
+    };
+
+    process.env.OPENAI_API_KEY = 'sk-proj-invalid-key';
+    (system as any).config = {
+      openai: {
+        enabled: true,
+        defaultBackend: 'openai-responses',
+        credentials: { apiKeyEnv: 'OPENAI_API_KEY' },
+        responses: { enabled: true }
+      }
+    };
+
+    const isReadySpy = vi
+      .spyOn(OpenAIResponsesClient.prototype, 'isReady')
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+    const catalogSpy = vi
+      .spyOn(OpenAIResponsesClient.prototype, 'getModelCatalogSnapshot')
+      .mockResolvedValue(catalogSnapshot);
+
+    try {
+      await (system as any).initializeOpenAIIntegration();
+
+      expect(catalogSpy).toHaveBeenCalledTimes(1);
+      expect(isReadySpy).toHaveBeenCalled();
+      expect((system as any).openaiResponsesClient).toBeUndefined();
+      expect((system as any).openaiModelRouter).toBeDefined();
+
+      const selection = await (system as any).openaiModelRouter.selectModel({
+        prompt: 'Summarize the release status',
+        stageId: 'openai-synthesis',
+        stageLabel: 'OpenAI Synthesis'
+      });
+      expect(selection.model).toBe('gpt-5-codex');
+    } finally {
+      if (originalApiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = originalApiKey;
+      }
+    }
   });
 });
