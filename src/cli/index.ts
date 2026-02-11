@@ -2460,16 +2460,15 @@ function displayHiveMindResults(
   config: any,
   totalTime: number,
   system: CodexSynapticSystem,
-  consensusResult: ConsensusExecutionResult,
-  codexContext?: CodexContext
+  _consensusResult: ConsensusExecutionResult,
+  _codexContext?: CodexContext
 ): void {
   const swarmStatus = system.getSwarmCoordinator().getStatus();
   const meshStatus = system.getNeuralMesh().getStatus();
   const agentRegistry = system.getAgentRegistry().getStatus();
   
   const reactPlanArtifact = outcome.artifacts?.reactPlan ?? null;
-  const totPlan = reactPlanArtifact?.tot ?? null;
-
+  const _totPlan = reactPlanArtifact?.tot ?? null;
   console.log(chalk.blue('\n📊 Execution Summary'));
   console.log(chalk.white('Summary:'), outcome.summary);
   
