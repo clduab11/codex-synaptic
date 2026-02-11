@@ -1,386 +1,304 @@
 # Autoscaler-Daemon Coordination Runbook
 
-This runbook documents the relationship between the autoscaler and background daemon, operational modes, and troubleshooting procedures for managing agent lifecycle during scaling operations.
+This runbook documents how autoscaling and the background daemon interact, plus supported operational commands for Codex-Synaptic.
 
 ## 1. Overview
 
-The **autoscaler** dynamically adjusts the number of worker agents based on resource utilization metrics, while the **background daemon** maintains persistent system state and coordinates agent lifecycle operations. These two components work together to ensure efficient resource management without compromising system stability.
+The autoscaler evaluates resource pressure and proposes up/down adjustments. The background daemon executes persistent lifecycle coordination.
 
-### Key Relationship
+### Key relationship
 
-- The autoscaler **recommends** scaling actions based on metrics
-- The daemon **executes** agent retirement during scale-down operations
-- When the daemon is offline, scale-down operations cannot complete, leaving idle agents running
+- Autoscaler computes scaling decisions from utilization signals.
+- Daemon-backed coordination is required for reliable background scale-down execution.
+- If the daemon is offline, scale-down intent is recorded but cleanup may be delayed.
 
-## 2. How Autoscaling Works
+## 2. Autoscaling behavior
 
-### Scale-Up Operations
+### Scale-up
 
-**Trigger:** Resource utilization exceeds the scale-up threshold (default: >75% CPU/memory)
+Trigger: utilization above threshold.
 
-**Behavior:**
-- Autoscaler identifies resource pressure
-- New worker agents are deployed automatically
-- Agents are registered with the agent registry
-- Events are persisted to the `autoscaler_events` namespace
+Behavior:
 
-**Command:**
+- New worker replicas are deployed.
+- Events are persisted to the `autoscaler_events` memory namespace.
+
+Command:
+
 ```bash
-# View recent scale-up events
-codex-synaptic memory query autoscaler_events --limit 10
+codex-synaptic memory list autoscaler_events --limit 10
 ```
 
-### Scale-Down Operations
+### Scale-down
 
-**Trigger:** Resource utilization falls below the scale-down threshold (default: <35%)
+Trigger: utilization below threshold.
 
-**Behavior:**
-- Autoscaler identifies idle workers
-- Retirement requests are sent to the daemon
-- Daemon unregisters agents from the registry
-- Resources are reclaimed
-- Events are persisted to the `autoscaler_events` namespace
+Behavior:
 
-**Command:**
+- Autoscaler attempts to retire idle capacity.
+- When daemon coordination is unavailable, retirement is deferred and warnings/events are emitted.
+
+Command:
+
 ```bash
-# View agent utilization metrics
-codex-synaptic system status --verbose
+codex-synaptic system status
 ```
 
-### Cooldown Period
+### Cooldown
 
-Both scale-up and scale-down operations respect a cooldown period (default: 45 seconds) to prevent thrashing and ensure stable scaling behavior.
+Scale-up and scale-down both respect cooldown windows to avoid thrashing.
 
-## 3. Daemon Dependency
+## 3. Daemon dependency
 
-### Why Scale-Down Requires the Daemon
+### Why scale-down depends on daemon coordination
 
-The background daemon (`src/cli/daemon-manager.ts`) maintains authoritative system state including:
-- Active agent registry
-- Resource allocation tracking
-- Lifecycle event coordination
+The background daemon (`src/cli/daemon-manager.ts`) holds persistent process coordination state used by detached/background workflows.
 
-**When the daemon is offline:**
-- Scale-up operations continue to work (agents can be deployed directly)
-- Scale-down operations **fail silently** (retirement requests have no recipient)
-- Idle agents accumulate in the registry
-- Warning messages appear in logs: `Cannot retire agents: daemon offline`
+When daemon is offline:
 
-### Checking Daemon Status
+- Foreground operations still run.
+- Scale-down cleanup can be delayed.
+- `autoscaler_events` will include deferred/diagnostic records.
+
+### Check daemon state
 
 ```bash
-# Check if daemon is running
+# Check daemon state
 codex-synaptic background status
 
-# View daemon logs
-codex-synaptic background logs --tail 50
+# Inspect daemon logs (project-local)
+tail -n 50 logs/daemon.log
 ```
 
-## 4. Operational Modes
+## 4. Operational modes
 
-### Production Mode (Recommended)
+### Production mode (recommended)
 
-**Configuration:**
-- Daemon: **Running** continuously
-- Autoscaler: **Enabled** (`scaling.enabled: true`)
+Configuration:
 
-**Behavior:**
-- Fully automated scaling in both directions
-- Minimal operator intervention required
-- Optimal resource utilization
+- Daemon: running continuously.
+- Autoscaler: enabled (`scaling.enabled: true`).
 
-**Commands:**
+Commands:
+
 ```bash
-# Start daemon in production mode
 codex-synaptic background start
-
-# Verify autoscaler is enabled
-grep "scaling.enabled" config/system.json
+rg '"scaling"|"enabled"' config/system.json
 ```
 
-### Testing Mode (For Swarm/Performance Tests)
+### Testing mode (swarm/perf tests)
 
-**Configuration:**
-- Daemon: **Stopped** during tests
-- Autoscaler: **Paused** (`scaling.enabled: false`)
+Configuration:
 
-**Behavior:**
-- Manual control over agent count
-- No interference from autoscaler during experiments
-- Manual cleanup required after tests
+- Daemon: stopped during isolated tests.
+- Autoscaler: paused (`scaling.enabled: false`).
 
-**Procedure:**
+Procedure:
+
 ```bash
-# 1. Stop daemon
+# 1) Stop daemon
 codex-synaptic background stop
 
-# 2. Disable autoscaler (edit config/system.json)
-# Set: "scaling": { "enabled": false }
+# 2) Disable autoscaler in config/system.json
+#    set: "scaling": { "enabled": false }
 
-# 3. Run your swarm test
-codex-synaptic swarm spawn --prompt "performance test"
+# 3) Run test workload
+codex-synaptic hive-mind spawn "performance test" --codex --dry-run
 
-# 4. Manually clean up idle agents
-codex-synaptic agents list --idle
-codex-synaptic agents retire <agent-id>
+# 4) Inspect agent registry state
+codex-synaptic agent list
 
-# 5. Re-enable autoscaler and restart daemon
-# Set: "scaling": { "enabled": true }
+# 5) Re-enable autoscaler and restart daemon
+#    set: "scaling": { "enabled": true }
 codex-synaptic background start
 ```
 
-### Development Mode
+### Development mode
 
-**Configuration:**
-- Daemon: **Optional** (depends on workflow)
-- Autoscaler: **Disabled** (`scaling.enabled: false`)
+Configuration:
 
-**Behavior:**
-- Full manual control
-- Predictable agent count for debugging
-- No automatic scaling interference
+- Daemon: optional.
+- Autoscaler: usually disabled for predictable debugging.
 
-**Commands:**
+Commands:
+
 ```bash
-# Deploy specific agent counts manually
-codex-synaptic agents deploy code_worker --count 3
-codex-synaptic agents deploy consensus_coordinator --count 2
+codex-synaptic agent deploy --type code_worker --replicas 3
+codex-synaptic agent deploy --type consensus_coordinator --replicas 2
 ```
 
-## 5. Commands Reference
+## 5. Command reference (supported)
 
-### Daemon Management
+### Daemon management
 
 ```bash
-# Check daemon status
 codex-synaptic background status
-
-# Start daemon
 codex-synaptic background start
-
-# Stop daemon (graceful shutdown)
 codex-synaptic background stop
 
-# View daemon logs
-codex-synaptic background logs --tail 100
-
-# Restart daemon
-codex-synaptic background restart
+# restart sequence
+codex-synaptic background stop
+codex-synaptic background start
 ```
 
-### Autoscaler Configuration
+### Autoscaler configuration checks
 
 ```bash
-# Disable autoscaler (edit config/system.json)
-# Set: "scaling": { "enabled": false }
-
-# Enable autoscaler (edit config/system.json)
-# Set: "scaling": { "enabled": true }
-
-# View current autoscaler settings
-codex-synaptic config show scaling
+rg '"scaling"|"enabled"|"minAgents"|"maxAgents"|"scaleUpThreshold"|"scaleDownThreshold"|"cooldownMs"' config/system.json
 ```
 
-### Manual Agent Management
+### Agent management
 
 ```bash
-# List all agents
-codex-synaptic agents list
-
-# List idle agents
-codex-synaptic agents list --idle
-
-# Manually retire an agent
-codex-synaptic agents retire <agent-id>
-
-# Deploy agents manually
-codex-synaptic agents deploy <agent-type> --count <n>
+codex-synaptic agent list
+codex-synaptic agent status <agent-id>
+codex-synaptic agent deploy --type <agent-type> --replicas <n>
 ```
 
 ## 6. Troubleshooting
 
-### Symptom: Scale-down warnings in logs
+### Symptom: scale-down warnings
 
-**Cause:** Daemon is offline, retirement requests cannot be processed
+Cause: daemon offline or unable to process retirement coordination.
 
-**Log message:**
-```
-WARN [autoscaler] Cannot retire idle agents: daemon offline
-```
+Resolution:
 
-**Resolution:**
 ```bash
-# Option 1: Start the daemon
-codex-synaptic background start
-
-# Option 2: Manually retire idle agents
-codex-synaptic agents list --idle
-codex-synaptic agents retire <agent-id>
-```
-
-### Symptom: Idle agents accumulating
-
-**Cause:** Autoscaler can't retire agents without daemon coordination
-
-**Diagnosis:**
-```bash
-# Check for idle agents
-codex-synaptic agents list --idle
-
-# Check daemon status
 codex-synaptic background status
-
-# Review autoscaler events
-codex-synaptic memory query autoscaler_events --limit 20
-```
-
-**Resolution:**
-```bash
-# Restart daemon to enable automatic cleanup
 codex-synaptic background start
-
-# Trigger manual scale-down (if needed)
-codex-synaptic system scale-down --force
+codex-synaptic memory list autoscaler_events --limit 20
 ```
 
-### Symptom: Autoscaler not scaling up
+### Symptom: idle capacity persists
 
-**Cause:** Autoscaler may be disabled or at max agent limit
+Cause: deferred cleanup while daemon was unavailable.
 
-**Diagnosis:**
+Diagnosis:
+
 ```bash
-# Check autoscaler configuration
-codex-synaptic config show scaling
-
-# Check current agent count vs limits
-codex-synaptic agents list --count
+codex-synaptic agent list
+codex-synaptic background status
+codex-synaptic memory list autoscaler_events --limit 20
 ```
 
-**Resolution:**
-```bash
-# Verify scaling is enabled in config/system.json
-# Check: "scaling": { "enabled": true, "maxAgents": 40 }
+Resolution:
 
-# Manually deploy agents if at limit
-codex-synaptic agents deploy <agent-type> --count <n>
+```bash
+codex-synaptic background start
+# allow cooldown window, then re-check
+codex-synaptic system status
+codex-synaptic agent list
 ```
 
-### Symptom: Daemon fails to start
+### Symptom: autoscaler not scaling up
 
-**Cause:** Port conflict, permission issues, or corrupted state
+Cause: scaling disabled or configured limits reached.
 
-**Diagnosis:**
+Diagnosis:
+
 ```bash
-# Check daemon logs
-codex-synaptic background logs
-
-# Check for port conflicts
-lsof -i :4242  # Default API port
+rg '"scaling"|"enabled"|"maxAgents"|"minAgents"' config/system.json
+codex-synaptic agent list
 ```
 
-**Resolution:**
-```bash
-# Kill conflicting processes
-kill <pid>
+Resolution:
 
-# Clear daemon state and restart
-rm -rf ~/.codex-synaptic/daemon.pid
+```bash
+# verify scaling.enabled=true in config/system.json
+# optionally add temporary capacity manually:
+codex-synaptic agent deploy --type <agent-type> --replicas <n>
+```
+
+### Symptom: daemon fails to start
+
+Cause: stale daemon state or environment/runtime issue.
+
+Diagnosis:
+
+```bash
+codex-synaptic background status
+tail -n 100 logs/daemon.log
+```
+
+Resolution:
+
+```bash
+rm -f ~/.codex-synaptic/daemon.json
 codex-synaptic background start
 ```
 
-## 7. Best Practices
+## 7. Best practices
 
-### For Hive-Mind Performance Tests
+### Hive-mind/performance testing
 
-1. **Before test:**
-   - Stop daemon: `codex-synaptic background stop`
-   - Disable autoscaler: Set `scaling.enabled: false` in config
-   - Note initial agent count: `codex-synaptic agents list --count`
+1. Before test:
+   - `codex-synaptic background stop`
+   - disable autoscaler in `config/system.json`
+   - `codex-synaptic agent list`
+2. During test:
+   - run workload in an isolated thread/worktree
+   - periodically `codex-synaptic system status`
+3. After test:
+   - `codex-synaptic agent list`
+   - re-enable autoscaler
+   - `codex-synaptic background start`
 
-2. **During test:**
-   - Monitor resource usage: `codex-synaptic system status --watch`
-   - Let agents complete work without interference
+### Production
 
-3. **After test:**
-   - List idle agents: `codex-synaptic agents list --idle`
-   - Manually retire: `codex-synaptic agents retire <agent-id>`
-   - Re-enable autoscaler: Set `scaling.enabled: true` in config
-   - Restart daemon: `codex-synaptic background start`
+- Keep daemon running.
+- Keep autoscaler enabled.
+- Monitor `autoscaler_events` for repeated deferred cleanups.
 
-### For Production Deployments
+## 8. Monitoring & observability
 
-- **Keep daemon running 24/7** for optimal automation
-- **Enable autoscaler** for hands-off resource management
-- **Monitor autoscaler events** in the `autoscaler_events` namespace
-- **Set appropriate thresholds** based on workload patterns:
-  - Default scale-up: 75% utilization
-  - Default scale-down: 35% utilization
-  - Adjust in `config/system.json` if needed
-
-### For Development Workflows
-
-- **Disable autoscaler** to maintain predictable agent counts
-- **Use daemon selectively** based on whether you need lifecycle coordination
-- **Manually deploy/retire agents** for precise control during debugging
-
-## 8. Monitoring & Observability
-
-### Key Metrics to Monitor
+### Useful checks
 
 ```bash
-# Agent count by type
-codex-synaptic agents list --by-type
+# registry snapshot
+codex-synaptic agent list
 
-# Resource utilization
-codex-synaptic system status --verbose
+# system + telemetry snapshot
+codex-synaptic system status
 
-# Autoscaler activity
-codex-synaptic memory query autoscaler_events --since "1 hour ago"
+# autoscaler event history
+codex-synaptic memory list autoscaler_events --limit 20
 
-# Daemon health
+# daemon health
 codex-synaptic background status
 ```
 
-### Event Namespaces
+### Event namespaces
 
-- **`autoscaler_events`** – Scale-up/down events and decisions
-- **`agent_lifecycle`** – Agent deployment and retirement events
-- **`mesh_events`** – Mesh topology changes
-- **`consensus_events`** – Consensus decisions (may trigger scaling)
+- `autoscaler_events`: scale decisions and coordination outcomes
+- `agent_lifecycle`: worker deploy/unregister signals
+- `mesh_events`: topology changes
+- `consensus_events`: consensus outcomes
 
-### Alerting Recommendations
+## 9. Configuration reference
 
-Consider setting up alerts for:
-- Daemon offline for >5 minutes in production
-- Autoscaler repeatedly hitting max agent limit
-- Idle agent count exceeding threshold (e.g., >10 for >30 minutes)
-- Scale-down failures accumulating (daemon offline)
-
-## 9. Configuration Reference
-
-### Autoscaler Settings (`config/system.json`)
+### Autoscaler settings (`config/system.json`)
 
 ```json
 {
   "scaling": {
-    "enabled": true,              // Enable/disable autoscaler
-    "minAgents": 4,               // Minimum agent count
-    "maxAgents": 40,              // Maximum agent count
-    "scaleUpThreshold": 0.75,     // Scale up at 75% utilization
-    "scaleDownThreshold": 0.35,   // Scale down at 35% utilization
-    "cooldownMs": 45000           // 45-second cooldown between actions
+    "enabled": true,
+    "minAgents": 4,
+    "maxAgents": 40,
+    "scaleUpThreshold": 0.75,
+    "scaleDownThreshold": 0.35,
+    "cooldownMs": 45000
   }
 }
 ```
 
-### Related Documentation
+### Related docs
 
-- **Consensus Coordination:** `docs/runbooks/validation-gating.md`
-- **Telemetry & Metrics:** `docs/observability/README.md`
-- **Cheat Codes:** `docs/codex-synaptic-cheat-codes.md`
-- **Agent Architecture:** `AGENTS.md`
+- `docs/runbooks/validation-gating.md`
+- `docs/observability/README.md`
+- `docs/codex-synaptic-cheat-codes.md`
+- `AGENTS.md`
 
 ---
 
-**Last Updated:** 2025-11-05  
-**Maintainer:** Codex-Synaptic Platform Team
+Last updated: 2026-02-11  
+Maintainer: Codex-Synaptic Platform Team

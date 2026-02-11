@@ -12,6 +12,7 @@ import { CodexSynapticSystem } from '../core/system.js';
 import { Logger, LogLevel } from '../core/logger.js';
 import { AgentType, AgentMetadata } from '../core/types.js';
 import {
+  type BackgroundStatus,
   getBackgroundStatus,
   startBackgroundSystem,
   stopBackgroundSystem
@@ -146,11 +147,23 @@ function bootstrapCliEnv(): string[] {
 
 const loadedEnvSources = bootstrapCliEnv();
 
+function resolveCliAutoShutdown(): boolean {
+  const raw = process.env.CODEX_CLI_AUTO_SHUTDOWN;
+  if (raw === undefined) {
+    return true;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  return normalized !== '0' && normalized !== 'false' && normalized !== 'no';
+}
+
 const program = new Command();
 const session = CliSession.getInstance();
 const rootLogger = Logger.getInstance();
 const cliSilent = process.env.CODEX_CLI_SILENT === '1';
-const cliAutoShutdown = process.env.CODEX_CLI_AUTO_SHUTDOWN === '1';
+const cliAutoShutdown = resolveCliAutoShutdown();
 const advancedStrategyOptions = getSupportedStrategies();
 const advancedStrategySet = new Set(advancedStrategyOptions);
 const strategyOptionDescription = `Coordination strategy (${['classic', 'goap', ...advancedStrategyOptions].join('|')})`;
@@ -653,6 +666,26 @@ function renderMeshStatus(status: any): void {
     const activityLabel = status.runActive ? chalk.green('active') : chalk.gray('inactive');
     const remainingLabel = remainingMinutes !== null ? `, ${remainingMinutes}m remaining` : '';
     console.log(`  Orchestration: ${activityLabel} (limit ${limitLabel}${remainingLabel})`);
+  }
+}
+
+function renderBackgroundDaemonStatus(status: BackgroundStatus): void {
+  if (!status.running) {
+    console.log(chalk.gray('🛰 Background system: not running.'));
+    return;
+  }
+
+  console.log(chalk.blue('🛰 Background system'));
+  console.log(`  Running: ${chalk.green('yes')}`);
+  console.log(`  PID: ${status.pid}`);
+  if (status.startedAt) {
+    console.log(`  Started at: ${status.startedAt}`);
+  }
+  if (status.interfaceMode) {
+    console.log(`  Interface mode: ${status.interfaceMode}`);
+  }
+  if (status.tier) {
+    console.log(`  Interface tier: ${status.tier}`);
   }
 }
 
@@ -1797,7 +1830,15 @@ systemCmd
   .description('Show system status and telemetry')
   .action(handleCommand('system.status', async () => {
     const system = session.getSystemUnsafe();
+    const backgroundStatus = getBackgroundStatus();
     if (!system) {
+      if (backgroundStatus.running) {
+        console.log(chalk.yellow('⚠️  Foreground session not started in this shell.'));
+        console.log(chalk.green('✅ Background daemon is running.'));
+        renderBackgroundDaemonStatus(backgroundStatus);
+        console.log(chalk.gray('Use `codex-synaptic system start` to start a foreground session or `codex-synaptic background stop` to stop the daemon.'));
+        return;
+      }
       console.log(chalk.yellow('⚠️  System not started. Run `codex-synaptic system start` first.'));
       return;
     }
@@ -1807,6 +1848,8 @@ systemCmd
     console.log(`  Initialized: ${status.initialized}`);
     console.log(`  Shutting down: ${status.shuttingDown}`);
     renderTelemetry();
+    console.log('');
+    renderBackgroundDaemonStatus(backgroundStatus);
   }));
 
 systemCmd
@@ -1899,11 +1942,13 @@ openaiCmd
       const windowMs = Math.max(1000, Math.round(windowMinutes * 60000));
       const summary = system.getOpenAIUsageSummary(windowMs);
       const events = system.getRecentOpenAIUsage(limit);
+      const readinessIssues = system.getOpenAIReadinessIssues();
 
       if (options.json) {
         const payload = {
           configured: Boolean(system.getOpenAIResolvedConfiguration()?.config?.enabled),
           clientReady: Boolean(system.getOpenAIResponsesClient()?.isReady()),
+          diagnostics: readinessIssues,
           windowMinutes,
           summary,
           events
@@ -1918,6 +1963,16 @@ openaiCmd
       console.log(chalk.blue('🧮 OpenAI Usage Overview'));
       console.log(`  Integration configured: ${configured ? chalk.green('yes') : chalk.red('no')}`);
       console.log(`  Client ready: ${ready ? chalk.green('yes') : chalk.red('no')}`);
+      if (readinessIssues.length) {
+        console.log(chalk.yellow('\nReadiness diagnostics'));
+        readinessIssues.forEach((issue) => {
+          const statusSuffix = typeof issue.statusCode === 'number' ? ` (HTTP ${issue.statusCode})` : '';
+          console.log(chalk.yellow(`  • [${issue.code}] ${issue.message}${statusSuffix}`));
+          issue.recommendedActions.forEach((action) => {
+            console.log(chalk.gray(`     - ${action}`));
+          });
+        });
+      }
       if (!system.hasOpenAIUsage()) {
         console.log(chalk.gray('  No usage events recorded yet. Run Codex workflows that invoke OpenAI responses.'));
         return;
@@ -1992,13 +2047,7 @@ backgroundCmd
   .description('Show the status of the detached background system')
   .action(handleCommand('background.status', async () => {
     const status = getBackgroundStatus();
-    if (!status.running) {
-      console.log(chalk.gray('Background system is not running.'));
-      return;
-    }
-    console.log(chalk.blue('🛰 Background system'));
-    console.log(`  PID: ${status.pid}`);
-    console.log(`  Started at: ${status.startedAt}`);
+    renderBackgroundDaemonStatus(status);
   }));
 
 backgroundCmd

@@ -11,11 +11,11 @@ const runCli = (args: string[], env: Record<string, string> = {}) => {
       ...process.env,
       CODEX_DEBUG: '0',
       CODEX_CONFIG_SKIP_DISK_IO: '1',
-      CODEX_CLI_AUTO_SHUTDOWN: '1',
       ...env
     },
     encoding: 'utf8',
-    maxBuffer: 10 * 1024 * 1024
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: 20000
   });
   return output;
 };
