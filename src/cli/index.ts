@@ -147,6 +147,17 @@ function bootstrapCliEnv(): string[] {
 
 const loadedEnvSources = bootstrapCliEnv();
 
+/**
+ * Resolves whether CLI should auto-shutdown after command execution by 
+ * interpreting the CODEX_CLI_AUTO_SHUTDOWN environment variable.
+ * 
+ * @returns true if auto-shutdown is enabled, false otherwise
+ * 
+ * @remarks
+ * - Returns true if CODEX_CLI_AUTO_SHUTDOWN is not set or is empty (default behavior)
+ * - Returns false if CODEX_CLI_AUTO_SHUTDOWN is '0', 'false', or 'no' (case-insensitive)
+ * - Returns true for any other value
+ */
 function resolveCliAutoShutdown(): boolean {
   const raw = process.env.CODEX_CLI_AUTO_SHUTDOWN;
   // Default to auto-shutdown if the variable is not set or is an empty string.
@@ -600,10 +611,26 @@ function configureLogStreaming(enabled: boolean, level: LogLevel): () => void {
   };
 }
 
+/**
+ * Options for controlling system lifecycle in useSystem helper.
+ */
 type UseSystemOptions = {
+  /** Whether to automatically shutdown the system after execution. Defaults to cliAutoShutdown setting. */
   autoShutdown?: boolean;
 };
 
+/**
+ * Ensures a Codex-Synaptic system is initialized, executes a callback, and optionally shuts down.
+ * 
+ * @param description - Human-readable description of the operation for logging
+ * @param fn - Async callback that receives the initialized system instance
+ * @param options - Optional configuration for system lifecycle behavior
+ * 
+ * @remarks
+ * - If system is already running, it will be reused and not shut down
+ * - Auto-shutdown behavior can be overridden via options.autoShutdown
+ * - System initialization is bootstrapped through bootstrapEnvForCli()
+ */
 async function useSystem(
   description: string,
   fn: (system: CodexSynapticSystem) => Promise<void>,
@@ -678,6 +705,20 @@ function renderMeshStatus(status: any): void {
   }
 }
 
+/**
+ * Renders the status of the background daemon system to the console.
+ * 
+ * @param status - Background system status information including PID, start time, and interface details
+ * 
+ * @remarks
+ * Displays a gray "not running" message if the daemon is stopped,
+ * otherwise shows detailed daemon information including:
+ * - Running status (green yes)
+ * - Process ID (PID)
+ * - Start timestamp
+ * - Interface mode (if available)
+ * - Interface tier (if available)
+ */
 function renderBackgroundDaemonStatus(status: BackgroundStatus): void {
   if (!status.running) {
     console.log(chalk.gray('🛰 Background system: not running.'));
