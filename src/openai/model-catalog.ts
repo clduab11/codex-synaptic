@@ -282,10 +282,32 @@ export const OFFICIAL_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
   }
 ];
 
+/**
+ * Returns a copy of the official OpenAI model catalog.
+ * 
+ * @returns Array of OpenAI model catalog entries
+ * 
+ * @remarks
+ * Returns a shallow copy to prevent external modifications to the internal catalog.
+ * The catalog includes models across all tiers and modalities.
+ */
 export function getStaticOpenAIModelCatalog(): OpenAIModelCatalogEntry[] {
   return OFFICIAL_MODEL_CATALOG.map((entry) => ({ ...entry }));
 }
 
+/**
+ * Merges a dynamic model inventory with the base catalog, inferring metadata for unknown models.
+ * 
+ * @param inventory - Array of model IDs from OpenAI API or other sources
+ * @param baseCatalog - Base catalog to merge with (defaults to static catalog)
+ * @returns Merged catalog with inferred entries for unknown models
+ * 
+ * @remarks
+ * For models not in the base catalog, infers:
+ * - Modalities based on model ID patterns (image, video, audio, etc.)
+ * - Capabilities based on model ID patterns (embeddings, moderation, etc.)
+ * - Sets tier to 'experimental' and label to the model ID
+ */
 export function mergeModelInventory(
   inventory: string[] | undefined,
   baseCatalog: OpenAIModelCatalogEntry[] = getStaticOpenAIModelCatalog()
@@ -311,6 +333,21 @@ export function mergeModelInventory(
   return Array.from(catalogMap.values());
 }
 
+/**
+ * Infers model modalities based on patterns in the model identifier.
+ * 
+ * @param modelId - Model identifier string
+ * @returns Array of inferred modalities
+ * 
+ * @remarks
+ * Pattern matching:
+ * - image -> ['image']
+ * - video/sora -> ['video']
+ * - audio/voice/whisper -> ['audio']
+ * - realtime -> ['realtime', 'audio', 'text']
+ * - embedding -> ['text']
+ * - default -> ['text', 'code']
+ */
 function inferModalitiesFromIdentifier(modelId: string): OpenAIModelCatalogEntry['modalities'] {
   if (/image/i.test(modelId)) {
     return ['image'];
@@ -330,6 +367,20 @@ function inferModalitiesFromIdentifier(modelId: string): OpenAIModelCatalogEntry
   return ['text', 'code'];
 }
 
+/**
+ * Infers model capabilities based on patterns in the model identifier.
+ * 
+ * @param modelId - Model identifier string
+ * @returns Array of capability strings, or undefined if no specific capabilities detected
+ * 
+ * @remarks
+ * Pattern matching:
+ * - embedding -> ['embeddings']
+ * - moderation -> ['moderation']
+ * - search -> ['search']
+ * - o1 models -> ['reasoning']
+ * - Returns undefined for general-purpose models
+ */
 function inferCapabilitiesFromIdentifier(modelId: string): string[] | undefined {
   if (/embedding/i.test(modelId)) {
     return ['embeddings'];
