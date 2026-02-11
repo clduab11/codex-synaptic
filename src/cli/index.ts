@@ -600,9 +600,18 @@ function configureLogStreaming(enabled: boolean, level: LogLevel): () => void {
   };
 }
 
-async function useSystem(description: string, fn: (system: CodexSynapticSystem) => Promise<void>): Promise<void> {
+type UseSystemOptions = {
+  autoShutdown?: boolean;
+};
+
+async function useSystem(
+  description: string,
+  fn: (system: CodexSynapticSystem) => Promise<void>,
+  options: UseSystemOptions = {}
+): Promise<void> {
   bootstrapEnvForCli();
   const alreadyRunning = !!session.getSystemUnsafe();
+  const autoShutdown = options.autoShutdown ?? cliAutoShutdown;
   if (!alreadyRunning && !cliSilent) {
     console.log(chalk.blue(`🔧 Initializing Codex-Synaptic system (${description})...`));
   }
@@ -610,7 +619,7 @@ async function useSystem(description: string, fn: (system: CodexSynapticSystem) 
   try {
     await fn(system);
   } finally {
-    if (!alreadyRunning && cliAutoShutdown) {
+    if (!alreadyRunning && autoShutdown) {
       await session.shutdown('auto-shutdown');
     }
   }
@@ -4578,7 +4587,7 @@ interactiveCmd
               break;
           }
         }
-      });
+      }, { autoShutdown: false });
     } finally {
       rootLogger.setConsoleLevel(previousConsoleLevel);
     }
