@@ -148,8 +148,8 @@ function bootstrapCliEnv(): string[] {
 const loadedEnvSources = bootstrapCliEnv();
 
 /**
- * Resolves whether CLI should auto-shutdown after command execution.
- * Interprets the CODEX_CLI_AUTO_SHUTDOWN environment variable.
+ * Resolves whether CLI should auto-shutdown after command execution by 
+ * interpreting the CODEX_CLI_AUTO_SHUTDOWN environment variable.
  * 
  * @returns true if auto-shutdown is enabled, false otherwise
  * 
