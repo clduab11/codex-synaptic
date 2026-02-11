@@ -2301,6 +2301,381 @@ function buildToolUsageRecord(options: any): ToolUsageRecord {
   };
 }
 
+// ============================================================================
+// Hive-mind helper functions
+// ============================================================================
+
+/**
+ * Builds Codex context from the current working directory.
+ * 
+ * @returns Object containing codexContext, codexMetadata, and codexEnvelope
+ * 
+ * @remarks
+ * Aggregates agent directives, README excerpts, directory inventory, and database metadata.
+ * Emits context logs and summary to console.
+ */
+async function buildCodexContextForHiveMind(originalPrompt: string): Promise<{
+  codexContext: CodexContext;
+  codexMetadata: CodexContextAggregationMetadata;
+  codexEnvelope: CodexPromptEnvelope;
+}> {
+  const builder = new CodexContextBuilder(process.cwd());
+  await builder.withAgentDirectives();
+  await builder.withReadmeExcerpts();
+  await builder.withDirectoryInventory();
+  await builder.withDatabaseMetadata();
+  const buildResult: CodexContextBuildResult = await builder.build();
+
+  const codexContext = buildResult.context;
+  const codexMetadata = buildResult.metadata;
+
+  emitContextLogs(buildResult.logs);
+  emitContextSummary(buildResult.context, buildResult.metadata);
+
+  const contextBlock = renderCodexContextBlock(buildResult.context);
+  const enrichedPrompt = composePromptWithContext(originalPrompt, buildResult.context);
+
+  const codexEnvelope: CodexPromptEnvelope = {
+    originalPrompt,
+    enrichedPrompt,
+    contextBlock
+  };
+
+  return { codexContext, codexMetadata, codexEnvelope };
+}
+
+/**
+ * Executes GOAP strategy workflow.
+ * 
+ * @param system - Codex-Synaptic system instance
+ * @param originalPrompt - User's original prompt
+ * @param options - CLI options including goapProfile, goapGoal, goapDryRun
+ * 
+ * @remarks
+ * Loads or matches GOAP manifest, executes the goal, and displays results.
+ */
+async function executeGoapStrategy(
+  system: CodexSynapticSystem,
+  originalPrompt: string,
+  options: any
+): Promise<void> {
+  let manifest = options.goapProfile
+    ? await goapRegistry.getManifest(options.goapProfile)
+    : await goapRegistry.matchManifest(originalPrompt);
+
+  if (!manifest && options.goapProfile) {
+    throw new Error(`GOAP manifest "${options.goapProfile}" was not found in config/goap.`);
+  }
+
+  if (!manifest) {
+    throw new Error(
+      'No GOAP manifest matched the prompt. Provide --goap-profile to select a manifest explicitly.'
+    );
+  }
+
+  const goalId = options.goapGoal ?? manifest.defaultGoal ?? manifest.goals[0]?.id;
+  if (!goalId) {
+    throw new Error(`GOAP manifest ${manifest.id} does not define a usable goal.`);
+  }
+
+  console.log(
+    chalk.blue(
+      `🧭 Executing GOAP profile ${manifest.metadata?.name ?? manifest.id} (goal: ${goalId})`
+    )
+  );
+
+  const executor = new GoapExecutor(system);
+  const result = await executor.execute(manifest, {
+    goalId,
+    prompt: originalPrompt,
+    dryRun: Boolean(options.goapDryRun)
+  });
+
+  console.log(
+    chalk.green(
+      `✅ GOAP workflow complete — ${result.actionsCompleted}/${result.totalActions} actions executed.`
+    )
+  );
+
+  if (result.artifacts.length) {
+    console.log(chalk.cyan('📦 Generated artifacts:'));
+    for (const artifact of result.artifacts) {
+      console.log(chalk.gray(`  • ${artifact}`));
+    }
+  }
+}
+
+/**
+ * Sets up workflow event handlers for stage tracking.
+ * 
+ * @param system - Codex-Synaptic system instance
+ * @param startTime - Workflow start timestamp for elapsed time calculation
+ * @returns Cleanup function to remove event handlers
+ * 
+ * @remarks
+ * Attaches handlers for workflowStageStarted, workflowStageCompleted, and workflowStageFailed events.
+ */
+function setupWorkflowEventHandlers(
+  system: CodexSynapticSystem,
+  startTime: number
+): () => void {
+  const onStageStarted = (event: any) => {
+    console.log(chalk.gray(`    ▶ ${event.label} started (${event.taskType})`));
+  };
+  const onStageCompleted = (event: any) => {
+    const elapsed = Date.now() - startTime;
+    console.log(chalk.green(`    ✓ ${event.label} completed (+${elapsed}ms)`));
+  };
+  const onStageFailed = (event: any) => {
+    console.log(chalk.red(`    ✗ ${event.label} failed: ${event.error}`));
+  };
+
+  system.on('workflowStageStarted', onStageStarted);
+  system.on('workflowStageCompleted', onStageCompleted);
+  system.on('workflowStageFailed', onStageFailed);
+
+  return () => {
+    system.off('workflowStageStarted', onStageStarted);
+    system.off('workflowStageCompleted', onStageCompleted);
+    system.off('workflowStageFailed', onStageFailed);
+  };
+}
+
+/**
+ * Displays hive-mind execution results in human-readable format.
+ * 
+ * @param outcome - Task execution outcome
+ * @param config - Hive-mind configuration
+ * @param totalTime - Total execution time in milliseconds
+ * @param system - Codex-Synaptic system instance
+ * @param consensusResult - Consensus execution result
+ * @param codexContext - Optional Codex context
+ * 
+ * @remarks
+ * Formats and displays execution summary, code artifacts, Tree-of-Thought results,
+ * stage results, system metrics, and debug output based on configuration.
+ */
+function displayHiveMindResults(
+  outcome: any,
+  config: any,
+  totalTime: number,
+  system: CodexSynapticSystem,
+  consensusResult: ConsensusExecutionResult,
+  codexContext?: CodexContext
+): void {
+  const swarmStatus = system.getSwarmCoordinator().getStatus();
+  const meshStatus = system.getNeuralMesh().getStatus();
+  const agentRegistry = system.getAgentRegistry().getStatus();
+  
+  const reactPlanArtifact = outcome.artifacts?.reactPlan ?? null;
+  const totPlan = reactPlanArtifact?.tot ?? null;
+
+  console.log(chalk.blue('\n📊 Execution Summary'));
+  console.log(chalk.white('Summary:'), outcome.summary);
+  
+  if (outcome.artifacts?.code) {
+    console.log(chalk.blue('\n💻 Generated Code Artifacts:'));
+    console.log(chalk.gray(outcome.artifacts.code.substring(0, 500) + '...'));
+  }
+  
+  if (reactPlanArtifact?.tot) {
+    const plan = reactPlanArtifact.tot;
+    const bestMean = plan.monteCarlo.branchMeans?.[plan.bestBranch.id] ?? plan.bestBranch.score;
+    const bestPercent = typeof bestMean === 'number' ? (bestMean * 100).toFixed(1) : 'n/a';
+    console.log(chalk.blue('\n🌳 Tree-of-Thought Summary:'));
+    console.log(chalk.white(`  Best Branch: ${plan.bestBranch.label} (${bestPercent}% confidence)`));
+    console.log(chalk.white(`  Monte Carlo Samples: ${plan.monteCarlo.totalSamples}`));
+    console.log(chalk.gray('  Priority Backlog:'));
+    plan.priorityBacklog.slice(0, 5).forEach((item: string, idx: number) => {
+      console.log(chalk.gray(`    ${idx + 1}. ${item}`));
+    });
+    console.log(chalk.gray('  Verification Suite:'));
+    plan.verificationSuite.slice(0, 5).forEach((item: string, idx: number) => {
+      console.log(chalk.gray(`    ${idx + 1}. ${item}`));
+    });
+    if (Array.isArray(plan.knowledgeUpdates) && plan.knowledgeUpdates.length) {
+      console.log(chalk.gray('  Knowledge Updates:'));
+      plan.knowledgeUpdates.slice(0, 5).forEach((item: string, idx: number) => {
+        console.log(chalk.gray(`    ${idx + 1}. ${item}`));
+      });
+    }
+  }
+
+  if (outcome.stages && Array.isArray(outcome.stages)) {
+    console.log(chalk.blue('\n🔄 Stage Results:'));
+    outcome.stages.forEach((stage: any, idx: number) => {
+      console.log(chalk.cyan(`  ${idx + 1}. ${stage.stage} (${stage.taskId})`));
+      if (stage.result?.summary) {
+        console.log(chalk.gray(`     ${stage.result.summary}`));
+      }
+    });
+  }
+
+  // System metrics
+  console.log(chalk.blue('\n📈 System Metrics:'));
+  console.log(chalk.white(`  Agents: ${agentRegistry.totalAgents} active`));
+  console.log(chalk.white(`  Mesh: ${meshStatus.nodeCount} nodes, ${meshStatus.connectionCount} connections`));
+  console.log(chalk.white(`  Swarm: ${swarmStatus.algorithm}, optimizing=${swarmStatus.isOptimizing}`));
+  console.log(chalk.white(`  Execution time: ${totalTime}ms`));
+}
+
+/**
+ * Prepares comprehensive result data for YAML output.
+ * 
+ * @param outcome - Task execution outcome
+ * @param config - Hive-mind configuration
+ * @param totalTime - Total execution time in milliseconds
+ * @param originalPrompt - Original user prompt
+ * @param system - Codex-Synaptic system instance
+ * @param consensusResult - Consensus execution result
+ * @param codexContext - Optional Codex context
+ * @returns Result data object for YAML formatting
+ * 
+ * @remarks
+ * Aggregates execution metadata, system status, consensus status, and Tree-of-Thought results.
+ */
+function prepareResultData(
+  outcome: any,
+  config: any,
+  totalTime: number,
+  originalPrompt: string,
+  system: CodexSynapticSystem,
+  consensusResult: ConsensusExecutionResult,
+  codexContext?: CodexContext
+): any {
+  const swarmStatus = system.getSwarmCoordinator().getStatus();
+  const meshStatus = system.getNeuralMesh().getStatus();
+  const agentRegistry = system.getAgentRegistry().getStatus();
+  
+  const reactPlanArtifact = outcome.artifacts?.reactPlan ?? null;
+  const totPlan = reactPlanArtifact?.tot ?? null;
+
+  return {
+    executionId: `exec-${Date.now()}`,
+    status: 'completed',
+    duration: totalTime,
+    originalPrompt,
+    summary: outcome.summary,
+    artifacts: outcome.artifacts || {},
+    stages: outcome.stages || [],
+    agentCount: agentRegistry.totalAgents,
+    taskCount: outcome.stages?.length || 0,
+    meshStatus: {
+      nodeCount: meshStatus.nodeCount,
+      connectionCount: meshStatus.connectionCount
+    },
+    consensusStatus: {
+      performed: consensusResult.performed,
+      proposalId: consensusResult.proposalId,
+      accepted: consensusResult.accepted,
+      votes: consensusResult.votes,
+      timedOut: consensusResult.timedOut,
+      error: consensusResult.error
+    },
+    swarmStatus: {
+      algorithm: swarmStatus.algorithm,
+      isOptimizing: swarmStatus.isOptimizing
+    },
+    totPlan,
+    codexContext: codexContext ? {
+      enabled: true,
+      contextHash: codexContext.contextHash,
+      sizeBytes: codexContext.sizeBytes
+    } : { enabled: false }
+  };
+}
+
+/**
+ * Executes classic hive-mind orchestration workflow.
+ * 
+ * @param system - Codex-Synaptic system instance
+ * @param prompt - Enriched prompt (potentially with Codex context)
+ * @param originalPrompt - Original user prompt
+ * @param config - Hive-mind configuration
+ * @param options - CLI options including yaml, debug flags
+ * @param codexContext - Optional Codex context
+ * @param codexEnvelope - Optional Codex prompt envelope
+ * 
+ * @remarks
+ * Executes orchestration phases, task execution with timeout, consensus (if needed),
+ * and displays results in requested format (YAML or human-readable).
+ */
+async function executeClassicOrchestration(
+  system: CodexSynapticSystem,
+  prompt: string,
+  originalPrompt: string,
+  config: any,
+  options: any,
+  codexContext?: CodexContext,
+  codexEnvelope?: CodexPromptEnvelope
+): Promise<void> {
+  console.log(chalk.blue('🧠 Initializing hive-mind orchestration...'));
+  console.log(chalk.gray(`Configuration: ${JSON.stringify(config, null, 2)}`));
+
+  if (codexContext && codexEnvelope) {
+    await primeCodexWithRetry(system, codexContext, codexEnvelope);
+  }
+
+  // Execute orchestration phases using helper service
+  await executeOrchestrationPhases(system, config);
+
+  // Phase 5: Task Execution
+  console.log(chalk.cyan('⚡ Phase 5: Task Execution'));
+  console.log(chalk.blue(`Executing: "${prompt}"`));
+
+  const startTime = Date.now();
+  let consensusResult: ConsensusExecutionResult = { performed: false };
+
+  const cleanupEventHandlers = setupWorkflowEventHandlers(system, startTime);
+
+  try {
+    const outcome: any = await Promise.race([
+      system.executeTask(prompt),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Hive-mind execution timeout')), config.timeout))
+    ]);
+
+    const consensusNeeded = shouldRequireConsensus(originalPrompt, config.consensus);
+    if (consensusNeeded) {
+      consensusResult = await orchestrateConsensus(
+        system,
+        originalPrompt,
+        outcome,
+        config.consensus
+      );
+    }
+
+    const totalTime = Date.now() - startTime;
+    console.log(chalk.green(`\n🎉 Hive-mind execution completed in ${totalTime}ms`));
+
+    // Output results based on format preference
+    if (options.yaml) {
+      const resultData = prepareResultData(
+        outcome,
+        config,
+        totalTime,
+        originalPrompt,
+        system,
+        consensusResult,
+        codexContext
+      );
+      console.log(chalk.blue('\n📋 Results (YAML format):'));
+      const yamlOutput = HiveMindYamlFormatter.formatExecutionResult(resultData);
+      console.log(yamlOutput);
+    } else {
+      displayHiveMindResults(outcome, config, totalTime, system, consensusResult, codexContext);
+    }
+
+    if (!config.debug && !options.yaml) {
+      console.log(chalk.blue('\n💾 Results saved to session telemetry'));
+    } else if (config.debug && !options.yaml) {
+      console.log(chalk.blue('\n🔍 Full Debug Output:'));
+      console.log(JSON.stringify(outcome, null, 2));
+    }
+  } finally {
+    cleanupEventHandlers();
+  }
+}
+
 // System commands
 const systemCmd = decorateCommandHelp(
   program
@@ -4253,50 +4628,7 @@ hiveMindCmd
 
     if (strategy === 'goap') {
       await useSystem('hive-mind goap', async (system) => {
-        let manifest = options.goapProfile
-          ? await goapRegistry.getManifest(options.goapProfile)
-          : await goapRegistry.matchManifest(originalPrompt);
-
-        if (!manifest && options.goapProfile) {
-          throw new Error(`GOAP manifest "${options.goapProfile}" was not found in config/goap.`);
-        }
-
-        if (!manifest) {
-          throw new Error(
-            'No GOAP manifest matched the prompt. Provide --goap-profile to select a manifest explicitly.'
-          );
-        }
-
-        const goalId = options.goapGoal ?? manifest.defaultGoal ?? manifest.goals[0]?.id;
-        if (!goalId) {
-          throw new Error(`GOAP manifest ${manifest.id} does not define a usable goal.`);
-        }
-
-        console.log(
-          chalk.blue(
-            `🧭 Executing GOAP profile ${manifest.metadata?.name ?? manifest.id} (goal: ${goalId})`
-          )
-        );
-
-        const executor = new GoapExecutor(system);
-        const result = await executor.execute(manifest, {
-          goalId,
-          prompt: originalPrompt,
-          dryRun: Boolean(options.goapDryRun)
-        });
-
-        console.log(
-          chalk.green(
-            `✅ GOAP workflow complete — ${result.actionsCompleted}/${result.totalActions} actions executed.`
-          )
-        );
-
-        if (result.artifacts.length) {
-          console.log(chalk.cyan('📦 Generated artifacts:'));
-          for (const artifact of result.artifacts) {
-            console.log(chalk.gray(`  • ${artifact}`));
-          }
-        }
+        await executeGoapStrategy(system, originalPrompt, options);
       });
       return;
     }
@@ -4323,36 +4655,19 @@ hiveMindCmd
     }
 
     if (codexRequested) {
-      const builder = new CodexContextBuilder(process.cwd());
-      await builder.withAgentDirectives();
-      await builder.withReadmeExcerpts();
-      await builder.withDirectoryInventory();
-      await builder.withDatabaseMetadata();
-      const buildResult: CodexContextBuildResult = await builder.build();
-
-      codexContext = buildResult.context;
-      codexMetadata = buildResult.metadata;
-
-      emitContextLogs(buildResult.logs);
-      emitContextSummary(buildResult.context, buildResult.metadata);
-
-      const contextBlock = renderCodexContextBlock(buildResult.context);
-      const enrichedPrompt = composePromptWithContext(originalPrompt, buildResult.context);
-
-      codexEnvelope = {
-        originalPrompt,
-        enrichedPrompt,
-        contextBlock
-      };
+      const result = await buildCodexContextForHiveMind(originalPrompt);
+      codexContext = result.codexContext;
+      codexMetadata = result.codexMetadata;
+      codexEnvelope = result.codexEnvelope;
 
       if (options.dryRun) {
         console.log(chalk.yellow('⚙️  Dry-run: Codex context ready. Skipping hive-mind orchestration.'));
         console.log('');
-        console.log(chalk.gray(contextBlock));
+        console.log(chalk.gray(codexEnvelope.contextBlock));
         return;
       }
 
-      prompt = enrichedPrompt;
+      prompt = codexEnvelope.enrichedPrompt;
       console.log(chalk.cyan('📚 Codex context attached to hive-mind prompt.'));
     }
 
@@ -4429,171 +4744,18 @@ hiveMindCmd
     await useSystem('hive-mind spawn', async (system) => {
       const restoreLogging = configureLogStreaming(streamLogs, effectiveLogLevel);
       try {
-        console.log(chalk.blue('🧠 Initializing hive-mind orchestration...'));
-        console.log(chalk.gray(`Configuration: ${JSON.stringify(config, null, 2)}`));
-
-        if (codexContext && codexEnvelope) {
-          await primeCodexWithRetry(system, codexContext, codexEnvelope);
-        }
-
-        // Execute orchestration phases using helper service
-        await executeOrchestrationPhases(system, config);
-
-        // Phase 5: Task Execution
-        console.log(chalk.cyan('⚡ Phase 5: Task Execution'));
-        console.log(chalk.blue(`Executing: "${prompt}"`));
-
-        const startTime = Date.now();
-        let consensusResult: ConsensusExecutionResult = { performed: false };
-
-        const onStageStarted = (event: any) => {
-          console.log(chalk.gray(`    ▶ ${event.label} started (${event.taskType})`));
-        };
-        const onStageCompleted = (event: any) => {
-          const elapsed = Date.now() - startTime;
-          console.log(chalk.green(`    ✓ ${event.label} completed (+${elapsed}ms)`));
-        };
-        const onStageFailed = (event: any) => {
-          console.log(chalk.red(`    ✗ ${event.label} failed: ${event.error}`));
-        };
-
-        system.on('workflowStageStarted', onStageStarted);
-        system.on('workflowStageCompleted', onStageCompleted);
-        system.on('workflowStageFailed', onStageFailed);
-
-      try {
-        const outcome: any = await Promise.race([
-          system.executeTask(prompt),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Hive-mind execution timeout')), config.timeout))
-        ]);
-
-        const consensusNeeded = shouldRequireConsensus(originalPrompt, config.consensus);
-        if (consensusNeeded) {
-          consensusResult = await orchestrateConsensus(
-            system,
-            originalPrompt,
-            outcome,
-            config.consensus
-          );
-        }
-
-        const totalTime = Date.now() - startTime;
-        console.log(chalk.green(`\n🎉 Hive-mind execution completed in ${totalTime}ms`));
-        
-        // Collect system status information
-        const swarmStatus = system.getSwarmCoordinator().getStatus();
-        const meshStatus = system.getNeuralMesh().getStatus();
-        const agentRegistry = system.getAgentRegistry().getStatus();
-        
-        // Prepare comprehensive result data
-        const reactPlanArtifact = (outcome as any).artifacts?.reactPlan ?? null;
-        const totPlan = reactPlanArtifact?.tot ?? null;
-
-        const resultData = {
-          executionId: `exec-${Date.now()}`,
-          status: 'completed',
-          duration: totalTime,
+        await executeClassicOrchestration(
+          system,
+          prompt,
           originalPrompt,
-          summary: (outcome as any).summary,
-          artifacts: (outcome as any).artifacts || {},
-          stages: (outcome as any).stages || [],
-          agentCount: agentRegistry.totalAgents,
-          taskCount: (outcome as any).stages?.length || 0,
-          meshStatus: {
-            nodeCount: meshStatus.nodeCount,
-            connectionCount: meshStatus.connectionCount
-          },
-          consensusStatus: {
-            performed: consensusResult.performed,
-            proposalId: consensusResult.proposalId,
-            accepted: consensusResult.accepted,
-            votes: consensusResult.votes,
-            timedOut: consensusResult.timedOut,
-            error: consensusResult.error
-          },
-          swarmStatus: {
-            algorithm: swarmStatus.algorithm,
-            isOptimizing: swarmStatus.isOptimizing
-          },
-          totPlan,
-          codexContext: codexContext ? {
-            enabled: true,
-            contextHash: codexContext.contextHash,
-            sizeBytes: codexContext.sizeBytes
-          } : { enabled: false }
-        };
-
-        // Output results based on format preference
-        if (options.yaml) {
-          console.log(chalk.blue('\n📋 Results (YAML format):'));
-          const yamlOutput = HiveMindYamlFormatter.formatExecutionResult(resultData);
-          console.log(yamlOutput);
-        } else {
-          // Display comprehensive results in human-readable format
-          console.log(chalk.blue('\n📊 Execution Summary'));
-          console.log(chalk.white('Summary:'), (outcome as any).summary);
-          
-          if ((outcome as any).artifacts?.code) {
-            console.log(chalk.blue('\n💻 Generated Code Artifacts:'));
-            console.log(chalk.gray((outcome as any).artifacts.code.substring(0, 500) + '...'));
-          }
-          
-          if (reactPlanArtifact?.tot) {
-            const plan = reactPlanArtifact.tot;
-            const bestMean = plan.monteCarlo.branchMeans?.[plan.bestBranch.id] ?? plan.bestBranch.score;
-            const bestPercent = typeof bestMean === 'number' ? (bestMean * 100).toFixed(1) : 'n/a';
-            console.log(chalk.blue('\n🌳 Tree-of-Thought Summary:'));
-            console.log(chalk.white(`  Best Branch: ${plan.bestBranch.label} (${bestPercent}% confidence)`));
-            console.log(chalk.white(`  Monte Carlo Samples: ${plan.monteCarlo.totalSamples}`));
-            console.log(chalk.gray('  Priority Backlog:'));
-            plan.priorityBacklog.slice(0, 5).forEach((item: string, idx: number) => {
-              console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-            });
-            console.log(chalk.gray('  Verification Suite:'));
-            plan.verificationSuite.slice(0, 5).forEach((item: string, idx: number) => {
-              console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-            });
-            if (Array.isArray(plan.knowledgeUpdates) && plan.knowledgeUpdates.length) {
-              console.log(chalk.gray('  Knowledge Updates:'));
-              plan.knowledgeUpdates.slice(0, 5).forEach((item: string, idx: number) => {
-                console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-              });
-            }
-          }
-
-          if ((outcome as any).stages && Array.isArray((outcome as any).stages)) {
-            console.log(chalk.blue('\n🔄 Stage Results:'));
-            (outcome as any).stages.forEach((stage: any, idx: number) => {
-              console.log(chalk.cyan(`  ${idx + 1}. ${stage.stage} (${stage.taskId})`));
-              if (stage.result?.summary) {
-                console.log(chalk.gray(`     ${stage.result.summary}`));
-              }
-            });
-          }
-
-          // System metrics
-          console.log(chalk.blue('\n📈 System Metrics:'));
-          console.log(chalk.white(`  Agents: ${agentRegistry.totalAgents} active`));
-          console.log(chalk.white(`  Mesh: ${meshStatus.nodeCount} nodes, ${meshStatus.connectionCount} connections`));
-          console.log(chalk.white(`  Swarm: ${swarmStatus.algorithm}, optimizing=${swarmStatus.isOptimizing}`));
-          console.log(chalk.white(`  Execution time: ${totalTime}ms`));
-        }
-
-        if (!config.debug && !options.yaml) {
-          console.log(chalk.blue('\n💾 Results saved to session telemetry'));
-        } else if (config.debug && !options.yaml) {
-          console.log(chalk.blue('\n🔍 Full Debug Output:'));
-          console.log(JSON.stringify(outcome, null, 2));
-        }
-
+          config,
+          options,
+          codexContext,
+          codexEnvelope
+        );
       } finally {
-        system.off('workflowStageStarted', onStageStarted);
-        system.off('workflowStageCompleted', onStageCompleted);
-        system.off('workflowStageFailed', onStageFailed);
+        restoreLogging();
       }
-    } finally {
-      restoreLogging();
-    }
     });
   }));
 
