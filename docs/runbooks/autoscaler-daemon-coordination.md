@@ -83,7 +83,7 @@ Commands:
 
 ```bash
 codex-synaptic background start
-rg '"scaling"|"enabled"' config/system.json
+grep -E '"scaling"|"enabled"' config/system.json
 ```
 
 ### Testing mode (swarm/perf tests)
