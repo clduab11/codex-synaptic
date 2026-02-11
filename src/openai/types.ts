@@ -118,6 +118,18 @@ const DEFAULT_CREDENTIAL_ENV: Required<OpenAICredentialsConfig> = {
   projectIdEnv: 'OPENAI_PROJECT_ID'
 };
 
+/**
+ * Resolves OpenAI credentials from environment variables based on configuration.
+ * 
+ * @param config - Optional OpenAI configuration with custom credential environment variable names
+ * @returns OpenAI credential set with apiKey, organizationId, and projectId
+ * 
+ * @remarks
+ * Falls back to default environment variables if not specified in config:
+ * - OPENAI_API_KEY for apiKey
+ * - OPENAI_ORG_ID for organizationId
+ * - OPENAI_PROJECT_ID for projectId
+ */
 export function resolveOpenAICredentials(config?: OpenAIConfiguration): OpenAICredentialSet {
   const credentialConfig: Required<OpenAICredentialsConfig> = {
     ...DEFAULT_CREDENTIAL_ENV,
@@ -131,6 +143,16 @@ export function resolveOpenAICredentials(config?: OpenAIConfiguration): OpenAICr
   };
 }
 
+/**
+ * Resolves OpenAI configuration by combining config and resolved credentials.
+ * 
+ * @param config - Optional OpenAI configuration
+ * @returns Resolved configuration with credentials, or null if no config provided
+ * 
+ * @remarks
+ * Convenience function that bundles configuration with resolved credentials
+ * from environment variables.
+ */
 export function resolveOpenAIConfiguration(config?: OpenAIConfiguration): OpenAIResolvedConfiguration | null {
   if (!config) {
     return null;
@@ -143,6 +165,19 @@ export function resolveOpenAIConfiguration(config?: OpenAIConfiguration): OpenAI
   };
 }
 
+/**
+ * Checks if the OpenAI integration is ready for use.
+ * 
+ * @param config - Optional OpenAI configuration
+ * @param credentials - Optional pre-resolved credentials (will be resolved from config if not provided)
+ * @returns true if integration is enabled and has a valid API key, false otherwise
+ * 
+ * @remarks
+ * Integration is considered ready when:
+ * - config.enabled is true
+ * - API key is present and non-empty after trimming
+ * Organization ID and project ID are optional.
+ */
 export function isOpenAIIntegrationReady(config?: OpenAIConfiguration, credentials?: OpenAICredentialSet): boolean {
   if (!config?.enabled) {
     return false;

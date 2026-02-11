@@ -71,6 +71,18 @@ import {
   type QuotaOptions
 } from './tenant-quota-helpers.js';
 
+/**
+ * Loads environment variables from a file into process.env.
+ * 
+ * @param filePath - Path to the environment file to load
+ * @returns true if any variables were loaded, false otherwise
+ * 
+ * @remarks
+ * - Skips variables that are already defined in process.env
+ * - Handles quoted values and escape sequences (\n, \r, \t)
+ * - Ignores comments (lines starting with #) and empty lines
+ * - Returns false if file doesn't exist or can't be read
+ */
 function loadEnvFile(filePath: string): boolean {
   if (!existsSync(filePath)) {
     return false;
@@ -122,6 +134,19 @@ function loadEnvFile(filePath: string): boolean {
   }
 }
 
+/**
+ * Bootstraps CLI environment by loading environment files from standard locations.
+ * 
+ * @returns Array of successfully loaded environment file sources
+ * 
+ * @remarks
+ * Attempts to load environment variables from the following files in order:
+ * - .env in current directory
+ * - .env.local in current directory
+ * - ~/.codex-synaptic/.env
+ * - .env in package root directory
+ * Only loads variables that aren't already set in process.env
+ */
 function bootstrapCliEnv(): string[] {
   const sources: string[] = [];
   const cwd = process.cwd();
@@ -257,6 +282,22 @@ type CommandHelpDecorOptions = {
   vibeTips?: string[];
 };
 
+/**
+ * Decorates a Commander command with rich help text including context, skills, and documentation links.
+ * 
+ * @param command - The Commander command to decorate
+ * @param options - Configuration for help text sections
+ * @returns The decorated command with enhanced help output
+ * 
+ * @remarks
+ * Adds formatted sections before the command's standard help text:
+ * - Title and subtitle
+ * - "Why it matters" context section
+ * - "Dev skill boost" section
+ * - Quick actions with example commands
+ * - Documentation references
+ * - Optional vibe tips for user engagement
+ */
 function decorateCommandHelp(command: Command, options: CommandHelpDecorOptions): Command {
   command.addHelpText('beforeAll', () => {
     const lines: string[] = [
@@ -318,6 +359,18 @@ function decorateCommandHelp(command: Command, options: CommandHelpDecorOptions)
   return command;
 }
 
+/**
+ * Determines if Codex context should be automatically attached based on prompt content.
+ * 
+ * @param prompt - User prompt to analyze
+ * @returns true if the prompt suggests repository-wide operations that benefit from context
+ * 
+ * @remarks
+ * Returns true when the prompt contains both:
+ * - Repository signals (repo, codebase, readme, docs, etc.)
+ * - Intent signals (scan, analyze, inspect, refactor, optimize, etc.)
+ * This heuristic helps attach AGENTS.md, README, and documentation automatically
+ */
 function shouldAutoAttachCodexContext(prompt: string): boolean {
   const lower = prompt.toLowerCase();
   const repoSignals = [
@@ -351,6 +404,18 @@ function shouldAutoAttachCodexContext(prompt: string): boolean {
 
 const CONSENSUS_ALWAYS_REQUIRED = new Set(['bft', 'pow', 'pos', 'hybrid']);
 
+/**
+ * Determines if consensus is required for a given prompt based on consensus mode and content.
+ * 
+ * @param prompt - User prompt to analyze
+ * @param consensusMode - Current consensus mechanism (bft, raft, pow, pos, hybrid)
+ * @returns true if consensus should be invoked
+ * 
+ * @remarks
+ * Consensus is always required for BFT, PoW, PoS, and hybrid modes.
+ * For RAFT mode, consensus is required only if the prompt contains
+ * consensus-related keywords (consensus, quorum, vote, majority, byzantine)
+ */
 function shouldRequireConsensus(prompt: string, consensusMode: string): boolean {
   const normalized = normalizeConsensusMechanism(consensusMode);
   if (CONSENSUS_ALWAYS_REQUIRED.has(normalized)) {
@@ -369,6 +434,18 @@ interface ConsensusExecutionResult {
   error?: string;
 }
 
+/**
+ * Derives whether to accept or reject a proposal based on task outcome artifacts.
+ * 
+ * @param outcome - Task execution outcome with optional validation and lint results
+ * @returns true if the outcome should be accepted, false if it should be rejected
+ * 
+ * @remarks
+ * Rejection occurs if:
+ * - Validation failed (validation.passed === false)
+ * - Lint issues include error or fatal severity
+ * Otherwise, defaults to acceptance
+ */
 function deriveConsensusDecision(outcome: any): boolean {
   if (!outcome?.artifacts) {
     return true;
@@ -389,6 +466,19 @@ function deriveConsensusDecision(outcome: any): boolean {
   return true;
 }
 
+/**
+ * Orchestrates consensus voting process for a task outcome.
+ * 
+ * @param system - The Codex-Synaptic system instance
+ * @param originalPrompt - Original user prompt that triggered the task
+ * @param outcome - Task execution outcome to vote on
+ * @param consensusMode - Consensus mechanism to use
+ * @returns Result of consensus execution including vote counts and acceptance status
+ * 
+ * @remarks
+ * Creates a proposal, submits it to consensus agents for voting,
+ * and waits for quorum or timeout. Returns detailed voting results.
+ */
 async function orchestrateConsensus(
   system: CodexSynapticSystem,
   originalPrompt: string,
@@ -478,6 +568,19 @@ async function orchestrateConsensus(
   return result;
 }
 
+/**
+ * Renders strategy execution summary to the console.
+ * 
+ * @param result - Strategy execution result with status and outcome details
+ * 
+ * @remarks
+ * Displays:
+ * - Strategy name (if available)
+ * - Execution status (success/failure)
+ * - Actions taken (if available)
+ * - Final answer or error message
+ * - Full outcome JSON (if requested and not silent)
+ */
 function renderStrategyExecutionSummary(
   result: StrategyExecutionResult,
   verbose: boolean
@@ -552,6 +655,17 @@ program
   .description('Enhanced OpenAI Codex with distributed agent capabilities')
   .version('1.0.0');
 
+/**
+ * Wraps a command handler function with error handling and logging.
+ * 
+ * @param name - Name of the command for error messages
+ * @param fn - Async command handler function
+ * @returns Wrapped function with error handling
+ * 
+ * @remarks
+ * Catches errors, logs them with the command name, and sets process.exitCode to 1.
+ * Stack traces are shown only when CODEX_DEBUG=1 is set.
+ */
 function handleCommand<T extends any[]>(name: string, fn: (...args: T) => Promise<void>) {
   return async (...args: T) => {
     try {
@@ -567,6 +681,14 @@ function handleCommand<T extends any[]>(name: string, fn: (...args: T) => Promis
   };
 }
 
+/**
+ * Bootstraps environment variables required for CLI operation and logs the results.
+ * 
+ * @remarks
+ * - Calls ensureSystemBootstrapEnv() to set missing required variables
+ * - Logs bootstrapped variables, notes, and warnings (unless silent or already logged)
+ * - Sets envBootstrapLogged flag to prevent duplicate logging
+ */
 function bootstrapEnvForCli(): void {
   const summary = ensureSystemBootstrapEnv();
   if (envBootstrapLogged || cliSilent) {
@@ -593,6 +715,17 @@ function bootstrapEnvForCli(): void {
   envBootstrapLogged = true;
 }
 
+/**
+ * Configures log streaming from the orchestrator to the console.
+ * 
+ * @param enabled - Whether to enable log streaming
+ * @param level - Log level to stream (DEBUG, INFO, WARN, ERROR)
+ * @returns Cleanup function to restore previous log level
+ * 
+ * @remarks
+ * Sets the console log level for the root logger and provides
+ * a cleanup function to restore the original level when done.
+ */
 function configureLogStreaming(enabled: boolean, level: LogLevel): () => void {
   if (!enabled) {
     return () => {};
@@ -652,6 +785,14 @@ async function useSystem(
   }
 }
 
+/**
+ * Parses a string value as an integer, throwing an error if invalid.
+ * 
+ * @param value - String value to parse
+ * @param label - Label for error messages
+ * @returns Parsed integer value
+ * @throws Error if value is not a valid number
+ */
 function parseInteger(value: string, label: string): number {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed)) {
@@ -660,6 +801,18 @@ function parseInteger(value: string, label: string): number {
   return parsed;
 }
 
+/**
+ * Authorizes a tenant operation using an admin token.
+ * 
+ * @param system - The Codex-Synaptic system instance
+ * @param action - Type of action to authorize ('read' or 'write')
+ * @param tokenOverride - Optional token to use instead of env variable
+ * @throws Error if no token is available or authorization fails
+ * 
+ * @remarks
+ * Retrieves token from tokenOverride parameter or CODEX_TENANT_ADMIN_TOKEN env var.
+ * Strips "Bearer " prefix if present before authenticating.
+ */
 async function authorizeTenantAction(system: CodexSynapticSystem, action: 'read' | 'write', tokenOverride?: string): Promise<void> {
   const token = tokenOverride ?? process.env.CODEX_TENANT_ADMIN_TOKEN;
   if (!token) {
@@ -670,6 +823,15 @@ async function authorizeTenantAction(system: CodexSynapticSystem, action: 'read'
 }
 
 
+/**
+ * Renders a table of registered agents to the console.
+ * 
+ * @param agents - Array of agent metadata to display
+ * 
+ * @remarks
+ * Displays agent ID, type, status, capabilities, and last updated timestamp.
+ * Shows "No agents registered" message if the array is empty.
+ */
 function renderAgentTable(agents: AgentMetadata[]): void {
   if (!agents.length) {
     console.log(chalk.gray('No agents registered.'));
@@ -687,6 +849,19 @@ function renderAgentTable(agents: AgentMetadata[]): void {
   console.table(rows);
 }
 
+/**
+ * Renders the neural mesh status to the console.
+ * 
+ * @param status - Neural mesh status object with node counts, topology, and timing info
+ * 
+ * @remarks
+ * Displays:
+ * - Running state (yes/no)
+ * - Node and connection counts
+ * - Average connections per node
+ * - Topology type
+ * - Orchestration activity and time limits (if available)
+ */
 function renderMeshStatus(status: any): void {
   console.log(chalk.blue('🕸️  Neural Mesh'));
   console.log(`  Running: ${status.isRunning ? chalk.green('yes') : chalk.red('no')}`);
@@ -739,6 +914,17 @@ function renderBackgroundDaemonStatus(status: BackgroundStatus): void {
   }
 }
 
+/**
+ * Displays interactive mode usage hints to the console.
+ * 
+ * @remarks
+ * Shows tips about:
+ * - Available guided menus (system, agents, mesh, swarm, etc.)
+ * - Running CLI commands from within interactive mode
+ * - Dashboard and real-time metrics
+ * - System lifecycle (stays running after exit)
+ * - Hive-mind context attachment features
+ */
 function renderInteractiveHints(): void {
   console.log(chalk.blueBright('💡 Interactive Command Hub'));
   console.log('  • Navigate through guided menus for system, agents, mesh, swarm, hive-mind, consensus, and tasks.');
@@ -750,6 +936,15 @@ function renderInteractiveHints(): void {
   console.log('');
 }
 
+/**
+ * Ensures a system instance is available for interactive mode, reusing existing if possible.
+ * 
+ * @returns Active CodexSynapticSystem instance
+ * 
+ * @remarks
+ * Reuses existing system if it's running and not shutting down.
+ * Creates a new system via session.ensureSystem() if needed.
+ */
 async function ensureInteractiveSystem(): Promise<CodexSynapticSystem> {
   const existing = session.getSystemUnsafe();
   if (existing) {
@@ -761,6 +956,15 @@ async function ensureInteractiveSystem(): Promise<CodexSynapticSystem> {
   return session.ensureSystem();
 }
 
+/**
+ * Pauses execution and waits for user to press Enter.
+ * 
+ * @param message - Prompt message to display (defaults to "Press Enter to return to the menu.")
+ * 
+ * @remarks
+ * Uses inquirer to create a simple input prompt that continues when Enter is pressed.
+ * Commonly used in interactive menus to prevent automatic menu transitions.
+ */
 async function pause(message = 'Press Enter to return to the menu.'): Promise<void> {
   await inquirer.prompt<{ __continue: string }>([
     {
@@ -771,6 +975,18 @@ async function pause(message = 'Press Enter to return to the menu.'): Promise<vo
   ]);
 }
 
+/**
+ * Tokenizes a CLI input string into an array of arguments, handling quotes and escapes.
+ * 
+ * @param input - Raw command line input string
+ * @returns Array of parsed argument tokens
+ * 
+ * @remarks
+ * - Handles both single and double quotes
+ * - Supports backslash escaping within quotes
+ * - Splits on whitespace outside quotes
+ * - Filters out empty tokens
+ */
 function tokenizeCliArgs(input: string): string[] {
   const tokens: string[] = [];
   let current = '';
@@ -826,6 +1042,18 @@ function tokenizeCliArgs(input: string): string[] {
   return tokens.filter((token) => token.length > 0);
 }
 
+/**
+ * Formats elapsed time duration into a human-readable string.
+ * 
+ * @param startedAt - Start timestamp in milliseconds (from Date.now())
+ * @returns Formatted duration string (e.g., "45ms", "3m 20s", "2h 15m")
+ * 
+ * @remarks
+ * - Shows milliseconds for durations under 1 second
+ * - Shows seconds for durations under 1 minute
+ * - Shows minutes and seconds for durations under 1 hour
+ * - Shows hours and minutes for longer durations
+ */
 function formatElapsedDuration(startedAt: number): string {
   const elapsedMs = Date.now() - startedAt;
   if (elapsedMs < 1000) {
@@ -845,6 +1073,13 @@ function formatElapsedDuration(startedAt: number): string {
   return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
 }
 
+/**
+ * Renders the list of background CLI jobs to the console.
+ * 
+ * @remarks
+ * Displays job ID, command, and elapsed time for each running background job.
+ * Shows "No background CLI commands are running" if none are active.
+ */
 function renderBackgroundJobs(): void {
   if (!backgroundJobs.size) {
     console.log(chalk.gray('No background CLI commands are running.'));
@@ -858,6 +1093,18 @@ function renderBackgroundJobs(): void {
   console.log('');
 }
 
+/**
+ * Dispatches a CLI command from interactive mode using the Commander program.
+ * 
+ * @param raw - Raw command string to parse and execute
+ * 
+ * @remarks
+ * - Tokenizes input respecting quotes and escapes
+ * - Prevents running "interactive" command from within interactive mode
+ * - Executes command through Commander's parseAsync
+ * - Handles help and version display gracefully
+ * - Shows error messages with stack traces when CODEX_DEBUG=1
+ */
 async function dispatchCliCommand(raw: string): Promise<void> {
   const args = tokenizeCliArgs(raw.trim());
   if (!args.length) {
@@ -893,6 +1140,18 @@ async function dispatchCliCommand(raw: string): Promise<void> {
   }
 }
 
+/**
+ * Renders a comprehensive dashboard of system status including telemetry, mesh, swarm, and consensus.
+ * 
+ * @param system - The Codex-Synaptic system instance
+ * 
+ * @remarks
+ * Displays:
+ * - Telemetry snapshot (agents, resources, tasks)
+ * - Neural mesh status
+ * - Swarm coordinator status
+ * - Consensus status
+ */
 async function renderSystemDashboard(system: CodexSynapticSystem): Promise<void> {
   console.log('');
   renderTelemetry();
@@ -905,6 +1164,16 @@ async function renderSystemDashboard(system: CodexSynapticSystem): Promise<void>
   console.log('');
 }
 
+/**
+ * Interactive system control menu for managing orchestrator lifecycle and viewing status.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Viewing comprehensive dashboard
+ * - Checking telemetry pulse
+ * - Shutting down the system
+ * Menu loops until user returns to main menu or shuts down.
+ */
 async function interactiveSystemMenu(): Promise<void> {
   let exit = false;
   let first = true;
@@ -981,6 +1250,17 @@ async function interactiveSystemMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive agents management menu for deploying, listing, and managing agent lifecycle.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Listing registered agents
+ * - Deploying new agent instances
+ * - Stopping specific agents
+ * - Viewing agent telemetry
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveAgentsMenu(): Promise<void> {
   let exit = false;
   let first = true;
@@ -1102,6 +1382,17 @@ async function interactiveAgentsMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive neural mesh configuration and monitoring menu.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Viewing mesh status
+ * - Configuring topology and node counts
+ * - Starting/stopping orchestration runs
+ * - Viewing mesh telemetry
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveMeshMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1163,6 +1454,17 @@ async function interactiveMeshMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive swarm coordination menu for managing collaborative optimization.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Viewing swarm status
+ * - Starting swarm runs with various algorithms (PSO, ACO, flocking)
+ * - Stopping active swarms
+ * - Viewing swarm telemetry
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveSwarmMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1226,6 +1528,17 @@ async function interactiveSwarmMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive hive-mind orchestration menu for spawning multi-agent workflows.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Quick spawn with automatic Codex context attachment
+ * - Custom spawn with manual agent configuration
+ * - Viewing recent hive-mind runs
+ * Automatically attaches repository context (AGENTS.md, README, docs/) for repository-aware tasks.
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveHiveMindMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1355,6 +1668,17 @@ async function interactiveHiveMindMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive consensus management menu for proposing and voting on decisions.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Viewing consensus status
+ * - Creating new proposals
+ * - Voting on active proposals
+ * - Viewing consensus telemetry
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveConsensusMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1462,6 +1786,16 @@ async function interactiveConsensusMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive tasks and routing menu for executing prompts and evaluating routing decisions.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Executing task prompts
+ * - Viewing recent session tasks
+ * - Evaluating routing for prompts
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveTasksMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1560,6 +1894,14 @@ async function interactiveTasksMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive command runner that allows executing CLI commands from within interactive mode.
+ * 
+ * @remarks
+ * Provides a prompt for entering CLI commands that are then dispatched through the Commander program.
+ * Useful for running specific commands without exiting interactive mode.
+ * Loops until user enters 'back' to return to main menu.
+ */
 async function interactiveCommandRunner(): Promise<void> {
   console.log(chalk.gray('Tip: append "&" to run a command in the background.'));
   const { command } = await inquirer.prompt<{ command: string }>([
@@ -1606,6 +1948,18 @@ async function interactiveCommandRunner(): Promise<void> {
     });
 }
 
+/**
+ * Renders swarm coordinator status to the console.
+ * 
+ * @param status - Swarm status object with run state, algorithm, and participant info
+ * 
+ * @remarks
+ * Displays:
+ * - Running state (yes/no)
+ * - Active algorithm
+ * - Number of participating agents
+ * - Iteration count
+ */
 function renderSwarmStatus(status: any): void {
   console.log(chalk.blue('🐝 Swarm Coordination'));
   console.log(`  Running: ${status.isRunning ? chalk.green('yes') : chalk.red('no')}`);
@@ -1623,6 +1977,17 @@ function renderSwarmStatus(status: any): void {
   }
 }
 
+/**
+ * Renders consensus status to the console.
+ * 
+ * @param system - The Codex-Synaptic system instance
+ * 
+ * @remarks
+ * Displays:
+ * - Current consensus mechanism
+ * - Active proposals count
+ * - Recent decisions count
+ */
 function renderConsensusStatus(system: CodexSynapticSystem): void {
   const manager = system.getConsensusManager();
   const status = manager.getStatus();
@@ -1643,6 +2008,16 @@ function renderConsensusStatus(system: CodexSynapticSystem): void {
   }
 }
 
+/**
+ * Renders telemetry snapshot to the console including agents, resources, and recent tasks.
+ * 
+ * @remarks
+ * Retrieves the latest telemetry from the global session and displays:
+ * - Agent statistics (status, types, resource usage)
+ * - Resource metrics (CPU, memory, GPU)
+ * - Recent task summaries
+ * Shows "No telemetry available" if no snapshot exists.
+ */
 function renderTelemetry(): void {
   const snapshot = session.getTelemetry() as TelemetrySnapshot;
   console.log(chalk.blue('📊 Telemetry Snapshot'));
@@ -1675,6 +2050,18 @@ function renderTelemetry(): void {
   formatRecentTasks(snapshot.recentTasks).forEach((line) => console.log(line));
 }
 
+/**
+ * Emits context aggregation logs to the console.
+ * 
+ * @param logs - Array of context log entries with timestamps, levels, and messages
+ * 
+ * @remarks
+ * Formats each log entry with appropriate color based on level:
+ * - DEBUG: gray
+ * - INFO: blue
+ * - WARN: yellow
+ * - ERROR: red
+ */
 function emitContextLogs(logs: ContextLogEntry[]): void {
   if (!logs.length) {
     return;
@@ -1693,6 +2080,18 @@ function emitContextLogs(logs: ContextLogEntry[]): void {
   }
 }
 
+/**
+ * Emits a summary of aggregated Codex context including artifacts and byte counts.
+ * 
+ * @param context - Aggregated Codex context with inventory, directives, and metadata
+ * @param metadata - Aggregation metadata with artifact counts and byte sizes
+ * 
+ * @remarks
+ * Displays summary of:
+ * - Root directory
+ * - Artifacts included (README, AGENTS.md, directives, etc.)
+ * - Total context size in bytes
+ */
 function emitContextSummary(context: CodexContext, metadata: CodexContextAggregationMetadata): void {
   console.log(chalk.blue('🧠 Codex context summary'));
   console.log(chalk.gray(`  • Context hash: ${context.contextHash}`));
@@ -1708,6 +2107,17 @@ function emitContextSummary(context: CodexContext, metadata: CodexContextAggrega
   }
 }
 
+/**
+ * Attempts to prime Codex with context, retrying on failure.
+ * 
+ * @param prompt - User prompt to prime with
+ * @param attempts - Number of retry attempts (default: 2)
+ * @returns Priming result or null if all attempts fail
+ * 
+ * @remarks
+ * Retries priming operation with exponential backoff (2s delay between attempts).
+ * Logs errors and continues retrying until max attempts reached.
+ */
 async function primeCodexWithRetry(
   system: CodexSynapticSystem,
   context: CodexContext,
@@ -1719,12 +2129,27 @@ async function primeCodexWithRetry(
   console.log(chalk.green(`🔐 Codex CLI primed (hash ${context.contextHash.slice(0, 8)}…).`));
 }
 
+/**
+ * Formats a details object into a readable string representation.
+ * 
+ * @param details - Object with string keys and unknown values
+ * @returns JSON-formatted string with 2-space indentation
+ */
 function formatDetailEntry(details: Record<string, unknown>): string {
   return Object.entries(details)
     .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
     .join(', ');
 }
 
+/**
+ * Formats byte count into human-readable string with appropriate units.
+ * 
+ * @param bytes - Number of bytes to format
+ * @returns Formatted string with units (B, KB, MB, GB)
+ * 
+ * @remarks
+ * Uses base-1024 calculation and shows 2 decimal places for KB and above.
+ */
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return '0 B';
@@ -1743,6 +2168,16 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
+/**
+ * Describes a cache file path for display purposes.
+ * 
+ * @param absPath - Absolute path to cache file
+ * @returns Descriptive string or 'none' if path is not provided
+ * 
+ * @remarks
+ * If path starts with HOME/.codex-synaptic/, shows relative to that directory.
+ * Otherwise shows the full path or basename if short enough.
+ */
 function describeCachePath(absPath?: string): string {
   if (!absPath) {
     return 'all roots';
@@ -1754,6 +2189,16 @@ function describeCachePath(absPath?: string): string {
   return relPath.startsWith('..') ? absPath : relPath;
 }
 
+/**
+ * Parses a string value into an AgentType enum value.
+ * 
+ * @param value - String representation of agent type
+ * @returns AgentType enum value or undefined if invalid
+ * 
+ * @remarks
+ * Converts lowercase snake_case to UPPER_SNAKE_CASE for enum lookup.
+ * Returns undefined if the value doesn't match a valid AgentType.
+ */
 function parseAgentType(value?: string): AgentType | undefined {
   if (!value) {
     return undefined;
@@ -1766,6 +2211,16 @@ function parseAgentType(value?: string): AgentType | undefined {
   return match;
 }
 
+/**
+ * Parses a JSON option string into a typed object.
+ * 
+ * @param value - JSON string to parse
+ * @returns Parsed object of type T or undefined if parsing fails
+ * 
+ * @remarks
+ * Throws an error if JSON is invalid.
+ * Returns undefined if value is not provided.
+ */
 function parseJsonOption<T = any>(value?: string): T | undefined {
   if (!value) {
     return undefined;
@@ -1777,6 +2232,16 @@ function parseJsonOption<T = any>(value?: string): T | undefined {
   }
 }
 
+/**
+ * Loads tool candidate definitions from a JSON file.
+ * 
+ * @param filePath - Path to JSON file containing tool candidates
+ * @returns Array of tool candidates
+ * @throws Error if file doesn't exist, can't be read, or contains invalid JSON
+ * 
+ * @remarks
+ * Expected JSON format is an array of ToolCandidate objects.
+ */
 function loadToolCandidates(filePath: string): ToolCandidate[] {
   const absolutePath = resolve(filePath);
   const content = readFileSync(absolutePath, 'utf8');
@@ -1803,6 +2268,15 @@ function loadToolCandidates(filePath: string): ToolCandidate[] {
   });
 }
 
+/**
+ * Builds a tool usage record from CLI options.
+ * 
+ * @param options - CLI options object with toolName, toolDescription, and toolInput
+ * @returns ToolUsageRecord with timestamp and metadata
+ * 
+ * @remarks
+ * Parses toolInput as JSON if provided, otherwise sets input to null.
+ */
 function buildToolUsageRecord(options: any): ToolUsageRecord {
   let metadataPayload: Record<string, any> | undefined;
   if (options.metadata) {
@@ -2868,6 +3342,20 @@ reasoningCmd
     });
   }));
 
+/**
+ * Prints a reasoning run record to the console with formatted sections.
+ * 
+ * @param record - Reasoning run record with metadata, iterations, and outcome
+ * 
+ * @remarks
+ * Displays:
+ * - Strategy type and status
+ * - Execution timing and iteration count
+ * - Initial prompt
+ * - Iteration details with thoughts and actions
+ * - Final answer or error
+ * - Full outcome JSON
+ */
 function printReasoningRecord(record: ReasoningRunRecord): void {
   console.log(chalk.gray(`   Type: ${record.planType}`));
   console.log(chalk.gray(`   Status: ${record.status}`));

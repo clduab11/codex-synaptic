@@ -101,6 +101,16 @@ export interface OpenAIReadinessIssue {
   recommendedActions: string[];
 }
 
+/**
+ * Creates a deep clone of a Codex context object.
+ * 
+ * @param context - CodexContext to clone
+ * @returns Deep copy of the context
+ * 
+ * @remarks
+ * Recursively clones nested structures including directory tree nodes.
+ * Used to prevent mutations of shared context objects.
+ */
 function cloneCodexContext(context: CodexContext): CodexContext {
   return {
     agentDirectives: context.agentDirectives,
@@ -117,6 +127,16 @@ function cloneCodexContext(context: CodexContext): CodexContext {
   };
 }
 
+/**
+ * Creates a shallow clone of a Codex prompt envelope.
+ * 
+ * @param envelope - CodexPromptEnvelope to clone
+ * @returns Shallow copy of the envelope
+ * 
+ * @remarks
+ * Copies string references without deep cloning.
+ * Used to prevent accidental mutations during prompt processing.
+ */
 function cloneCodexEnvelope(envelope: CodexPromptEnvelope): CodexPromptEnvelope {
   return {
     originalPrompt: envelope.originalPrompt,
@@ -125,6 +145,16 @@ function cloneCodexEnvelope(envelope: CodexPromptEnvelope): CodexPromptEnvelope 
   };
 }
 
+/**
+ * Recursively clones a file tree node and all its children.
+ * 
+ * @param node - FileTreeNode to clone
+ * @returns Deep copy of the node and its subtree
+ * 
+ * @remarks
+ * Recursively clones children array to ensure complete isolation.
+ * Used when sharing directory inventory across contexts.
+ */
 function cloneFileTreeNode(node: FileTreeNode): FileTreeNode {
   return {
     name: node.name,
