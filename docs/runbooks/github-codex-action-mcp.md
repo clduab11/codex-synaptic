@@ -12,6 +12,57 @@ Both use `openai/codex-action` with:
 - a Codex home config at `.github/codex/configs/mcp-full.toml`
 - artifact upload enabled for auditability
 
+## How to run
+
+### Codex PR Review workflow
+
+**Automatic triggers:**
+- Runs automatically on PR events: opened, synchronize, reopened, ready_for_review
+- Only runs on non-draft PRs from non-fork branches (fork PRs are blocked to protect secrets)
+
+**Manual trigger:**
+1. Navigate to Actions → "Codex PR Review (MCP-Enhanced)"
+2. Click "Run workflow"
+3. Required input:
+   - `pr_number`: Pull request number to review (e.g., `42`)
+4. Click "Run workflow" button
+
+**Key configuration:**
+- `safety-strategy: unsafe`
+- `sandbox: workspace-write` with `network_access=true`
+- Codex home: `.github/codex/configs/mcp-full.toml`
+- Model: `gpt-5-codex` with `effort: high`
+
+**Outputs:**
+- Artifact: `codex-pr-review-{pr_number}` (retained 14 days)
+- PR comment with review feedback (if Codex produces output)
+- Logs available in workflow run details
+
+### Codex Viral Growth Brief workflow
+
+**Scheduled trigger:**
+- Runs weekly on Mondays at 14:00 UTC (cron: `0 14 * * 1`)
+- To change schedule, edit the `cron:` expression in `.github/workflows/codex-viral-growth-mcp.yml`
+
+**Manual trigger:**
+1. Navigate to Actions → "Codex Viral Growth Brief (MCP-Enhanced)"
+2. Click "Run workflow"
+3. Optional inputs:
+   - `focus`: Focus area for the brief (e.g., "developer adoption", "GitHub visibility", "enterprise GTM") - leave empty for general brief
+   - `post_issue`: Check this to create a GitHub issue with the generated brief (default: unchecked)
+4. Click "Run workflow" button
+
+**Key configuration:**
+- `safety-strategy: unsafe`
+- `sandbox: workspace-write` with `network_access=true`
+- Codex home: `.github/codex/configs/mcp-full.toml`
+- Model: `gpt-5-codex` with `effort: high`
+
+**Outputs:**
+- Artifact: `codex-viral-growth-brief` (retained 14 days)
+- Optional GitHub issue (if `post_issue` input is true)
+- Logs available in workflow run details
+
 ## Why dependencies are installed before Codex
 
 `codex-action` runs Codex with sandboxing. In `workspace-write`, network is often disabled by default unless enabled in config. To avoid flaky runtime installs, workflows pre-install project and MCP dependencies before `Run Codex`.
