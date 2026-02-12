@@ -1,0 +1,153 @@
+name: Codex Viral Growth Brief (MCP-Enhanced)
+
+on:
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: "Optional focus area (for example: developer adoption, GitHub visibility, enterprise GTM)"
+        required: false
+        type: string
+      post_issue:
+        description: "Create a GitHub issue with the generated brief"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 14 * * 1"
+
+concurrency:
+  group: codex-viral-growth
+  cancel-in-progress: false
+
+jobs:
+  codex_growth:
+    name: Generate Viral Growth Brief
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install repository dependencies
+        run: |
+          set -euo pipefail
+          npm ci
+          if [ -f python/requirements.txt ]; then
+            python -m pip install --upgrade pip
+            python -m pip install -r python/requirements.txt
+          fi
+
+      - name: Install MCP command dependencies
+        run: |
+          set -euo pipefail
+          npm install -g \
+            @upstash/context7-mcp@2.1.1 \
+            @brave/brave-search-mcp-server@2.0.72 \
+            firecrawl-mcp@3.7.4 \
+            mcp-remote@0.1.38
+
+      - name: Prepare Codex prompt and home
+        id: prep
+        env:
+          FOCUS: ${{ github.event.inputs.focus }}
+        run: |
+          set -euo pipefail
+          codex_home="${RUNNER_TEMP}/codex-home"
+          prompt_file="${RUNNER_TEMP}/codex-viral-growth-prompt.md"
+          output_file="${RUNNER_TEMP}/codex-viral-growth-brief.md"
+
+          mkdir -p "${codex_home}"
+          cp ".github/codex/configs/mcp-full.toml" "${codex_home}/config.toml"
+
+          {
+            cat ".github/codex/prompts/viral-growth-brief.md"
+            echo
+            echo "### Repository Context"
+            echo "- Repository: ${{ github.repository }}"
+            echo "- Branch: ${{ github.ref_name }}"
+            echo "- Trigger: ${{ github.event_name }}"
+            echo
+            if [ -n "${FOCUS}" ]; then
+              echo "### Optional Focus Area"
+              echo "${FOCUS}"
+              echo
+            fi
+            echo "### Additional Constraints"
+            echo "- Prefer low-risk, executable recommendations."
+            echo "- Include references/citations where possible."
+            echo "- Avoid generic social media advice without technical implementation detail."
+          } > "${prompt_file}"
+
+          echo "codex_home=${codex_home}" >> "$GITHUB_OUTPUT"
+          echo "prompt_file=${prompt_file}" >> "$GITHUB_OUTPUT"
+          echo "output_file=${output_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Codex
+        id: run_codex
+        uses: openai/codex-action@086169432f1d2ab2f4057540b1754d550f6a1189 # v1
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          FIRECRAWL_API_URL: ${{ secrets.FIRECRAWL_API_URL }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          DEEPWIKI_API_KEY: ${{ secrets.DEEPWIKI_API_KEY }}
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: "0.99.0"
+          codex-home: ${{ steps.prep.outputs.codex_home }}
+          prompt-file: ${{ steps.prep.outputs.prompt_file }}
+          output-file: ${{ steps.prep.outputs.output_file }}
+          working-directory: ${{ github.workspace }}
+          sandbox: workspace-write
+          codex-args: '["-c","sandbox_workspace_write.network_access=true"]'
+          safety-strategy: unsafe
+          model: gpt-5-codex
+          effort: high
+
+      - name: Upload brief artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codex-viral-growth-brief
+          path: ${{ steps.prep.outputs.output_file }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Create issue with brief
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.post_issue == 'true' &&
+          steps.run_codex.outputs.final-message != ''
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const body = process.env.CODEX_FINAL_MESSAGE || "";
+            if (!body.trim()) {
+              core.info("No Codex output to post as issue.");
+              return;
+            }
+
+            const title = `Codex Viral Growth Brief - ${new Date().toISOString().slice(0, 10)}`;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body
+            });
