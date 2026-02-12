@@ -1,0 +1,55 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+model = "gpt-5-codex"
+approval_policy = "never"
+sandbox_policy = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+env_http_headers = { "CONTEXT7_API_KEY" = "CONTEXT7_API_KEY" }
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 180
+
+[mcp_servers.brave]
+command = "brave-search-mcp-server"
+args = ["--transport", "stdio"]
+env_vars = [
+  "BRAVE_API_KEY",
+  "BRAVE_MCP_ENABLED_TOOLS",
+  "BRAVE_MCP_DISABLED_TOOLS",
+]
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 180
+
+[mcp_servers.firecrawl]
+command = "firecrawl-mcp"
+env_vars = [
+  "FIRECRAWL_API_KEY",
+  "FIRECRAWL_API_URL",
+  "FIRECRAWL_RETRY_MAX_ATTEMPTS",
+  "FIRECRAWL_RETRY_INITIAL_DELAY",
+  "FIRECRAWL_RETRY_MAX_DELAY",
+  "FIRECRAWL_RETRY_BACKOFF_FACTOR",
+]
+required = false
+startup_timeout_sec = 25
+tool_timeout_sec = 240
+
+[mcp_servers.jina]
+url = "https://mcp.jina.ai/v1"
+bearer_token_env_var = "JINA_API_KEY"
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 180
+
+[mcp_servers.deepwiki]
+url = "https://mcp.deepwiki.com/mcp"
+bearer_token_env_var = "DEEPWIKI_API_KEY"
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 180
