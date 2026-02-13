@@ -6,6 +6,16 @@ import { EventEmitter } from 'events';
 import { setTimeout as sleep } from 'timers/promises';
 import { Logger } from '../core/logger.js';
 
+export class EndpointResolutionError extends Error {
+  constructor(message: string, cause?: Error) {
+    super(message);
+    this.name = 'EndpointResolutionError';
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
 interface BridgeEndpoint {
   name: string;
   url: string;
@@ -30,6 +40,13 @@ export interface MCPBridgeResponse {
   status?: number;
   data?: unknown;
   error?: StructuredBridgeError;
+}
+
+export interface MCPBridgeStatus {
+  isRunning: boolean;
+  connectedEndpoints: Array<{ name: string; url: string }>;
+  retryAttempts: number;
+  timeoutMs: number;
 }
 
 function parseIntEnv(name: string, fallback: number): number {
@@ -122,7 +139,7 @@ export class MCPBridge extends EventEmitter {
       return { name: endpoint, url: envUrl };
     }
 
-    throw new Error(
+    throw new EndpointResolutionError(
       `Endpoint "${endpoint}" is not connected. Provide an HTTP URL endpoint or set CODEX_MCP_ENDPOINT_${key}_URL.`
     );
   }
@@ -143,7 +160,7 @@ export class MCPBridge extends EventEmitter {
     });
   }
 
-  getStatus(): any {
+  getStatus(): MCPBridgeStatus {
     return {
       isRunning: this.isRunning,
       connectedEndpoints: Array.from(this.connectedEndpoints.entries()).map(([name, value]) => ({

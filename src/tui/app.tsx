@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FC } from 'react';
 import type { InterfaceTier } from '../core/config.js';
+import { Logger } from '../core/logger.js';
 
 export interface TuiRuntimeSnapshot {
   source: 'local' | 'daemon';
@@ -61,9 +62,33 @@ export interface TuiSnapshotProvider {
 }
 
 interface InkBindings {
-  Box: React.ComponentType<any>;
-  Text: React.ComponentType<any>;
-  useInput: (handler: (input: string, key: any) => void) => void;
+  Box: React.ComponentType<{
+    flexDirection?: 'row' | 'column' | 'row-reverse' | 'column-reverse';
+    padding?: number;
+    marginTop?: number;
+    // Allow additional Ink Box props not explicitly typed here
+    [key: string]: any;
+  }>;
+  Text: React.ComponentType<{
+    color?: string;
+    // Allow additional Ink Text props not explicitly typed here
+    [key: string]: any;
+  }>;
+  useInput: (handler: (input: string, key: {
+    upArrow: boolean;
+    downArrow: boolean;
+    leftArrow: boolean;
+    rightArrow: boolean;
+    return: boolean;
+    escape: boolean;
+    ctrl: boolean;
+    shift: boolean;
+    tab: boolean;
+    backspace: boolean;
+    delete: boolean;
+    // Allow additional key properties from Ink's Key type
+    [key: string]: boolean;
+  }) => void) => void;
   useApp: () => { exit: () => void };
 }
 
@@ -244,16 +269,26 @@ function renderFallbackMessage(provider: TuiSnapshotProvider): void {
 
 export async function startTui(options: StartTuiOptions): Promise<void> {
   const { provider, onExit, initialTier } = options;
+  const logger = Logger.getInstance();
 
   let inkModule: any;
   try {
     inkModule = await import('ink');
   } catch {
-    renderFallbackMessage(provider);
-    const snapshot = await provider.fetchSnapshot();
-    console.log(`Runtime ready: ${snapshot.status.initialized ? 'yes' : 'no'}`);
-    console.log(`Agents: ${snapshot.telemetry.agents.total}`);
-    onExit?.();
+    logger.info('tui', 'TUI dependencies are not installed. Falling back to snapshot mode.', {
+      source: provider.sourceLabel
+    });
+    logger.info('tui', 'Install with: npm install ink');
+
+    try {
+      const snapshot = await provider.fetchSnapshot();
+      logger.info('tui', `Runtime ready: ${snapshot.status.initialized ? 'yes' : 'no'}`);
+      logger.info('tui', `Agents: ${snapshot.telemetry.agents.total}`);
+    } catch (error) {
+      logger.error('tui', 'Failed to fetch snapshot in fallback mode', error as Error);
+    } finally {
+      onExit?.();
+    }
     return;
   }
 
