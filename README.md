@@ -17,7 +17,7 @@ Codex for macOS is now the default frontend path for this repo's operator workfl
 
 ### Verified alignment with official OpenAI docs (February 2026)
 
-- Codex app setup is macOS (Apple Silicon) and recommended for mac users.
+- Codex app setup is macOS (Apple Silicon) and recommended for Mac users.
 - App feature model includes Local / Worktree / Cloud modes, built-in Git, integrated terminal, automations, and MCP support.
 - Codex CLI supports interactive mode, `resume`, `cloud`, `exec`, and `mcp` operations.
 - Security defaults recommend workspace-write + on-request approvals for version-controlled repos.
