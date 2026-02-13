@@ -3,6 +3,16 @@ import { createConnection } from 'net';
 import { setTimeout as sleep } from 'timers/promises';
 import { Logger } from '../core/logger.js';
 
+export class ServiceManagerError extends Error {
+  constructor(message: string, cause?: Error) {
+    super(message);
+    this.name = 'ServiceManagerError';
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
 export type FilesystemAccessMode = 'read-only' | 'controlled-write';
 
 export interface ServiceProfile {
@@ -155,7 +165,7 @@ class ServiceManager {
     const envMode = process.env.CODEX_MCP_FILESYSTEM_MODE;
     const requested = options?.filesystemMode || (envMode as FilesystemAccessMode | undefined) || 'read-only';
     if (requested !== 'read-only' && requested !== 'controlled-write') {
-      throw new Error('Filesystem mode must be read-only or controlled-write.');
+      throw new ServiceManagerError('Filesystem mode must be read-only or controlled-write.');
     }
     return requested;
   }
@@ -167,7 +177,7 @@ class ServiceManager {
       const mode = this.resolveFilesystemMode(options);
       const allowWrite = options?.allowFilesystemWrite === true || process.env.CODEX_MCP_FILESYSTEM_ALLOW_WRITE === '1';
       if (mode === 'controlled-write' && !allowWrite) {
-        throw new Error(
+        throw new ServiceManagerError(
           'controlled-write filesystem mode requires explicit approval. ' +
           'Pass --allow-filesystem-write or set CODEX_MCP_FILESYSTEM_ALLOW_WRITE=1.'
         );
@@ -225,7 +235,7 @@ class ServiceManager {
       }
 
       const healthy = await this.probeService(profile);
-      if (!healthy) {
+      if (healthy === false) {
         diagnostics.push('Service process is running but health probe failed.');
       }
 
