@@ -67,15 +67,15 @@ export function checkCodexAuth(): HealthCheck {
   
   const stdout = loginStatus.stdout?.trim() || '';
   const stderr = loginStatus.stderr?.trim() || '';
-  const ok = loginStatus.status === 0 && stdout.toLowerCase().includes('authenticated');
+  const ok = loginStatus.status === 0 && !/not logged in/i.test(stdout);
   
   return {
     id: 'codex.auth',
     ok,
     details: ok 
       ? 'Codex is authenticated.' 
-      : (stderr || stdout || 'Codex authentication check failed.'),
-    remediation: ok ? undefined : 'Run `codex login`.'
+      : (stdout || stderr || 'No output'),
+    remediation: ok ? undefined : 'Run `codex login` then re-run `codex login status`.'
   };
 }
 

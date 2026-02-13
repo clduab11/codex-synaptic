@@ -144,17 +144,18 @@ export function collectExecutionResults(
 /**
  * Render execution summary
  */
-export function renderExecutionSummary(
+export async function renderExecutionSummary(
   resultData: any,
   options: { yaml?: boolean; debug?: boolean }
-): void {
+): Promise<void> {
+  console.log(chalk.green(`\n🎉 Hive-mind execution completed in ${resultData.duration}ms`));
+
   if (options.yaml) {
-    const { HiveMindYamlFormatter } = require('../utils/yaml-output.js');
+    const { HiveMindYamlFormatter } = await import('../utils/yaml-output.js');
+    console.log(chalk.blue('\n📋 Results (YAML format):'));
     console.log(HiveMindYamlFormatter.formatExecutionResult(resultData));
     return;
   }
-
-  console.log(chalk.green(`\n🎉 Hive-mind execution completed in ${resultData.duration}ms`));
 
   if (resultData.consensusStatus.performed) {
     const statusIcon = resultData.consensusStatus.accepted ? '✅' : '❌';

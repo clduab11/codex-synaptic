@@ -4104,7 +4104,7 @@ hiveMindCmd
           codexContext
         );
 
-        renderExecutionSummary(resultData, { yaml: options.yaml, debug: config.debug });
+        await renderExecutionSummary(resultData, { yaml: options.yaml, debug: config.debug });
 
       } finally {
         eventHandlers.cleanup();
