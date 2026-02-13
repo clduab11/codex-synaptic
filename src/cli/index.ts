@@ -4449,17 +4449,18 @@ async function execCodexCommand(args: string[], timeoutMs = 10000): Promise<{ st
       timeout: timeoutMs
     });
     return { stdout, stderr, exitCode: 0 };
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
+  } catch (error: unknown) {
+    const err = error as { code?: string | number; killed?: boolean; signal?: string; stdout?: string; stderr?: string };
+    if (err.code === 'ENOENT') {
       throw new Error('codex command not found. Ensure Codex CLI is installed and in PATH.');
     }
-    if (error.killed && error.signal === 'SIGTERM') {
+    if (err.killed && err.signal === 'SIGTERM') {
       throw new Error(`codex command timed out after ${timeoutMs}ms`);
     }
     return {
-      stdout: error.stdout || '',
-      stderr: error.stderr || '',
-      exitCode: error.code || 1
+      stdout: err.stdout || '',
+      stderr: err.stderr || '',
+      exitCode: typeof err.code === 'number' ? err.code : 1
     };
   }
 }

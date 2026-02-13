@@ -66,10 +66,12 @@ interface InkBindings {
     flexDirection?: 'row' | 'column' | 'row-reverse' | 'column-reverse';
     padding?: number;
     marginTop?: number;
+    // Allow additional Ink Box props not explicitly typed here
     [key: string]: any;
   }>;
   Text: React.ComponentType<{
     color?: string;
+    // Allow additional Ink Text props not explicitly typed here
     [key: string]: any;
   }>;
   useInput: (handler: (input: string, key: {
@@ -84,6 +86,7 @@ interface InkBindings {
     tab: boolean;
     backspace: boolean;
     delete: boolean;
+    // Allow additional key properties from Ink's Key type
     [key: string]: boolean;
   }) => void) => void;
   useApp: () => { exit: () => void };
