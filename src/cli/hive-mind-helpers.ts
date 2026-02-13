@@ -6,11 +6,8 @@
 import chalk from 'chalk';
 import type { CodexSynapticSystem } from '../core/system.js';
 import type {
-  CodexContext,
-  CodexContextAggregationMetadata,
-  CodexPromptEnvelope
+  CodexContext
 } from '../types/codex-context.js';
-import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 
 /**
  * Execute GOAP workflow

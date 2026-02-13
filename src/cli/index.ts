@@ -43,7 +43,6 @@ import { promisify } from 'util';
 import { ToolOptimizer, type ToolCandidate } from '../tools/optimizer/index.js';
 import { type ToolUsageRecord, type ReasoningRunRecord } from '../memory/memory-system.js';
 import type { ReasoningPlanOptions, ReasoningCompletionOptions, ReasoningCheckpointInput } from '../reasoning/planner.js';
-import { GoapExecutor } from '../reasoning/goap/executor.js';
 import { goapRegistry } from '../reasoning/goap/registry.js';
 import type { InterfaceMode, InterfaceTier, SystemConfiguration } from '../core/config.js';
 import { serviceManager } from '../env/service-manager.js';
@@ -86,7 +85,6 @@ import {
   checkCliBuildArtifact,
   checkCliExecution,
   checkCodexAuth,
-  checkMcpProfile,
   renderHealthCheckResults,
   type HealthCheck
 } from './doctor-helpers.js';
