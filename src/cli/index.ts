@@ -43,7 +43,6 @@ import { promisify } from 'util';
 import { ToolOptimizer, type ToolCandidate } from '../tools/optimizer/index.js';
 import { type ToolUsageRecord, type ReasoningRunRecord } from '../memory/memory-system.js';
 import type { ReasoningPlanOptions, ReasoningCompletionOptions, ReasoningCheckpointInput } from '../reasoning/planner.js';
-import { GoapExecutor } from '../reasoning/goap/executor.js';
 import { goapRegistry } from '../reasoning/goap/registry.js';
 import type { InterfaceMode, InterfaceTier, SystemConfiguration } from '../core/config.js';
 import { serviceManager } from '../env/service-manager.js';
@@ -75,6 +74,20 @@ import {
   buildPolicyInput,
   type QuotaOptions
 } from './tenant-quota-helpers.js';
+import {
+  executeGoapWorkflow,
+  executeTaskWithConsensus,
+  collectExecutionResults,
+  renderExecutionSummary,
+  setupWorkflowEventHandlers
+} from './hive-mind-helpers.js';
+import {
+  checkCliBuildArtifact,
+  checkCliExecution,
+  checkCodexAuth,
+  renderHealthCheckResults,
+  type HealthCheck
+} from './doctor-helpers.js';
 
 function loadEnvFile(filePath: string): boolean {
   if (!existsSync(filePath)) {
@@ -3920,31 +3933,13 @@ hiveMindCmd
           throw new Error(`GOAP manifest ${manifest.id} does not define a usable goal.`);
         }
 
-        console.log(
-          chalk.blue(
-            `🧭 Executing GOAP profile ${manifest.metadata?.name ?? manifest.id} (goal: ${goalId})`
-          )
-        );
-
-        const executor = new GoapExecutor(system);
-        const result = await executor.execute(manifest, {
+        await executeGoapWorkflow(
+          system,
+          manifest,
           goalId,
-          prompt: originalPrompt,
-          dryRun: Boolean(options.goapDryRun)
-        });
-
-        console.log(
-          chalk.green(
-            `✅ GOAP workflow complete — ${result.actionsCompleted}/${result.totalActions} actions executed.`
-          )
+          originalPrompt,
+          Boolean(options.goapDryRun)
         );
-
-        if (result.artifacts.length) {
-          console.log(chalk.cyan('📦 Generated artifacts:'));
-          for (const artifact of result.artifacts) {
-            console.log(chalk.gray(`  • ${artifact}`));
-          }
-        }
       });
       return;
     }
@@ -4092,152 +4087,32 @@ hiveMindCmd
         console.log(chalk.blue(`Executing: "${prompt}"`));
 
         const startTime = Date.now();
-        let consensusResult: ConsensusExecutionResult = { performed: false };
-
-        const onStageStarted = (event: any) => {
-          console.log(chalk.gray(`    ▶ ${event.label} started (${event.taskType})`));
-        };
-        const onStageCompleted = (event: any) => {
-          const elapsed = Date.now() - startTime;
-          console.log(chalk.green(`    ✓ ${event.label} completed (+${elapsed}ms)`));
-        };
-        const onStageFailed = (event: any) => {
-          console.log(chalk.red(`    ✗ ${event.label} failed: ${event.error}`));
-        };
-
-        system.on('workflowStageStarted', onStageStarted);
-        system.on('workflowStageCompleted', onStageCompleted);
-        system.on('workflowStageFailed', onStageFailed);
+        const eventHandlers = setupWorkflowEventHandlers(system, startTime);
 
       try {
-        const outcome: any = await Promise.race([
-          system.executeTask(prompt),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Hive-mind execution timeout')), config.timeout))
-        ]);
-
-        const consensusNeeded = shouldRequireConsensus(originalPrompt, config.consensus);
-        if (consensusNeeded) {
-          consensusResult = await orchestrateConsensus(
-            system,
-            originalPrompt,
-            outcome,
-            config.consensus
-          );
-        }
-
-        const totalTime = Date.now() - startTime;
-        console.log(chalk.green(`\n🎉 Hive-mind execution completed in ${totalTime}ms`));
-        
-        // Collect system status information
-        const swarmStatus = system.getSwarmCoordinator().getStatus();
-        const meshStatus = system.getNeuralMesh().getStatus();
-        const agentRegistry = system.getAgentRegistry().getStatus();
-        
-        // Prepare comprehensive result data
-        const reactPlanArtifact = (outcome as any).artifacts?.reactPlan ?? null;
-        const totPlan = reactPlanArtifact?.tot ?? null;
-
-        const resultData = {
-          executionId: `exec-${Date.now()}`,
-          status: 'completed',
-          duration: totalTime,
+        const { outcome, consensusResult, totalTime } = await executeTaskWithConsensus(
+          system,
+          prompt,
           originalPrompt,
-          summary: (outcome as any).summary,
-          artifacts: (outcome as any).artifacts || {},
-          stages: (outcome as any).stages || [],
-          agentCount: agentRegistry.totalAgents,
-          taskCount: (outcome as any).stages?.length || 0,
-          meshStatus: {
-            nodeCount: meshStatus.nodeCount,
-            connectionCount: meshStatus.connectionCount
-          },
-          consensusStatus: {
-            performed: consensusResult.performed,
-            proposalId: consensusResult.proposalId,
-            accepted: consensusResult.accepted,
-            votes: consensusResult.votes,
-            timedOut: consensusResult.timedOut,
-            error: consensusResult.error
-          },
-          swarmStatus: {
-            algorithm: swarmStatus.algorithm,
-            isOptimizing: swarmStatus.isOptimizing
-          },
-          totPlan,
-          codexContext: codexContext ? {
-            enabled: true,
-            contextHash: codexContext.contextHash,
-            sizeBytes: codexContext.sizeBytes
-          } : { enabled: false }
-        };
+          config,
+          startTime,
+          shouldRequireConsensus,
+          orchestrateConsensus
+        );
 
-        // Output results based on format preference
-        if (options.yaml) {
-          console.log(chalk.blue('\n📋 Results (YAML format):'));
-          const yamlOutput = HiveMindYamlFormatter.formatExecutionResult(resultData);
-          console.log(yamlOutput);
-        } else {
-          // Display comprehensive results in human-readable format
-          console.log(chalk.blue('\n📊 Execution Summary'));
-          console.log(chalk.white('Summary:'), (outcome as any).summary);
-          
-          if ((outcome as any).artifacts?.code) {
-            console.log(chalk.blue('\n💻 Generated Code Artifacts:'));
-            console.log(chalk.gray((outcome as any).artifacts.code.substring(0, 500) + '...'));
-          }
-          
-          if (reactPlanArtifact?.tot) {
-            const plan = reactPlanArtifact.tot;
-            const bestMean = plan.monteCarlo.branchMeans?.[plan.bestBranch.id] ?? plan.bestBranch.score;
-            const bestPercent = typeof bestMean === 'number' ? (bestMean * 100).toFixed(1) : 'n/a';
-            console.log(chalk.blue('\n🌳 Tree-of-Thought Summary:'));
-            console.log(chalk.white(`  Best Branch: ${plan.bestBranch.label} (${bestPercent}% confidence)`));
-            console.log(chalk.white(`  Monte Carlo Samples: ${plan.monteCarlo.totalSamples}`));
-            console.log(chalk.gray('  Priority Backlog:'));
-            plan.priorityBacklog.slice(0, 5).forEach((item: string, idx: number) => {
-              console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-            });
-            console.log(chalk.gray('  Verification Suite:'));
-            plan.verificationSuite.slice(0, 5).forEach((item: string, idx: number) => {
-              console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-            });
-            if (Array.isArray(plan.knowledgeUpdates) && plan.knowledgeUpdates.length) {
-              console.log(chalk.gray('  Knowledge Updates:'));
-              plan.knowledgeUpdates.slice(0, 5).forEach((item: string, idx: number) => {
-                console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-              });
-            }
-          }
+        const resultData = collectExecutionResults(
+          outcome,
+          consensusResult,
+          totalTime,
+          originalPrompt,
+          system,
+          codexContext
+        );
 
-          if ((outcome as any).stages && Array.isArray((outcome as any).stages)) {
-            console.log(chalk.blue('\n🔄 Stage Results:'));
-            (outcome as any).stages.forEach((stage: any, idx: number) => {
-              console.log(chalk.cyan(`  ${idx + 1}. ${stage.stage} (${stage.taskId})`));
-              if (stage.result?.summary) {
-                console.log(chalk.gray(`     ${stage.result.summary}`));
-              }
-            });
-          }
-
-          // System metrics
-          console.log(chalk.blue('\n📈 System Metrics:'));
-          console.log(chalk.white(`  Agents: ${agentRegistry.totalAgents} active`));
-          console.log(chalk.white(`  Mesh: ${meshStatus.nodeCount} nodes, ${meshStatus.connectionCount} connections`));
-          console.log(chalk.white(`  Swarm: ${swarmStatus.algorithm}, optimizing=${swarmStatus.isOptimizing}`));
-          console.log(chalk.white(`  Execution time: ${totalTime}ms`));
-        }
-
-        if (!config.debug && !options.yaml) {
-          console.log(chalk.blue('\n💾 Results saved to session telemetry'));
-        } else if (config.debug && !options.yaml) {
-          console.log(chalk.blue('\n🔍 Full Debug Output:'));
-          console.log(JSON.stringify(outcome, null, 2));
-        }
+        await renderExecutionSummary(resultData, { yaml: options.yaml, debug: config.debug });
 
       } finally {
-        system.off('workflowStageStarted', onStageStarted);
-        system.off('workflowStageCompleted', onStageCompleted);
-        system.off('workflowStageFailed', onStageFailed);
+        eventHandlers.cleanup();
       }
     } finally {
       restoreLogging();
@@ -4547,51 +4422,27 @@ doctorCmd
       .map((item) => item.trim())
       .filter(Boolean);
 
-    const checks: Array<{
-      id: string;
-      ok: boolean;
-      details: string;
-      remediation?: string;
-      metadata?: Record<string, unknown>;
-    }> = [];
+    const checks: HealthCheck[] = [];
 
-    const distCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
-    const distExists = existsSync(distCliPath);
-    checks.push({
-      id: 'repo.cli_build_artifact',
-      ok: distExists,
-      details: distExists ? `Found ${distCliPath}` : `Missing ${distCliPath}`,
-      remediation: distExists ? undefined : 'Run `npm run build`.'
-    });
+    // Check CLI build artifact
+    const buildCheck = checkCliBuildArtifact();
+    checks.push(buildCheck);
 
-    if (distExists) {
-      const cliHelp = spawnSync('node', [distCliPath, '--help'], {
-        cwd: process.cwd(),
-        encoding: 'utf8'
-      });
-      checks.push({
-        id: 'repo.cli_exec',
-        ok: cliHelp.status === 0,
-        details: cliHelp.status === 0 ? 'CLI help command succeeded.' : (cliHelp.stderr?.trim() || 'CLI help command failed.'),
-        remediation: cliHelp.status === 0 ? undefined : 'Run `npm run build` and re-run `node dist/cli/index.js --help`.'
-      });
+    // Check CLI execution if build exists
+    if (buildCheck.ok) {
+      const distCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
+      const execCheck = checkCliExecution(distCliPath);
+      if (execCheck) {
+        checks.push(execCheck);
+      }
     }
 
+    // Check Codex authentication
     if (!options.skipCodexAuth) {
-      const loginStatus = spawnSync('codex', ['login', 'status'], {
-        cwd: process.cwd(),
-        encoding: 'utf8'
-      });
-      const stdout = loginStatus.stdout?.trim() || '';
-      const ok = loginStatus.status === 0 && !/not logged in/i.test(stdout);
-      checks.push({
-        id: 'codex.auth',
-        ok,
-        details: stdout || loginStatus.stderr?.trim() || 'No output',
-        remediation: ok ? undefined : 'Run `codex login` then re-run `codex login status`.'
-      });
+      checks.push(checkCodexAuth());
     }
 
+    // Check Codex MCP list
     let codexMcpNames = new Set<string>();
     const codexMcpList = spawnSync('codex', ['mcp', 'list', '--json'], {
       cwd: process.cwd(),
@@ -4623,6 +4474,7 @@ doctorCmd
       });
     }
 
+    // Check MCP profiles using service manager
     for (const profileName of profileNames) {
       const status = await serviceManager.status(profileName);
       const registration = serviceManager.codexRegistration(profileName);
@@ -4655,32 +4507,7 @@ doctorCmd
       });
     }
 
-    const passed = checks.filter((check) => check.ok).length;
-    const failed = checks.length - passed;
-
-    if (options.json) {
-      console.log(JSON.stringify({
-        ok: failed === 0,
-        summary: { passed, failed, total: checks.length },
-        checks
-      }, null, 2));
-    } else {
-      console.log(chalk.blue('🩺 Codex-Synaptic Doctor'));
-      console.log(chalk.gray(`  Passed: ${passed}`));
-      console.log(chalk.gray(`  Failed: ${failed}`));
-
-      checks.forEach((check) => {
-        const marker = check.ok ? chalk.green('✓') : chalk.red('✗');
-        console.log(`${marker} ${check.id}: ${check.details}`);
-        if (!check.ok && check.remediation) {
-          console.log(chalk.yellow(`  remediation: ${check.remediation}`));
-        }
-      });
-    }
-
-    if (options.strict && failed > 0) {
-      throw new Error(`Doctor found ${failed} failing check(s).`);
-    }
+    renderHealthCheckResults(checks, { json: options.json, strict: options.strict });
   }));
 
 const memoryCmd = decorateCommandHelp(
