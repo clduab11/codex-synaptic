@@ -10,6 +10,43 @@ import type {
 } from '../types/codex-context.js';
 
 /**
+ * Execution result data structure
+ */
+export interface ExecutionResultData {
+  executionId: string;
+  status: string;
+  duration: number;
+  originalPrompt: string;
+  summary?: string;
+  artifacts: Record<string, any>;
+  stages: any[];
+  agentCount: number;
+  taskCount: number;
+  meshStatus: {
+    nodeCount: number;
+    connectionCount: number;
+  };
+  consensusStatus: {
+    performed: boolean;
+    proposalId?: string;
+    accepted?: boolean;
+    votes?: any;
+    timedOut?: boolean;
+    error?: string;
+  };
+  swarmStatus: {
+    algorithm: string;
+    isOptimizing: boolean;
+  };
+  totPlan?: any;
+  codexContext: {
+    enabled: boolean;
+    contextHash?: string;
+    sizeBytes?: number;
+  };
+}
+
+/**
  * Execute GOAP workflow
  */
 export async function executeGoapWorkflow(
@@ -49,6 +86,14 @@ export async function executeGoapWorkflow(
 
 /**
  * Execute task with timeout and consensus
+ * @param system - The Codex Synaptic system instance
+ * @param prompt - The task prompt to execute
+ * @param originalPrompt - The original user prompt before enrichment
+ * @param config - The hive-mind configuration
+ * @param startTime - The execution start timestamp
+ * @param shouldRequireConsensus - Function to check if consensus is needed
+ * @param orchestrateConsensus - Function to orchestrate consensus voting
+ * @returns Object containing outcome, consensusResult, and totalTime
  */
 export async function executeTaskWithConsensus(
   system: CodexSynapticSystem,
@@ -90,6 +135,13 @@ export async function executeTaskWithConsensus(
 
 /**
  * Collect and format execution results
+ * @param outcome - The task execution outcome
+ * @param consensusResult - The consensus voting result
+ * @param totalTime - Total execution time in milliseconds
+ * @param originalPrompt - The original user prompt
+ * @param system - The Codex Synaptic system instance
+ * @param codexContext - Optional Codex context if enabled
+ * @returns Structured execution result data
  */
 export function collectExecutionResults(
   outcome: any,
@@ -98,7 +150,7 @@ export function collectExecutionResults(
   originalPrompt: string,
   system: CodexSynapticSystem,
   codexContext?: CodexContext
-): any {
+): ExecutionResultData {
   const swarmStatus = system.getSwarmCoordinator().getStatus();
   const meshStatus = system.getNeuralMesh().getStatus();
   const agentRegistry = system.getAgentRegistry().getStatus();
@@ -143,9 +195,11 @@ export function collectExecutionResults(
 
 /**
  * Render execution summary
+ * @param resultData - Structured execution result data
+ * @param options - Rendering options (yaml and debug flags)
  */
 export async function renderExecutionSummary(
-  resultData: any,
+  resultData: ExecutionResultData,
   options: { yaml?: boolean; debug?: boolean }
 ): Promise<void> {
   console.log(chalk.green(`\n🎉 Hive-mind execution completed in ${resultData.duration}ms`));

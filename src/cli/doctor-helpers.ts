@@ -80,32 +80,6 @@ export function checkCodexAuth(): HealthCheck {
 }
 
 /**
- * Check MCP profile health
- * Note: This function is not used in the refactored code as the doctor command
- * handles MCP checks directly using serviceManager from env/service-manager.ts
- */
-export async function checkMcpProfile(
-  profileName: string
-): Promise<HealthCheck> {
-  try {
-    // This function is kept for potential future use but not currently called
-    return {
-      id: `mcp.${profileName}`,
-      ok: false,
-      details: `Profile checking not implemented in this helper`,
-      remediation: `Use serviceManager.status(${profileName}) directly`
-    };
-  } catch (error) {
-    return {
-      id: `mcp.${profileName}`,
-      ok: false,
-      details: `Error checking profile ${profileName}: ${error instanceof Error ? error.message : String(error)}`,
-      remediation: `Verify profile ${profileName} exists and is configured correctly.`
-    };
-  }
-}
-
-/**
  * Render health check results
  */
 export function renderHealthCheckResults(
