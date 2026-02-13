@@ -31,7 +31,7 @@ import type {
   CodexPromptEnvelope,
   ContextLogEntry
 } from '../types/codex-context.js';
-import { RetryManager } from '../core/errors.js';
+import { RetryManager, DaemonConflictError } from '../core/errors.js';
 import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 import { parseFileContent, parseJsonInput, loadFileThroughFeedforward } from './feedforward.js';
 import { InstructionParser } from '../instructions/index.js';
@@ -599,10 +599,15 @@ async function useSystem(description: string, fn: (system: CodexSynapticSystem) 
   if (!alreadyRunning && process.env.CODEX_ALLOW_LOCAL_WITH_DAEMON !== '1') {
     const background = getBackgroundStatus();
     if (background.running) {
-      throw new Error(
+      throw new DaemonConflictError(
         `Background daemon already running (pid ${background.pid}). ` +
         'To avoid split-brain state, use `codex-synaptic background attach` for daemon-backed monitoring, ' +
-        '`codex-synaptic background stop` before local commands, or set CODEX_ALLOW_LOCAL_WITH_DAEMON=1 to override.'
+        '`codex-synaptic background stop` before local commands, or set CODEX_ALLOW_LOCAL_WITH_DAEMON=1 to override.',
+        {
+          daemonPid: background.pid,
+          alreadyRunning,
+          allowLocalWithDaemon: process.env.CODEX_ALLOW_LOCAL_WITH_DAEMON
+        }
       );
     }
   }
