@@ -38,7 +38,8 @@ import { InstructionParser } from '../instructions/index.js';
 import { RoutingPolicyService, type RoutingRequest } from '../router/index.js';
 import { readFileSync, existsSync } from 'fs';
 import { join, resolve, relative } from 'path';
-import { spawnSync } from 'child_process';
+import { spawnSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import { ToolOptimizer, type ToolCandidate } from '../tools/optimizer/index.js';
 import { type ToolUsageRecord, type ReasoningRunRecord } from '../memory/memory-system.js';
 import type { ReasoningPlanOptions, ReasoningCompletionOptions, ReasoningCheckpointInput } from '../reasoning/planner.js';
@@ -4435,6 +4436,34 @@ ${name}`));
     });
   });
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Execute codex CLI command with timeout and error handling
+ */
+async function execCodexCommand(args: string[], timeoutMs = 10000): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  try {
+    const { stdout, stderr } = await execFileAsync('codex', args, {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: timeoutMs
+    });
+    return { stdout, stderr, exitCode: 0 };
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      throw new Error('codex command not found. Ensure Codex CLI is installed and in PATH.');
+    }
+    if (error.killed && error.signal === 'SIGTERM') {
+      throw new Error(`codex command timed out after ${timeoutMs}ms`);
+    }
+    return {
+      stdout: error.stdout || '',
+      stderr: error.stderr || '',
+      exitCode: error.code || 1
+    };
+  }
+}
+
 envCmd
   .command('codex-register')
   .description('Register MCP HTTP profiles in Codex CLI MCP config')
@@ -4448,21 +4477,15 @@ envCmd
       }
 
       if (options.replace) {
-        const remove = spawnSync('codex', ['mcp', 'remove', registration.codexName], {
-          cwd: process.cwd(),
-          encoding: 'utf8'
-        });
-        if (remove.status === 0) {
+        const remove = await execCodexCommand(['mcp', 'remove', registration.codexName]);
+        if (remove.exitCode === 0) {
           console.log(chalk.gray(`Removed existing Codex MCP entry: ${registration.codexName}`));
         }
       }
 
-      const add = spawnSync('codex', ['mcp', 'add', registration.codexName, '--url', registration.url], {
-        cwd: process.cwd(),
-        encoding: 'utf8'
-      });
+      const add = await execCodexCommand(['mcp', 'add', registration.codexName, '--url', registration.url]);
 
-      if (add.status !== 0) {
+      if (add.exitCode !== 0) {
         const stderr = add.stderr?.trim();
         if (stderr?.includes('already exists')) {
           console.log(chalk.yellow(`⚠️  Codex MCP entry already exists: ${registration.codexName}`));
