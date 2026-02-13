@@ -1,37 +1,99 @@
-# Codex macOS Workflows (Local, Worktree, Cloud)
+# Codex macOS Workflows (Local, Worktree, Cloud + MCP)
 
-Last reviewed: 2026-02-10
-Audience: contributors using macOS (Apple Silicon) with Codex app/CLI and Codex-Synaptic.
+Last reviewed: 2026-02-13  
+Audience: contributors using Codex app/CLI on macOS (Apple Silicon) with Codex-Synaptic.
 
-## Prerequisites
+## Source Of Truth
+
+This guide is aligned with:
+
+- `codex --help`
+- `codex mcp --help`
+- `codex mcp add --help`
+- OpenAI Codex docs:
+  - `https://developers.openai.com/codex/quickstart/`
+  - `https://developers.openai.com/codex/app/`
+  - `https://developers.openai.com/codex/app/features/`
+  - `https://developers.openai.com/codex/cli/features/`
+  - `https://developers.openai.com/codex/security/`
+
+## Bootstrap And Doctor (Run First)
 
 ```bash
-# Codex CLI
-codex --version
-
-# Codex-Synaptic project deps
+cd /absolute/path/to/codex-synaptic
 npm install
 npm run build
+
+# verify codex + mcp command surfaces
+codex --help
+codex mcp --help
+codex mcp add --help
+
+# one-shot readiness checks (auth + mcp + repo cli)
+node dist/cli/index.js doctor
+
+# enforce failure in CI/automation
+node dist/cli/index.js doctor --strict --json
 ```
 
-Expected output indicators:
+## Runtime Model (Deterministic)
 
-```text
-codex-cli <version>
-.../dist/cli/index.js generated
+Use one orchestrator authority at a time:
+
+- Detached authority: `background start` + attach/monitor/TUI against daemon.
+- In-process authority: `system start` + `system monitor` in current shell.
+
+If a daemon is already running, local `system start` is blocked to prevent split-brain (unless explicitly overridden with `CODEX_ALLOW_LOCAL_WITH_DAEMON=1`).
+
+### Daemon-Centric Operations
+
+```bash
+node dist/cli/index.js background start
+node dist/cli/index.js background status
+node dist/cli/index.js background attach --watch --interval 2000
+node dist/cli/index.js background logs --tail 100
+node dist/cli/index.js background restart
+node dist/cli/index.js background stop --timeout 10000
 ```
 
-## Local Mode (fastest inner loop)
+### Local Session Operations
 
-Use this when editing directly in your current repository checkout.
+```bash
+node dist/cli/index.js system start
+node dist/cli/index.js system status
+node dist/cli/index.js system monitor --interval 2000
+node dist/cli/index.js system stop
+```
+
+### Terminal Dashboard (TUI)
+
+```bash
+# attach to daemon (preferred when detached runtime is active)
+node dist/cli/index.js tui --attach-daemon --interval 1000
+
+# force local dashboard
+node dist/cli/index.js tui --local --interval 1000
+```
+
+## Codex App Modes
+
+OpenAI Codex app modes:
+
+- `Local`: edits current project directory.
+- `Worktree`: isolates changes in a dedicated git worktree.
+- `Cloud`: remote execution in configured cloud environment.
+
+Reference: `https://developers.openai.com/codex/app/features/`.
+
+## Local Mode (Fastest Inner Loop)
 
 ```bash
 codex -C /absolute/path/to/codex-synaptic
-# or non-interactive:
+# non-interactive:
 codex exec -C /absolute/path/to/codex-synaptic "Audit consensus gating and suggest minimal fixes"
 ```
 
-Recommended project checks:
+Recommended checks:
 
 ```bash
 npm run lint
@@ -39,42 +101,20 @@ npm test
 node dist/cli/index.js system status
 ```
 
-Expected output indicators:
-
-```text
-PASS/FAIL from eslint and vitest
-System not started. Run `codex-synaptic system start` first.
-or a full status snapshot when already running.
-```
-
-## Worktree Mode (parallel-safe development)
-
-Use this for isolated tracks and reviewable diffs.
+## Worktree Mode (Parallel-Safe)
 
 ```bash
-# create feature worktree
 git worktree add ../codex-synaptic-macos-2026 -b codex/macos-2026-readiness
-
-# open codex in new worktree
 codex -C ../codex-synaptic-macos-2026
 ```
 
-Expected output indicators:
-
-```text
-Preparing worktree (new branch 'codex/macos-2026-readiness')
-HEAD is now at ...
-```
-
-Cleanup when merged:
+Cleanup:
 
 ```bash
 git worktree remove ../codex-synaptic-macos-2026
 ```
 
-## Cloud Mode (remote execution)
-
-Use this when tasks should run remotely and apply back locally.
+## Cloud Mode (Remote Execution)
 
 ```bash
 codex cloud list --json
@@ -84,66 +124,57 @@ codex cloud diff <task-id>
 codex cloud apply <task-id>
 ```
 
-Expected output indicators:
-
-```text
-TASK_ID ...
-status: queued|running|succeeded|failed
-Applied diff for task ...
-```
-
-## Skills and Automations: Safe Usage Rules
-
-1. Prefer worktree mode for broad/refactor tasks.
-2. Keep prompts single-purpose; avoid packing unrelated asks into one run.
-3. Require consensus for high-risk flows:
+## MCP Setup (Filesystem + Playwright + Desktop Commander)
 
 ```bash
-node dist/cli/index.js reasoning plan "Production-impacting release update" --require-consensus
+# inspect profiles and codex registration targets
+node dist/cli/index.js env plan mcp-filesystem mcp-playwright mcp-desktop-commander
+
+# safest default: filesystem read-only
+node dist/cli/index.js env up mcp-filesystem mcp-playwright mcp-desktop-commander
+
+# optional controlled-write filesystem mode (explicit opt-in required)
+node dist/cli/index.js env up mcp-filesystem --filesystem-mode controlled-write --allow-filesystem-write
+
+# health/status diagnostics
+node dist/cli/index.js env status mcp-filesystem mcp-playwright mcp-desktop-commander
+
+# register HTTP MCP servers with Codex CLI config
+node dist/cli/index.js env codex-register mcp-filesystem mcp-playwright mcp-desktop-commander --replace
+codex mcp list --json
 ```
 
-4. Validate automation outputs before apply/merge.
-5. For recurring automations, include explicit gating in prompt text (for example: "skip if lint fails", "do not mutate release branches").
+Expected indicators:
 
-## MCP Integration Setup (docs/tooling)
+- `env status` returns `running: yes` and `healthy: yes` for active profiles.
+- `doctor` reports MCP profile checks passing and registration present.
 
-Codex-Synaptic exposes MCP service profiles via `env` commands.
+## Sandbox And Approval Recommendations
+
+From Codex security guidance (`https://developers.openai.com/codex/security/`):
+
+1. Default for trusted repo work: `workspace-write` + `on-request` approvals (Codex `--full-auto` behavior).
+2. For unfamiliar/untrusted code: start in `read-only` mode.
+3. Use danger-full-access only in explicitly isolated environments.
+
+Practical examples:
 
 ```bash
-# list profiles
-node dist/cli/index.js env list
-
-# bring up MCP services
-node dist/cli/index.js env up mcp-filesystem
-node dist/cli/index.js env up mcp-playwright
-
-# check health
-node dist/cli/index.js env status mcp-filesystem mcp-playwright
-
-# inspect Codex CLI MCP registry
-codex mcp list
-```
-
-Expected output indicators:
-
-```text
-mcp-filesystem ... running/healthy
-mcp-playwright ... running/healthy
-<registered MCP servers from codex mcp list>
+codex --sandbox workspace-write --ask-for-approval on-request
+codex --sandbox read-only --ask-for-approval on-request
 ```
 
 ## Recommended Daily Loop
 
 ```bash
-# 1) refresh build
+# 1) refresh build + readiness
 npm run build
+node dist/cli/index.js doctor --strict
 
-# 2) run focused work (local or worktree)
+# 2) run focused work
 codex exec "Implement one bounded fix with tests"
 
-# 3) verify
+# 3) verify before merge
 npm run lint && npm test
-
-# 4) release preflight before merge/release
 npm run release:preflight
 ```

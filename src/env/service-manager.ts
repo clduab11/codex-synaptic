@@ -1,11 +1,17 @@
 import { execSync } from 'child_process';
+import { createConnection } from 'net';
 import { setTimeout as sleep } from 'timers/promises';
 import { Logger } from '../core/logger.js';
+
+export type FilesystemAccessMode = 'read-only' | 'controlled-write';
 
 export interface ServiceProfile {
   description: string;
   composeFile: string;
   services?: string[];
+  port?: number;
+  requiredEnv?: string[];
+  codexName?: string;
   healthcheck?: {
     url: string;
     timeoutMs?: number;
@@ -16,7 +22,16 @@ export interface ServiceProfile {
 export interface ServiceStatus {
   name: string;
   running: boolean;
+  healthy: boolean | null;
   raw: string;
+  diagnostics: string[];
+  checkedAt: string;
+}
+
+export interface EnsureServiceOptions {
+  waitForHealth?: boolean;
+  filesystemMode?: FilesystemAccessMode;
+  allowFilesystemWrite?: boolean;
 }
 
 const PROFILES: Record<string, ServiceProfile> = {
@@ -24,6 +39,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     description: 'Prometheus/Grafana stack with exporters',
     composeFile: 'docker/observability/docker-compose.observability.yml',
     services: ['prometheus', 'grafana', 'loki', 'promtail', 'node_exporter', 'cadvisor'],
+    port: 9090,
     healthcheck: {
       url: 'http://localhost:9090/-/ready',
       timeoutMs: 60_000,
@@ -34,6 +50,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     description: 'Qdrant vector database',
     composeFile: 'docker/vector/docker-compose.qdrant.yml',
     services: ['qdrant'],
+    port: 6333,
     healthcheck: {
       url: 'http://localhost:6333/healthz',
       timeoutMs: 30_000,
@@ -44,6 +61,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     description: 'Redis (Redis Stack) instance',
     composeFile: 'docker/vector/docker-compose.redis.yml',
     services: ['redis'],
+    port: 6379,
     healthcheck: {
       url: 'http://localhost:8001',
       timeoutMs: 20_000,
@@ -53,32 +71,55 @@ const PROFILES: Record<string, ServiceProfile> = {
   'mcp-github': {
     description: 'GitHub MCP server',
     composeFile: 'docker/mcp/docker-compose.github.yml',
-    services: ['mcp-github']
+    services: ['mcp-github'],
+    port: 7010,
+    requiredEnv: ['GITHUB_TOKEN'],
+    codexName: 'github'
   },
   'mcp-context7': {
     description: 'Context7 browser MCP server',
     composeFile: 'docker/mcp/docker-compose.context7.yml',
-    services: ['mcp-context7']
+    services: ['mcp-context7'],
+    port: 7020,
+    requiredEnv: ['CONTEXT7_API_KEY'],
+    codexName: 'context7'
   },
   'mcp-playwright': {
     description: 'Playwright automation MCP server',
     composeFile: 'docker/mcp/docker-compose.playwright.yml',
-    services: ['mcp-playwright']
+    services: ['mcp-playwright'],
+    port: 7030,
+    codexName: 'playwright-local'
   },
   'mcp-filesystem': {
-    description: 'Local filesystem MCP server',
+    description: 'Local filesystem MCP server (read-only by default)',
     composeFile: 'docker/mcp/docker-compose.filesystem.yml',
-    services: ['mcp-filesystem']
+    services: ['mcp-filesystem'],
+    port: 7040,
+    codexName: 'filesystem-local'
+  },
+  'mcp-desktop-commander': {
+    description: 'Desktop Commander MCP server for desktop/tooling automation',
+    composeFile: 'docker/mcp/docker-compose.desktop-commander.yml',
+    services: ['mcp-desktop-commander'],
+    port: 7070,
+    codexName: 'desktop-commander'
   },
   'mcp-tavily': {
     description: 'Tavily search MCP server',
     composeFile: 'docker/mcp/docker-compose.tavily.yml',
-    services: ['mcp-tavily']
+    services: ['mcp-tavily'],
+    port: 7050,
+    requiredEnv: ['TAVILY_API_KEY'],
+    codexName: 'tavily'
   },
   'mcp-firecrawl': {
     description: 'Firecrawl MCP server',
     composeFile: 'docker/mcp/docker-compose.firecrawl.yml',
-    services: ['mcp-firecrawl']
+    services: ['mcp-firecrawl'],
+    port: 7060,
+    requiredEnv: ['FIRECRAWL_API_KEY'],
+    codexName: 'firecrawl'
   }
 };
 
@@ -110,14 +151,43 @@ class ServiceManager {
     return profile;
   }
 
-  async ensureService(name: string, options?: { waitForHealth?: boolean }): Promise<void> {
+  private resolveFilesystemMode(options?: EnsureServiceOptions): FilesystemAccessMode {
+    const envMode = process.env.CODEX_MCP_FILESYSTEM_MODE;
+    const requested = options?.filesystemMode || (envMode as FilesystemAccessMode | undefined) || 'read-only';
+    if (requested !== 'read-only' && requested !== 'controlled-write') {
+      throw new Error('Filesystem mode must be read-only or controlled-write.');
+    }
+    return requested;
+  }
+
+  private resolveExecEnv(name: string, options?: EnsureServiceOptions): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+
+    if (name === 'mcp-filesystem') {
+      const mode = this.resolveFilesystemMode(options);
+      const allowWrite = options?.allowFilesystemWrite === true || process.env.CODEX_MCP_FILESYSTEM_ALLOW_WRITE === '1';
+      if (mode === 'controlled-write' && !allowWrite) {
+        throw new Error(
+          'controlled-write filesystem mode requires explicit approval. ' +
+          'Pass --allow-filesystem-write or set CODEX_MCP_FILESYSTEM_ALLOW_WRITE=1.'
+        );
+      }
+      env.MCP_FILESYSTEM_MOUNT_MODE = mode === 'controlled-write' ? 'rw' : 'ro';
+    }
+
+    return env;
+  }
+
+  async ensureService(name: string, options?: EnsureServiceOptions): Promise<void> {
     const profile = this.getProfile(name);
     const cmd = composeCommand(profile, 'up -d', profile.services);
-    this.logger.info('env', `Starting service ${name}`, { command: cmd });
-    execSync(cmd, { stdio: 'inherit' });
+    const env = this.resolveExecEnv(name, options);
 
-    if (options?.waitForHealth !== false && profile.healthcheck) {
-      await this.waitForHealth(profile.healthcheck);
+    this.logger.info('env', `Starting service ${name}`, { command: cmd });
+    execSync(cmd, { stdio: 'inherit', env });
+
+    if (options?.waitForHealth !== false) {
+      await this.waitForServiceHealth(name, profile);
     }
   }
 
@@ -128,15 +198,55 @@ class ServiceManager {
     execSync(cmd, { stdio: 'inherit' });
   }
 
-  status(name: string): ServiceStatus {
+  async status(name: string): Promise<ServiceStatus> {
     const profile = this.getProfile(name);
     const cmd = composeCommand(profile, 'ps');
+    const diagnostics: string[] = [];
+
+    for (const required of profile.requiredEnv ?? []) {
+      if (!process.env[required]) {
+        diagnostics.push(`Missing required env var: ${required}`);
+      }
+    }
+
     try {
       const output = execSync(cmd, { stdio: 'pipe' }).toString();
-      const running = /Up/.test(output);
-      return { name, running, raw: output };
+      const running = /\bUp\b/.test(output);
+
+      if (!running) {
+        return {
+          name,
+          running,
+          healthy: false,
+          raw: output,
+          diagnostics,
+          checkedAt: new Date().toISOString()
+        };
+      }
+
+      const healthy = await this.probeService(profile);
+      if (!healthy) {
+        diagnostics.push('Service process is running but health probe failed.');
+      }
+
+      return {
+        name,
+        running,
+        healthy,
+        raw: output,
+        diagnostics,
+        checkedAt: new Date().toISOString()
+      };
     } catch (error) {
-      return { name, running: false, raw: (error as Error).message };
+      diagnostics.push(`docker compose status failed: ${(error as Error).message}`);
+      return {
+        name,
+        running: false,
+        healthy: false,
+        raw: (error as Error).message,
+        diagnostics,
+        checkedAt: new Date().toISOString()
+      };
     }
   }
 
@@ -147,23 +257,97 @@ class ServiceManager {
     return names.map((name) => ({ name, profile: this.getProfile(name) }));
   }
 
-  private async waitForHealth(healthcheck: Required<ServiceProfile>['healthcheck']): Promise<void> {
-    const timeout = healthcheck.timeoutMs ?? 60_000;
-    const interval = healthcheck.intervalMs ?? 2_000;
+  codexRegistration(name: string): { codexName: string; url: string } | null {
+    const profile = this.getProfile(name);
+    if (!profile.codexName || !profile.port) {
+      return null;
+    }
+
+    return {
+      codexName: profile.codexName,
+      url: `http://localhost:${profile.port}`
+    };
+  }
+
+  private async probeService(profile: ServiceProfile): Promise<boolean | null> {
+    if (profile.healthcheck?.url) {
+      return this.probeHttp(profile.healthcheck.url, 2000);
+    }
+
+    if (profile.port) {
+      return this.probeTcp('127.0.0.1', profile.port, 1500);
+    }
+
+    return null;
+  }
+
+  private async waitForServiceHealth(name: string, profile: ServiceProfile): Promise<void> {
+    const timeoutMs = profile.healthcheck?.timeoutMs ?? 30_000;
+    const intervalMs = profile.healthcheck?.intervalMs ?? 2000;
     const start = Date.now();
 
-    while (Date.now() - start < timeout) {
-      try {
-        const response = await fetch(healthcheck.url, { method: 'GET' });
-        if (response.ok) {
+    while (Date.now() - start < timeoutMs) {
+      const healthy = await this.probeService(profile);
+      if (healthy === null || healthy === true) {
+        return;
+      }
+
+      this.logger.debug('env', 'Health probe pending', {
+        profile: name,
+        elapsedMs: Date.now() - start
+      });
+      await sleep(intervalMs);
+    }
+
+    throw new Error(`Service healthcheck timed out for ${name}`);
+  }
+
+  private async probeHttp(url: string, timeoutMs: number): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+
+    try {
+      const response = await fetch(url, { method: 'GET', signal: controller.signal });
+      return response.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async probeTcp(host: string, port: number, timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const socket = createConnection({ host, port });
+      let settled = false;
+
+      const finish = (result: boolean) => {
+        if (settled) {
           return;
         }
-      } catch (error) {
-        this.logger.debug('env', 'Healthcheck probe failed', { url: healthcheck.url, error: (error as Error).message });
+        settled = true;
+        socket.destroy();
+        resolve(result);
+      };
+
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      if (typeof timer.unref === 'function') {
+        timer.unref();
       }
-      await sleep(interval);
-    }
-    throw new Error(`Service healthcheck timed out (${healthcheck.url})`);
+
+      socket.once('connect', () => {
+        clearTimeout(timer);
+        finish(true);
+      });
+
+      socket.once('error', () => {
+        clearTimeout(timer);
+        finish(false);
+      });
+    });
   }
 }
 

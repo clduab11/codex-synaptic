@@ -1,171 +1,148 @@
 # codex-synaptic
 
-Distributed agent orchestration for coding workflows: mesh + swarm + consensus + Codex passthrough.
+[![Stars](https://img.shields.io/github/stars/clduab11/codex-synaptic?style=for-the-badge&logo=github)](https://github.com/clduab11/codex-synaptic/stargazers)
+[![Forks](https://img.shields.io/github/forks/clduab11/codex-synaptic?style=for-the-badge&logo=github)](https://github.com/clduab11/codex-synaptic/network/members)
+[![Open Issues](https://img.shields.io/github/issues/clduab11/codex-synaptic?style=for-the-badge&logo=github)](https://github.com/clduab11/codex-synaptic/issues)
+[![Open PRs](https://img.shields.io/github/issues-pr/clduab11/codex-synaptic?style=for-the-badge&logo=github)](https://github.com/clduab11/codex-synaptic/pulls)
+[![Commit Activity](https://img.shields.io/github/commit-activity/m/clduab11/codex-synaptic?style=for-the-badge&logo=git)](https://github.com/clduab11/codex-synaptic/commits/main)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0.en.html)
+[![Node](https://img.shields.io/badge/Node-20%2B-339933?style=for-the-badge&logo=node.js)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
 
-## Current Status (2026-02-11)
+Operator-grade orchestration for Codex workflows: daemon-backed runtime control, live terminal dashboards, and MCP-driven external bridges.
 
-- Release track: **Codex macOS 2026 readiness** (from beta-hardening toward internal release).
-- Package version: **`1.0.0`** (source of truth is `package.json`).
-- Readiness baseline before this rekick: ~60% (consensus quorum reliability, autoscaler scale-down behavior, and packaging hygiene were blocking).
-- OpenAI ecosystem alignment target:
-  - Codex app for macOS launched **2026-02-02**.
-  - GPT-5.3-Codex launched **2026-02-05**.
-  - `codex-mini-latest` removed from API access on **2026-01-16**.
+## Why This Release
 
-## What Changed in This Rekick
+Codex for macOS is now the default frontend path for this repo's operator workflow. This release tightens the "app + CLI + MCP" loop so teams can run Codex-Synaptic predictably in Local, Worktree, and Cloud-aligned flows.
 
-- Added a formal roadmap + gap report: [`docs/roadmaps/codex-macos-2026-rekick.md`](docs/roadmaps/codex-macos-2026-rekick.md)
-- Modernized model/runtime defaults to Codex-family-first routing for coding workflows.
-- Added macOS workflow documentation for Local / Worktree / Cloud operation modes.
-- Hardened consensus quorum behavior and autoscaler scale-down fallback handling.
-- Added release preflight command for packaging/remote hygiene.
-- Archived 2025 roadmap/planning docs explicitly to remove active-roadmap ambiguity.
+### Verified alignment with official OpenAI docs (February 2026)
 
-## Quick Start
+- Codex app setup is macOS (Apple Silicon) and recommended for mac users.
+- App feature model includes Local / Worktree / Cloud modes, built-in Git, integrated terminal, automations, and MCP support.
+- Codex CLI supports interactive mode, `resume`, `cloud`, `exec`, and `mcp` operations.
+- Security defaults recommend workspace-write + on-request approvals for version-controlled repos.
+
+Sources:
+- [Codex Quickstart](https://developers.openai.com/codex/quickstart/)
+- [Codex App](https://developers.openai.com/codex/app/)
+- [Codex App Features](https://developers.openai.com/codex/app/features/)
+- [Codex CLI Features](https://developers.openai.com/codex/cli/features/)
+- [Codex Security](https://developers.openai.com/codex/security/)
+
+## Star Chart
+
+[![Star History Chart](https://api.star-history.com/svg?repos=clduab11/codex-synaptic&type=Date)](https://star-history.com/#clduab11/codex-synaptic&Date)
+
+## System Flow
+
+```mermaid
+flowchart LR
+  A["Codex App (macOS)"] -->|"Local / Worktree / Cloud"| B["codex-synaptic CLI"]
+  B --> C["Runtime Authority Guard"]
+  C --> D["Detached Daemon"]
+  C --> E["Local Session"]
+  D --> F["Dashboard / TUI Attach"]
+  E --> F
+  B --> G["MCP Profiles"]
+  G --> G1["mcp-filesystem"]
+  G --> G2["mcp-playwright"]
+  G --> G3["mcp-desktop-commander"]
+  B --> H["Bridge Layer"]
+  H --> I["External Swarm / MCP Endpoints"]
+```
+
+## Operator Command Deck
 
 ```bash
-# install + build
+# build
 npm install
 npm run build
 
-# verify CLI health from a cold shell
-npm run cli -- system status
+# readiness
+node dist/cli/index.js doctor
+node dist/cli/index.js doctor --strict
 
-# run a one-shot startup smoke
-npm run cli -- system start
-
-# run release gates
-npm run lint
-npm test
-npm run release:preflight
-```
-
-## Model + Runtime Guidance (Codex-Focused)
-
-Use **Responses API** for agentic coding flows.
-
-| Purpose | Recommended model | Fallback | Deprecation-safe fallback |
-| --- | --- | --- | --- |
-| Primary coding orchestration | `gpt-5.3-codex` | `gpt-5-codex` | `gpt-5` |
-| Validation / review | `gpt-5-codex` | `gpt-5-mini` | `gpt-5-nano` |
-| High-complexity governance paths | `gpt-5-pro` | `gpt-5-codex` | `gpt-5` |
-
-Notes:
-
-- Codex-focused models should not use `codex-mini-latest` (removed 2026-01-16).
-- Codex-family models are treated as Responses-first in this repo.
-- Chat Completions remains supported in the ecosystem, but this project prefers Responses for reasoning/tool flows.
-
-## Codex macOS Workflows
-
-Full guide: [`docs/guides/codex-macos-workflows.md`](docs/guides/codex-macos-workflows.md)
-
-### Local mode
-
-```bash
-codex -C /absolute/path/to/codex-synaptic
-```
-
-### Worktree mode
-
-```bash
-git worktree add ../codex-synaptic-macos-2026 -b codex/macos-2026-readiness
-codex -C ../codex-synaptic-macos-2026
-```
-
-### Cloud mode
-
-```bash
-codex cloud list --json
-codex cloud exec --env <env-id> "Run codex-synaptic readiness fixes"
-codex cloud status <task-id>
-codex cloud apply <task-id>
-```
-
-### Skills, automations, and MCP
-
-- Skills/automation safety guidance and operating rules are documented in [`docs/guides/codex-macos-workflows.md`](docs/guides/codex-macos-workflows.md).
-- MCP catalog and setup commands are documented in [`docs/mcp/README.md`](docs/mcp/README.md).
-
-## Stability Blockers: Status + Mitigation
-
-| Blocker | Status | Mitigation in repo |
-| --- | --- | --- |
-| Consensus quorum gating reliability | Mitigated | Quorum requirements clamp to feasible voter population; finalization now uses eligible voters, not total agents. |
-| Autoscaler scale-down when daemon inactive | Mitigated (guarded fallback) | Deferred reduction telemetry + non-daemon informative logging instead of opaque failure warnings. |
-| Packaging/release hygiene + remote alignment | Mitigated | `npm run release:preflight` checks directory name, origin remote, working tree cleanliness (excluding configurable ephemeral runtime artifacts), and `npm pack --dry-run`. |
-
-### Release Preflight Ephemeral Allowlist
-
-`npm run release:preflight` ignores a default set of local runtime SQLite artifacts and supports additional ephemeral paths via env/config:
-
-- Environment: `CODEX_RELEASE_PREFLIGHT_EPHEMERAL_ALLOWLIST` as a comma/newline/semicolon-delimited list.
-- Config: `releasePreflight.ephemeralAllowlist` array in `config/system.json` (or alternate config path via `CODEX_RELEASE_PREFLIGHT_CONFIG`).
-
-Example:
-
-```bash
-CODEX_RELEASE_PREFLIGHT_EPHEMERAL_ALLOWLIST=".codex-synaptic/runtime.pid,tmp/runtime.lock" npm run release:preflight
-```
-
-## Release Readiness Checklist
-
-A release is considered internally ready only when all gates pass:
-
-- [ ] `npm run lint` exits `0`.
-- [ ] `npm test` exits `0`.
-- [ ] Representative CLI smoke flow succeeds (`npm run cli -- system start`, `npm run cli -- reasoning plan "Stabilize codex-synaptic release readiness" --require-consensus --json`, `npm run cli -- openai usage --json`, `npm run cli -- hive-mind spawn "Verify macOS readiness smoke flow" --codex --dry-run`).
-- [ ] `npm run release:preflight` exits `0`.
-- [ ] README, roadmap, and changelog dates are current and consistent with package version.
-- [ ] No active roadmap section references 2025 phases without an explicit archival note.
-
-## Roadmap
-
-### 2026 active roadmap
-
-1. Stabilize consensus/autoscaler/release hygiene paths for internal release.
-2. Expand Codex macOS worktree/cloud contributor workflows and verification automation.
-3. Harden MCP integration profiles and observability signals for daily operations.
-
-### 2025 roadmap archival note
-
-The previous 2025 phase plans are retained as historical artifacts and now explicitly marked archived:
-
-- [`docs/integration/OPENAI_PLATFORM_2025_INTEGRATION.md`](docs/integration/OPENAI_PLATFORM_2025_INTEGRATION.md)
-- [`docs/plans/sprint-2-implementation-plan.md`](docs/plans/sprint-2-implementation-plan.md)
-- [`docs/plans/week-3-backlog.md`](docs/plans/week-3-backlog.md)
-
-## Core Commands
-
-```bash
-# system
-node dist/cli/index.js system start
-node dist/cli/index.js system status
+# daemon lifecycle
 node dist/cli/index.js background start
 node dist/cli/index.js background status
+node dist/cli/index.js background attach --watch --interval 2000
+node dist/cli/index.js background logs --tail 100
+node dist/cli/index.js background restart --timeout 10000
+node dist/cli/index.js background stop --timeout 10000
 
-# consensus
-node dist/cli/index.js consensus status
-node dist/cli/index.js consensus telemetry --limit 5
+# live dashboard
+node dist/cli/index.js tui --attach-daemon --interval 1000
+node dist/cli/index.js tui --local --interval 1000
 
-# openai usage
-node dist/cli/index.js openai usage --json
-
-# codex passthrough
-codex-synaptic --codex --dry-run "Inspect release readiness drift"
+# MCP profiles and registration
+node dist/cli/index.js env plan mcp-filesystem mcp-playwright mcp-desktop-commander
+node dist/cli/index.js env up mcp-filesystem mcp-playwright mcp-desktop-commander
+node dist/cli/index.js env status mcp-filesystem mcp-playwright mcp-desktop-commander
+node dist/cli/index.js env codex-register mcp-filesystem mcp-playwright mcp-desktop-commander --replace
 ```
 
-## Documentation Index
+## Codex for macOS Workflow
 
-- Docs home: [`docs/README.md`](docs/README.md)
-- Quick start: [`docs/guides/quick-start.md`](docs/guides/quick-start.md)
-- macOS modes and workflows: [`docs/guides/codex-macos-workflows.md`](docs/guides/codex-macos-workflows.md)
-- MCP setup: [`docs/mcp/README.md`](docs/mcp/README.md)
-- Rekick roadmap: [`docs/roadmaps/codex-macos-2026-rekick.md`](docs/roadmaps/codex-macos-2026-rekick.md)
+```bash
+# Local mode
+codex -C /absolute/path/to/codex-synaptic
 
-## Contributing
+# Worktree mode
+git worktree add ../codex-synaptic-worktree -b codex/macos-ops
+codex -C ../codex-synaptic-worktree
 
-1. Create a branch (prefix `codex/` recommended for feature work).
-2. Keep changes small and testable.
-3. Run: `npm run lint && npm test && npm run release:preflight`.
-4. Open a PR with blockers/risks called out explicitly.
+# cloud task operations from CLI
+codex cloud --help
+```
+
+```mermaid
+flowchart LR
+  L["Local Mode"] --> V["Fast Iteration"]
+  W["Worktree Mode"] --> S["Parallel, Isolated Changes"]
+  C["Cloud Mode"] --> R["Remote Task Delegation"]
+  V --> O["Unified Review + Merge"]
+  S --> O
+  R --> O
+```
+
+## MCP Profiles Included
+
+| Profile | Purpose | Safety posture |
+| --- | --- | --- |
+| `mcp-filesystem` | Repo/document access for Codex tasks | defaults to safe mode; controlled write can be explicitly enabled |
+| `mcp-playwright` | Browser automation and verification | command-scoped runtime with health checks |
+| `mcp-desktop-commander` | Desktop-level command bridge for external orchestration workflows | explicit profile startup + diagnostics before use |
+
+## February 2026 Prompting Baseline
+
+Use this structure for high-signal Codex tasks in this repo:
+
+1. Mission: one objective.
+2. Constraints: boundaries, safety controls, non-goals.
+3. Acceptance criteria: objective pass/fail list.
+4. Verification: exact commands and expected outcomes.
+5. Deliverables: changed files, test evidence, residual risks.
+
+## Security Posture (Codex-aligned)
+
+Recommended defaults for version-controlled repos:
+
+```bash
+codex --sandbox workspace-write --ask-for-approval on-request
+```
+
+Use stricter read-only mode when auditing unfamiliar code:
+
+```bash
+codex --sandbox read-only --ask-for-approval on-request
+```
+
+## Docs Index
+
+- [macOS integration workflow](docs/guides/codex-macos-workflows.md)
+- [MCP setup and profile catalog](docs/mcp/README.md)
+- [Autoscaler/daemon runbook](docs/runbooks/autoscaler-daemon-coordination.md)
+
+## License
+
+This project is licensed under **GNU Affero General Public License v3.0 (AGPL-3.0)**. See [LICENSE](LICENSE).

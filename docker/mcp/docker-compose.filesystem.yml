@@ -5,7 +5,7 @@ services:
     container_name: codex-mcp-filesystem
     restart: unless-stopped
     volumes:
-      - ../../:/workspace:ro
+      - ../../:/workspace:${MCP_FILESYSTEM_MOUNT_MODE:-ro}
     ports:
       - "7040:7040"
     command: ["--port", "7040", "--root", "/workspace"]

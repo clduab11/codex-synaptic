@@ -1,386 +1,158 @@
-# Autoscaler-Daemon Coordination Runbook
+# Autoscaler And Daemon Coordination Runbook
 
-This runbook documents the relationship between the autoscaler and background daemon, operational modes, and troubleshooting procedures for managing agent lifecycle during scaling operations.
+Last updated: 2026-02-13
 
-## 1. Overview
+This runbook documents how autoscaling behavior relates to detached daemon operation, and how to run status/monitoring commands without introducing split-brain runtime behavior.
 
-The **autoscaler** dynamically adjusts the number of worker agents based on resource utilization metrics, while the **background daemon** maintains persistent system state and coordinates agent lifecycle operations. These two components work together to ensure efficient resource management without compromising system stability.
+## 1. Runtime Authority Model
 
-### Key Relationship
+- The detached daemon is the authoritative runtime when started with `background start`.
+- `system status`, `system monitor`, and `background attach` can read daemon-backed state.
+- If daemon mode is active, local in-process startup is blocked by default to avoid running two independent orchestrators.
 
-- The autoscaler **recommends** scaling actions based on metrics
-- The daemon **executes** agent retirement during scale-down operations
-- When the daemon is offline, scale-down operations cannot complete, leaving idle agents running
-
-## 2. How Autoscaling Works
-
-### Scale-Up Operations
-
-**Trigger:** Resource utilization exceeds the scale-up threshold (default: >75% CPU/memory)
-
-**Behavior:**
-- Autoscaler identifies resource pressure
-- New worker agents are deployed automatically
-- Agents are registered with the agent registry
-- Events are persisted to the `autoscaler_events` namespace
-
-**Command:**
-```bash
-# View recent scale-up events
-codex-synaptic memory query autoscaler_events --limit 10
-```
-
-### Scale-Down Operations
-
-**Trigger:** Resource utilization falls below the scale-down threshold (default: <35%)
-
-**Behavior:**
-- Autoscaler identifies idle workers
-- Retirement requests are sent to the daemon
-- Daemon unregisters agents from the registry
-- Resources are reclaimed
-- Events are persisted to the `autoscaler_events` namespace
-
-**Command:**
-```bash
-# View agent utilization metrics
-codex-synaptic system status --verbose
-```
-
-### Cooldown Period
-
-Both scale-up and scale-down operations respect a cooldown period (default: 45 seconds) to prevent thrashing and ensure stable scaling behavior.
-
-## 3. Daemon Dependency
-
-### Why Scale-Down Requires the Daemon
-
-The background daemon (`src/cli/daemon-manager.ts`) maintains authoritative system state including:
-- Active agent registry
-- Resource allocation tracking
-- Lifecycle event coordination
-
-**When the daemon is offline:**
-- Scale-up operations continue to work (agents can be deployed directly)
-- Scale-down operations **fail silently** (retirement requests have no recipient)
-- Idle agents accumulate in the registry
-- Warning messages appear in logs: `Cannot retire agents: daemon offline`
-
-### Checking Daemon Status
+Override (use sparingly):
 
 ```bash
-# Check if daemon is running
-codex-synaptic background status
-
-# View daemon logs
-codex-synaptic background logs --tail 50
+CODEX_ALLOW_LOCAL_WITH_DAEMON=1 node dist/cli/index.js system start
 ```
 
-## 4. Operational Modes
+## 2. Why This Matters For Autoscaling
 
-### Production Mode (Recommended)
+Autoscaler decisions and lifecycle actions are only reliable when all operator surfaces look at the same runtime authority.
 
-**Configuration:**
-- Daemon: **Running** continuously
-- Autoscaler: **Enabled** (`scaling.enabled: true`)
+Before this update, it was possible to read local session state while a daemon was active. The CLI now routes status/monitor surfaces to daemon state when available, preventing silent drift between dashboards and detached runtime behavior.
 
-**Behavior:**
-- Fully automated scaling in both directions
-- Minimal operator intervention required
-- Optimal resource utilization
+## 3. Standard Operational Modes
 
-**Commands:**
-```bash
-# Start daemon in production mode
-codex-synaptic background start
+### Production / Long-Running Mode (Recommended)
 
-# Verify autoscaler is enabled
-grep "scaling.enabled" config/system.json
-```
-
-### Testing Mode (For Swarm/Performance Tests)
-
-**Configuration:**
-- Daemon: **Stopped** during tests
-- Autoscaler: **Paused** (`scaling.enabled: false`)
-
-**Behavior:**
-- Manual control over agent count
-- No interference from autoscaler during experiments
-- Manual cleanup required after tests
-
-**Procedure:**
-```bash
-# 1. Stop daemon
-codex-synaptic background stop
-
-# 2. Disable autoscaler (edit config/system.json)
-# Set: "scaling": { "enabled": false }
-
-# 3. Run your swarm test
-codex-synaptic swarm spawn --prompt "performance test"
-
-# 4. Manually clean up idle agents
-codex-synaptic agents list --idle
-codex-synaptic agents retire <agent-id>
-
-# 5. Re-enable autoscaler and restart daemon
-# Set: "scaling": { "enabled": true }
-codex-synaptic background start
-```
-
-### Development Mode
-
-**Configuration:**
-- Daemon: **Optional** (depends on workflow)
-- Autoscaler: **Disabled** (`scaling.enabled: false`)
-
-**Behavior:**
-- Full manual control
-- Predictable agent count for debugging
-- No automatic scaling interference
-
-**Commands:**
-```bash
-# Deploy specific agent counts manually
-codex-synaptic agents deploy code_worker --count 3
-codex-synaptic agents deploy consensus_coordinator --count 2
-```
-
-## 5. Commands Reference
-
-### Daemon Management
+Use detached mode and attach dashboards:
 
 ```bash
-# Check daemon status
-codex-synaptic background status
-
-# Start daemon
-codex-synaptic background start
-
-# Stop daemon (graceful shutdown)
-codex-synaptic background stop
-
-# View daemon logs
-codex-synaptic background logs --tail 100
-
-# Restart daemon
-codex-synaptic background restart
+node dist/cli/index.js background start
+node dist/cli/index.js background status
+node dist/cli/index.js background attach --watch --interval 2000
+node dist/cli/index.js tui --attach-daemon --interval 1000
 ```
 
-### Autoscaler Configuration
+### Local Debug Mode
+
+Run an in-process orchestrator when detached daemon is not active:
 
 ```bash
-# Disable autoscaler (edit config/system.json)
-# Set: "scaling": { "enabled": false }
-
-# Enable autoscaler (edit config/system.json)
-# Set: "scaling": { "enabled": true }
-
-# View current autoscaler settings
-codex-synaptic config show scaling
+node dist/cli/index.js system start
+node dist/cli/index.js system monitor --interval 2000
+node dist/cli/index.js system stop
 ```
 
-### Manual Agent Management
+### Test Isolation Mode
+
+If testing requires deterministic local behavior, stop daemon first:
 
 ```bash
-# List all agents
-codex-synaptic agents list
-
-# List idle agents
-codex-synaptic agents list --idle
-
-# Manually retire an agent
-codex-synaptic agents retire <agent-id>
-
-# Deploy agents manually
-codex-synaptic agents deploy <agent-type> --count <n>
+node dist/cli/index.js background stop --timeout 10000
+node dist/cli/index.js system start
 ```
 
-## 6. Troubleshooting
+## 4. Command Reference (Current CLI Surface)
 
-### Symptom: Scale-down warnings in logs
-
-**Cause:** Daemon is offline, retirement requests cannot be processed
-
-**Log message:**
-```
-WARN [autoscaler] Cannot retire idle agents: daemon offline
-```
-
-**Resolution:**
-```bash
-# Option 1: Start the daemon
-codex-synaptic background start
-
-# Option 2: Manually retire idle agents
-codex-synaptic agents list --idle
-codex-synaptic agents retire <agent-id>
-```
-
-### Symptom: Idle agents accumulating
-
-**Cause:** Autoscaler can't retire agents without daemon coordination
-
-**Diagnosis:**
-```bash
-# Check for idle agents
-codex-synaptic agents list --idle
-
-# Check daemon status
-codex-synaptic background status
-
-# Review autoscaler events
-codex-synaptic memory query autoscaler_events --limit 20
-```
-
-**Resolution:**
-```bash
-# Restart daemon to enable automatic cleanup
-codex-synaptic background start
-
-# Trigger manual scale-down (if needed)
-codex-synaptic system scale-down --force
-```
-
-### Symptom: Autoscaler not scaling up
-
-**Cause:** Autoscaler may be disabled or at max agent limit
-
-**Diagnosis:**
-```bash
-# Check autoscaler configuration
-codex-synaptic config show scaling
-
-# Check current agent count vs limits
-codex-synaptic agents list --count
-```
-
-**Resolution:**
-```bash
-# Verify scaling is enabled in config/system.json
-# Check: "scaling": { "enabled": true, "maxAgents": 40 }
-
-# Manually deploy agents if at limit
-codex-synaptic agents deploy <agent-type> --count <n>
-```
-
-### Symptom: Daemon fails to start
-
-**Cause:** Port conflict, permission issues, or corrupted state
-
-**Diagnosis:**
-```bash
-# Check daemon logs
-codex-synaptic background logs
-
-# Check for port conflicts
-lsof -i :4242  # Default API port
-```
-
-**Resolution:**
-```bash
-# Kill conflicting processes
-kill <pid>
-
-# Clear daemon state and restart
-rm -rf ~/.codex-synaptic/daemon.pid
-codex-synaptic background start
-```
-
-## 7. Best Practices
-
-### For Hive-Mind Performance Tests
-
-1. **Before test:**
-   - Stop daemon: `codex-synaptic background stop`
-   - Disable autoscaler: Set `scaling.enabled: false` in config
-   - Note initial agent count: `codex-synaptic agents list --count`
-
-2. **During test:**
-   - Monitor resource usage: `codex-synaptic system status --watch`
-   - Let agents complete work without interference
-
-3. **After test:**
-   - List idle agents: `codex-synaptic agents list --idle`
-   - Manually retire: `codex-synaptic agents retire <agent-id>`
-   - Re-enable autoscaler: Set `scaling.enabled: true` in config
-   - Restart daemon: `codex-synaptic background start`
-
-### For Production Deployments
-
-- **Keep daemon running 24/7** for optimal automation
-- **Enable autoscaler** for hands-off resource management
-- **Monitor autoscaler events** in the `autoscaler_events` namespace
-- **Set appropriate thresholds** based on workload patterns:
-  - Default scale-up: 75% utilization
-  - Default scale-down: 35% utilization
-  - Adjust in `config/system.json` if needed
-
-### For Development Workflows
-
-- **Disable autoscaler** to maintain predictable agent counts
-- **Use daemon selectively** based on whether you need lifecycle coordination
-- **Manually deploy/retire agents** for precise control during debugging
-
-## 8. Monitoring & Observability
-
-### Key Metrics to Monitor
+### Daemon Lifecycle
 
 ```bash
-# Agent count by type
-codex-synaptic agents list --by-type
-
-# Resource utilization
-codex-synaptic system status --verbose
-
-# Autoscaler activity
-codex-synaptic memory query autoscaler_events --since "1 hour ago"
-
-# Daemon health
-codex-synaptic background status
+node dist/cli/index.js background start
+node dist/cli/index.js background status
+node dist/cli/index.js background attach --watch
+node dist/cli/index.js background logs --tail 100
+node dist/cli/index.js background restart --timeout 10000
+node dist/cli/index.js background stop --timeout 10000
 ```
 
-### Event Namespaces
+### Runtime Status And Telemetry
 
-- **`autoscaler_events`** – Scale-up/down events and decisions
-- **`agent_lifecycle`** – Agent deployment and retirement events
-- **`mesh_events`** – Mesh topology changes
-- **`consensus_events`** – Consensus decisions (may trigger scaling)
+```bash
+node dist/cli/index.js system status
+node dist/cli/index.js system monitor --interval 2000
+node dist/cli/index.js tui --attach-daemon
+node dist/cli/index.js doctor --strict
+```
 
-### Alerting Recommendations
+## 5. Troubleshooting
 
-Consider setting up alerts for:
-- Daemon offline for >5 minutes in production
-- Autoscaler repeatedly hitting max agent limit
-- Idle agent count exceeding threshold (e.g., >10 for >30 minutes)
-- Scale-down failures accumulating (daemon offline)
+### Symptom: `system start` refuses to start
 
-## 9. Configuration Reference
+Cause: detached daemon already running.
 
-### Autoscaler Settings (`config/system.json`)
+Check:
+
+```bash
+node dist/cli/index.js background status
+```
+
+Resolution:
+
+1. Preferred: use attach/monitor commands against daemon.
+2. Alternative: stop daemon first, then start local session.
+3. Last resort: set `CODEX_ALLOW_LOCAL_WITH_DAEMON=1` if dual runtime is intentional.
+
+### Symptom: Dashboard shows no daemon telemetry
+
+Check:
+
+```bash
+node dist/cli/index.js background status
+node dist/cli/index.js background logs --tail 100
+```
+
+Resolution:
+
+```bash
+node dist/cli/index.js background restart
+node dist/cli/index.js background attach --watch
+```
+
+### Symptom: Autoscaling appears ineffective or stale
+
+Run an authoritative health sweep:
+
+```bash
+node dist/cli/index.js system status
+node dist/cli/index.js system monitor --interval 2000
+node dist/cli/index.js doctor --strict
+```
+
+If daemon is offline, start it and re-check:
+
+```bash
+node dist/cli/index.js background start
+node dist/cli/index.js background status
+```
+
+## 6. Configuration Reference
+
+Autoscaling configuration is defined in `config/system.json` under `scaling`, for example:
 
 ```json
 {
   "scaling": {
-    "enabled": true,              // Enable/disable autoscaler
-    "minAgents": 4,               // Minimum agent count
-    "maxAgents": 40,              // Maximum agent count
-    "scaleUpThreshold": 0.75,     // Scale up at 75% utilization
-    "scaleDownThreshold": 0.35,   // Scale down at 35% utilization
-    "cooldownMs": 45000           // 45-second cooldown between actions
+    "enabled": true,
+    "minAgents": 4,
+    "maxAgents": 40,
+    "scaleUpThreshold": 0.75,
+    "scaleDownThreshold": 0.35,
+    "cooldownMs": 45000
   }
 }
 ```
 
-### Related Documentation
+After changing scaling config, restart runtime authority to apply changes:
 
-- **Consensus Coordination:** `docs/runbooks/validation-gating.md`
-- **Telemetry & Metrics:** `docs/observability/README.md`
-- **Cheat Codes:** `docs/codex-synaptic-cheat-codes.md`
-- **Agent Architecture:** `AGENTS.md`
+```bash
+node dist/cli/index.js background restart
+```
 
----
+## 7. Related Docs
 
-**Last Updated:** 2025-11-05  
-**Maintainer:** Codex-Synaptic Platform Team
+- `docs/guides/codex-macos-workflows.md`
+- `docs/mcp/README.md`
+- `docs/observability/README.md`
+- `docs/reports/runtime-architecture-delta-2026-02-13.md`

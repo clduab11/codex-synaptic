@@ -17,4 +17,18 @@ describe('serviceManager profiles', () => {
     const plan = serviceManager.plan(['qdrant', 'redis']);
     expect(plan.map((item) => item.name)).toEqual(['qdrant', 'redis']);
   });
+
+  it('includes desktop commander MCP profile', () => {
+    const profile = serviceManager.getProfile('mcp-desktop-commander');
+    expect(profile.composeFile).toContain('desktop-commander');
+    expect(profile.port).toBe(7070);
+  });
+
+  it('exposes codex registration metadata for MCP profiles', () => {
+    const registration = serviceManager.codexRegistration('mcp-filesystem');
+    expect(registration).toEqual({
+      codexName: 'filesystem-local',
+      url: 'http://localhost:7040'
+    });
+  });
 });

@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  mcp-desktop-commander:
+    image: ghcr.io/wonderwhy-er/desktop-commander:latest
+    container_name: codex-mcp-desktop-commander
+    restart: unless-stopped
+    ports:
+      - "7070:7070"
+    command: ["--port", "7070"]
