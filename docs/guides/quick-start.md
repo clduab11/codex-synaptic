@@ -29,6 +29,8 @@ npm run cli -- system start
 
 This command prints a telemetry snapshot and then exits cleanly in one-shot mode.
 
+If you need to keep the foreground process alive for debugging, run with `CODEX_CLI_AUTO_SHUTDOWN=0`.
+
 ## 3. Run a minimal local workflow
 
 ```bash

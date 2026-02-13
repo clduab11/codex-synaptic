@@ -1,7 +1,8 @@
 export {
   OpenAIResponsesClient,
   type OpenAIClientOptions,
-  type OpenAIResponseRequest
+  type OpenAIResponseRequest,
+  type OpenAIReadinessDiagnostic
 } from './client.js';
 
 export {

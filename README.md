@@ -81,6 +81,8 @@ node dist/cli/index.js env status mcp-filesystem mcp-playwright mcp-desktop-comm
 node dist/cli/index.js env codex-register mcp-filesystem mcp-playwright mcp-desktop-commander --replace
 ```
 
+Non-interactive CLI commands run in one-shot mode by default (the process exits after command completion). Set `CODEX_CLI_AUTO_SHUTDOWN=0` only when you explicitly want to keep the in-process foreground session alive for debugging.
+
 ## Codex for macOS Workflow
 
 ```bash

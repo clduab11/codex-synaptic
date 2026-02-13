@@ -48,7 +48,7 @@ jobs:
 
           pr_json="$(gh api "repos/${{ github.repository }}/pulls/${pr_number}")"
           is_fork="$(jq -r '.head.repo.fork' <<<"$pr_json")"
-          if [ "$is_fork" = "true" ]; then
+          if [ "$is_fork" = "true" ] || [ "$is_fork" = "null" ]; then
             echo "Refusing to run Codex on fork PR #${pr_number} to protect secrets." >&2
             exit 1
           fi
