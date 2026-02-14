@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncReturns } from 'child_process';
+import { spawn, spawnSync, type SpawnSyncReturns } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import {
@@ -16,6 +16,49 @@ import {
   type DoctorReport
 } from './doctor.js';
 import { BridgeError, ErrorCode } from '../core/errors.js';
+
+/**
+ * Promisified spawn wrapper that collects stdout/stderr and resolves with status code
+ */
+function spawnAsync(
+  command: string,
+  args: string[],
+  options: { cwd: string; encoding: BufferEncoding }
+): Promise<Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data) => {
+      stdout += data.toString(options.encoding);
+    });
+
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString(options.encoding);
+    });
+
+    child.on('close', (code) => {
+      resolve({
+        status: code ?? 0,
+        stdout,
+        stderr
+      });
+    });
+
+    child.on('error', (error) => {
+      resolve({
+        status: 1,
+        stdout,
+        stderr: stderr || error.message
+      });
+    });
+  });
+}
 
 export interface LaunchStep {
   id: string;
@@ -63,8 +106,7 @@ function normalizeSpawn(
     args: string[],
     options: { cwd: string; encoding: BufferEncoding }
   ) => Promise<Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>> {
-  return deps.spawnCommand
-    ?? (async (command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
+  return deps.spawnCommand ?? spawnAsync;
 }
 
 function buildLaunchReport(steps: LaunchStep[], doctorReport: DoctorReport): LaunchReport {
