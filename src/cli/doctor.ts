@@ -4,7 +4,9 @@ import { join } from 'path';
 import { serviceManager, type ServiceStatus } from '../env/service-manager.js';
 
 /**
- * Promisified spawn wrapper that collects stdout/stderr and resolves with status code
+ * Promisified spawn wrapper that collects stdout/stderr and resolves with status code.
+ * Note: This function always resolves (never rejects) to match spawnSync behavior.
+ * Errors are communicated via status code and stderr, not via Promise rejection.
  */
 function spawnAsync(
   command: string,
