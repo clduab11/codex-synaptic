@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, unlinkSync } from 'fs';
+import { writeFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { createServer, type Server, type Socket } from 'net';
@@ -155,10 +156,10 @@ async function main() {
     };
   };
 
-  const persistSnapshot = () => {
+  const persistSnapshot = async () => {
     try {
       const snapshot = buildSnapshot();
-      writeFileSync(RUNTIME_FILE, JSON.stringify(snapshot, null, 2), 'utf8');
+      await writeFile(RUNTIME_FILE, JSON.stringify(snapshot, null, 2), 'utf8');
     } catch (error) {
       logger.debug('daemon', 'Failed to persist runtime snapshot', {
         error: (error as Error).message
@@ -209,7 +210,7 @@ async function main() {
 
           daemonState.currentMode = mode;
           notify({ type: 'modeChanged', mode: daemonState.currentMode, tier: daemonState.currentTier });
-          persistSnapshot();
+          void persistSnapshot().catch(err => logger.debug('daemon', 'Background persist failed', { error: err.message }));
           respond(socket, {
             id: request.id,
             ok: true,
@@ -234,7 +235,7 @@ async function main() {
 
           daemonState.currentTier = tier;
           notify({ type: 'modeChanged', mode: daemonState.currentMode, tier: daemonState.currentTier });
-          persistSnapshot();
+          void persistSnapshot().catch(err => logger.debug('daemon', 'Background persist failed', { error: err.message }));
           respond(socket, {
             id: request.id,
             ok: true,
@@ -345,7 +346,7 @@ async function main() {
         tier: daemonState.currentTier
       });
 
-      persistSnapshot();
+      await persistSnapshot();
     } catch (error) {
       daemonState.currentMode = previousMode;
       daemonState.currentTier = previousTier;
@@ -372,8 +373,10 @@ async function main() {
 
     socketServer = await createSocketServer();
 
-    persistSnapshot();
-    runtimeTimer = setInterval(persistSnapshot, 1000);
+    await persistSnapshot();
+    runtimeTimer = setInterval(() => {
+      void persistSnapshot().catch(err => logger.debug('daemon', 'Periodic persist failed', { error: err.message }));
+    }, 1000);
     if (typeof runtimeTimer.unref === 'function') {
       runtimeTimer.unref();
     }
@@ -416,7 +419,7 @@ async function main() {
         });
         socketServer = undefined;
       }
-      persistSnapshot();
+      await persistSnapshot();
       await system.shutdown();
       logger.info('daemon', 'Background system shutdown complete');
     } catch (error) {

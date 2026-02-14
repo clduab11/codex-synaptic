@@ -20,18 +20,19 @@ function runCli(
   if (!mergedEnv.CODEX_CONFIG_SKIP_DISK_IO) {
     mergedEnv.CODEX_CONFIG_SKIP_DISK_IO = '1';
   }
-  if (!mergedEnv.CODEX_CLI_AUTO_SHUTDOWN) {
-    mergedEnv.CODEX_CLI_AUTO_SHUTDOWN = '1';
-  }
 
   const result = spawnSync('node', [CLI_ENTRY, ...args], {
     cwd: process.cwd(),
     encoding: 'utf8',
     env: mergedEnv,
-    maxBuffer: 10 * 1024 * 1024
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: 20000
   });
 
   if (!allowFailure) {
+    if (result.signal) {
+      throw new Error(`CLI command timed out for args: ${args.join(' ')} (signal ${result.signal})`);
+    }
     if (result.error) {
       throw result.error;
     }
@@ -53,14 +54,34 @@ describe('codex-synaptic CLI smoke suite', () => {
   });
 
   it('reports system status when orchestrator is not running', () => {
+    runCli(['background', 'stop'], { allowFailure: true });
     const { stdout } = runCli(['system', 'status']);
     expect(stdout).toContain('System not started');
   });
 
-  it('lists registered agents with auto-shutdown lifecycle', () => {
-    const { stdout } = runCli(['agent', 'list']);
+  it('lists registered agents and exits in default one-shot lifecycle', () => {
+    const { stdout } = runCli(['agent', 'list'], {
+      env: { CODEX_CLI_AUTO_SHUTDOWN: '' }
+    });
     expect(stdout).toMatch(/swarm_coordinator/);
     expect(stdout).toMatch(/consensus_coordinator/);
+  });
+
+  it('shows running background daemon state from system status', () => {
+    runCli(['background', 'stop'], { allowFailure: true });
+    try {
+      const start = runCli(['background', 'start']);
+      expect(start.stdout).toContain('Background system running');
+      const background = runCli(['background', 'status']);
+      expect(background.stdout).toContain('Background system');
+
+      const status = runCli(['system', 'status']);
+      const output = `${status.stdout}\n${status.stderr}`;
+      expect(output).toContain('Background daemon is running');
+      expect(output).toContain('Background system');
+    } finally {
+      runCli(['background', 'stop'], { allowFailure: true });
+    }
   });
 
   it('prints neural mesh status', () => {

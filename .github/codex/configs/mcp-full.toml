@@ -2,8 +2,7 @@
 
 model = "gpt-5-codex"
 approval_policy = "never"
-sandbox_mode = "workspace-write"
-web_search = "live"
+sandbox_policy = "workspace-write"
 
 [sandbox_workspace_write]
 network_access = true

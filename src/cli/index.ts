@@ -12,6 +12,7 @@ import { CodexSynapticSystem } from '../core/system.js';
 import { Logger, LogLevel } from '../core/logger.js';
 import { AgentType, AgentMetadata } from '../core/types.js';
 import {
+  type BackgroundStatus,
   getBackgroundStatus,
   getBackgroundRuntimeSnapshot,
   queryBackgroundRuntimeSnapshot,
@@ -32,18 +33,20 @@ import type {
   ContextLogEntry
 } from '../types/codex-context.js';
 import { CliGateError, ErrorCode, RetryManager } from '../core/errors.js';
+import { DaemonConflictError } from '../core/errors.js';
 import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 import { parseFileContent, parseJsonInput, loadFileThroughFeedforward } from './feedforward.js';
 import { InstructionParser } from '../instructions/index.js';
 import { RoutingPolicyService, type RoutingRequest } from '../router/index.js';
 import { readFileSync, existsSync } from 'fs';
 import { join, resolve, relative } from 'path';
-import { spawnSync } from 'child_process';
+import { spawnSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import { ToolOptimizer, type ToolCandidate } from '../tools/optimizer/index.js';
 import { type ToolUsageRecord, type ReasoningRunRecord } from '../memory/memory-system.js';
 import type { ReasoningPlanOptions, ReasoningCompletionOptions, ReasoningCheckpointInput } from '../reasoning/planner.js';
-import { GoapExecutor } from '../reasoning/goap/executor.js';
 import { goapRegistry } from '../reasoning/goap/registry.js';
+import { GoapExecutor } from '../reasoning/goap/executor.js';
 import type { InterfaceMode, InterfaceTier, SystemConfiguration } from '../core/config.js';
 import { serviceManager } from '../env/service-manager.js';
 import {
@@ -80,7 +83,32 @@ import {
   runDoctor
 } from './doctor.js';
 import { collectLaunchRemediations, runLaunch } from './launch.js';
+  executeGoapWorkflow,
+  executeTaskWithConsensus,
+  collectExecutionResults,
+  renderExecutionSummary,
+  setupWorkflowEventHandlers
+} from './hive-mind-helpers.js';
+import {
+  checkCliBuildArtifact,
+  checkCliExecution,
+  checkCodexAuth,
+  renderHealthCheckResults,
+  type HealthCheck
+} from './doctor-helpers.js';
 
+/**
+ * Loads environment variables from a file into process.env.
+ * 
+ * @param filePath - Path to the environment file to load
+ * @returns true if any variables were loaded, false otherwise
+ * 
+ * @remarks
+ * - Skips variables that are already defined in process.env
+ * - Handles quoted values and escape sequences (\n, \r, \t)
+ * - Ignores comments (lines starting with #) and empty lines
+ * - Returns false if file doesn't exist or can't be read
+ */
 function loadEnvFile(filePath: string): boolean {
   if (!existsSync(filePath)) {
     return false;
@@ -132,6 +160,19 @@ function loadEnvFile(filePath: string): boolean {
   }
 }
 
+/**
+ * Bootstraps CLI environment by loading environment files from standard locations.
+ * 
+ * @returns Array of successfully loaded environment file sources
+ * 
+ * @remarks
+ * Attempts to load environment variables from the following files in order:
+ * - .env in current directory
+ * - .env.local in current directory
+ * - ~/.codex-synaptic/.env
+ * - .env in package root directory
+ * Only loads variables that aren't already set in process.env
+ */
 function bootstrapCliEnv(): string[] {
   const sources: string[] = [];
   const cwd = process.cwd();
@@ -157,11 +198,34 @@ function bootstrapCliEnv(): string[] {
 
 const loadedEnvSources = bootstrapCliEnv();
 
+/**
+ * Resolves whether CLI should auto-shutdown after command execution by 
+ * interpreting the CODEX_CLI_AUTO_SHUTDOWN environment variable.
+ * 
+ * @returns true if auto-shutdown is enabled, false otherwise
+ * 
+ * @remarks
+ * - Returns true if CODEX_CLI_AUTO_SHUTDOWN is not set or is empty (default behavior)
+ * - Returns false if CODEX_CLI_AUTO_SHUTDOWN is '0', 'false', or 'no' (case-insensitive)
+ * - Returns true for any other value
+ */
+function resolveCliAutoShutdown(): boolean {
+  const raw = process.env.CODEX_CLI_AUTO_SHUTDOWN;
+  // Default to auto-shutdown if the variable is not set or is an empty string.
+  if (raw == null || raw.trim() === '') {
+    return true;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  const disablingValues = ['0', 'false', 'no'];
+  return !disablingValues.includes(normalized);
+}
+
 const program = new Command();
 const session = CliSession.getInstance();
 const rootLogger = Logger.getInstance();
 const cliSilent = process.env.CODEX_CLI_SILENT === '1';
-const cliAutoShutdown = process.env.CODEX_CLI_AUTO_SHUTDOWN === '1';
+const cliAutoShutdown = resolveCliAutoShutdown();
 const advancedStrategyOptions = getSupportedStrategies();
 const advancedStrategySet = new Set(advancedStrategyOptions);
 const strategyOptionDescription = `Coordination strategy (${['classic', 'goap', ...advancedStrategyOptions].join('|')})`;
@@ -244,6 +308,22 @@ type CommandHelpDecorOptions = {
   vibeTips?: string[];
 };
 
+/**
+ * Decorates a Commander command with rich help text including context, skills, and documentation links.
+ * 
+ * @param command - The Commander command to decorate
+ * @param options - Configuration for help text sections
+ * @returns The decorated command with enhanced help output
+ * 
+ * @remarks
+ * Adds formatted sections before the command's standard help text:
+ * - Title and subtitle
+ * - "Why it matters" context section
+ * - "Dev skill boost" section
+ * - Quick actions with example commands
+ * - Documentation references
+ * - Optional vibe tips for user engagement
+ */
 function decorateCommandHelp(command: Command, options: CommandHelpDecorOptions): Command {
   command.addHelpText('beforeAll', () => {
     const lines: string[] = [
@@ -305,6 +385,18 @@ function decorateCommandHelp(command: Command, options: CommandHelpDecorOptions)
   return command;
 }
 
+/**
+ * Determines if Codex context should be automatically attached based on prompt content.
+ * 
+ * @param prompt - User prompt to analyze
+ * @returns true if the prompt suggests repository-wide operations that benefit from context
+ * 
+ * @remarks
+ * Returns true when the prompt contains both:
+ * - Repository signals (repo, codebase, readme, docs, etc.)
+ * - Intent signals (scan, analyze, inspect, refactor, optimize, etc.)
+ * This heuristic helps attach AGENTS.md, README, and documentation automatically
+ */
 function shouldAutoAttachCodexContext(prompt: string): boolean {
   const lower = prompt.toLowerCase();
   const repoSignals = [
@@ -338,6 +430,18 @@ function shouldAutoAttachCodexContext(prompt: string): boolean {
 
 const CONSENSUS_ALWAYS_REQUIRED = new Set(['bft', 'pow', 'pos', 'hybrid']);
 
+/**
+ * Determines if consensus is required for a given prompt based on consensus mode and content.
+ * 
+ * @param prompt - User prompt to analyze
+ * @param consensusMode - Current consensus mechanism (bft, raft, pow, pos, hybrid)
+ * @returns true if consensus should be invoked
+ * 
+ * @remarks
+ * Consensus is always required for BFT, PoW, PoS, and hybrid modes.
+ * For RAFT mode, consensus is required only if the prompt contains
+ * consensus-related keywords (consensus, quorum, vote, majority, byzantine)
+ */
 function shouldRequireConsensus(prompt: string, consensusMode: string): boolean {
   const normalized = normalizeConsensusMechanism(consensusMode);
   if (CONSENSUS_ALWAYS_REQUIRED.has(normalized)) {
@@ -356,6 +460,18 @@ interface ConsensusExecutionResult {
   error?: string;
 }
 
+/**
+ * Derives whether to accept or reject a proposal based on task outcome artifacts.
+ * 
+ * @param outcome - Task execution outcome with optional validation and lint results
+ * @returns true if the outcome should be accepted, false if it should be rejected
+ * 
+ * @remarks
+ * Rejection occurs if:
+ * - Validation failed (validation.passed === false)
+ * - Lint issues include error or fatal severity
+ * Otherwise, defaults to acceptance
+ */
 function deriveConsensusDecision(outcome: any): boolean {
   if (!outcome?.artifacts) {
     return true;
@@ -376,6 +492,19 @@ function deriveConsensusDecision(outcome: any): boolean {
   return true;
 }
 
+/**
+ * Orchestrates consensus voting process for a task outcome.
+ * 
+ * @param system - The Codex-Synaptic system instance
+ * @param originalPrompt - Original user prompt that triggered the task
+ * @param outcome - Task execution outcome to vote on
+ * @param consensusMode - Consensus mechanism to use
+ * @returns Result of consensus execution including vote counts and acceptance status
+ * 
+ * @remarks
+ * Creates a proposal, submits it to consensus agents for voting,
+ * and waits for quorum or timeout. Returns detailed voting results.
+ */
 async function orchestrateConsensus(
   system: CodexSynapticSystem,
   originalPrompt: string,
@@ -465,6 +594,19 @@ async function orchestrateConsensus(
   return result;
 }
 
+/**
+ * Renders strategy execution summary to the console.
+ * 
+ * @param result - Strategy execution result with status and outcome details
+ * 
+ * @remarks
+ * Displays:
+ * - Strategy name (if available)
+ * - Execution status (success/failure)
+ * - Actions taken (if available)
+ * - Final answer or error message
+ * - Full outcome JSON (if requested and not silent)
+ */
 function renderStrategyExecutionSummary(
   result: StrategyExecutionResult,
   verbose: boolean
@@ -539,6 +681,17 @@ program
   .description('Enhanced OpenAI Codex with distributed agent capabilities')
   .version('1.0.0');
 
+/**
+ * Wraps a command handler function with error handling and logging.
+ * 
+ * @param name - Name of the command for error messages
+ * @param fn - Async command handler function
+ * @returns Wrapped function with error handling
+ * 
+ * @remarks
+ * Catches errors, logs them with the command name, and sets process.exitCode to 1.
+ * Stack traces are shown only when CODEX_DEBUG=1 is set.
+ */
 function handleCommand<T extends any[]>(name: string, fn: (...args: T) => Promise<void>) {
   return async (...args: T) => {
     try {
@@ -554,6 +707,14 @@ function handleCommand<T extends any[]>(name: string, fn: (...args: T) => Promis
   };
 }
 
+/**
+ * Bootstraps environment variables required for CLI operation and logs the results.
+ * 
+ * @remarks
+ * - Calls ensureSystemBootstrapEnv() to set missing required variables
+ * - Logs bootstrapped variables, notes, and warnings (unless silent or already logged)
+ * - Sets envBootstrapLogged flag to prevent duplicate logging
+ */
 function bootstrapEnvForCli(): void {
   const summary = ensureSystemBootstrapEnv();
   if (envBootstrapLogged || cliSilent) {
@@ -580,6 +741,17 @@ function bootstrapEnvForCli(): void {
   envBootstrapLogged = true;
 }
 
+/**
+ * Configures log streaming from the orchestrator to the console.
+ * 
+ * @param enabled - Whether to enable log streaming
+ * @param level - Log level to stream (DEBUG, INFO, WARN, ERROR)
+ * @returns Cleanup function to restore previous log level
+ * 
+ * @remarks
+ * Sets the console log level for the root logger and provides
+ * a cleanup function to restore the original level when done.
+ */
 function configureLogStreaming(enabled: boolean, level: LogLevel): () => void {
   if (!enabled) {
     return () => {};
@@ -598,19 +770,49 @@ function configureLogStreaming(enabled: boolean, level: LogLevel): () => void {
   };
 }
 
-async function useSystem(description: string, fn: (system: CodexSynapticSystem) => Promise<void>): Promise<void> {
+/**
+ * Options for controlling system lifecycle in useSystem helper.
+ */
+type UseSystemOptions = {
+  /** Whether to automatically shutdown the system after execution. Defaults to cliAutoShutdown setting. */
+  autoShutdown?: boolean;
+};
+
+/**
+ * Ensures a Codex-Synaptic system is initialized, executes a callback, and optionally shuts down.
+ * 
+ * @param description - Human-readable description of the operation for logging
+ * @param fn - Async callback that receives the initialized system instance
+ * @param options - Optional configuration for system lifecycle behavior
+ * 
+ * @remarks
+ * - If system is already running, it will be reused and not shut down
+ * - Auto-shutdown behavior can be overridden via options.autoShutdown
+ * - System initialization is bootstrapped through bootstrapEnvForCli()
+ */
+async function useSystem(
+  description: string,
+  fn: (system: CodexSynapticSystem) => Promise<void>,
+  options: UseSystemOptions = {}
+): Promise<void> {
   bootstrapEnvForCli();
   const alreadyRunning = !!session.getSystemUnsafe();
   if (!alreadyRunning && process.env.CODEX_ALLOW_LOCAL_WITH_DAEMON !== '1') {
     const background = getBackgroundStatus();
     if (background.running) {
-      throw new Error(
+      throw new DaemonConflictError(
         `Background daemon already running (pid ${background.pid}). ` +
         'To avoid split-brain state, use `codex-synaptic background attach` for daemon-backed monitoring, ' +
-        '`codex-synaptic background stop` before local commands, or set CODEX_ALLOW_LOCAL_WITH_DAEMON=1 to override.'
+        '`codex-synaptic background stop` before local commands, or set CODEX_ALLOW_LOCAL_WITH_DAEMON=1 to override.',
+        {
+          daemonPid: background.pid,
+          alreadyRunning,
+          allowLocalWithDaemon: process.env.CODEX_ALLOW_LOCAL_WITH_DAEMON
+        }
       );
     }
   }
+  const autoShutdown = options.autoShutdown ?? cliAutoShutdown;
   if (!alreadyRunning && !cliSilent) {
     console.log(chalk.blue(`🔧 Initializing Codex-Synaptic system (${description})...`));
   }
@@ -618,12 +820,20 @@ async function useSystem(description: string, fn: (system: CodexSynapticSystem) 
   try {
     await fn(system);
   } finally {
-    if (!alreadyRunning && cliAutoShutdown) {
+    if (!alreadyRunning && autoShutdown) {
       await session.shutdown('auto-shutdown');
     }
   }
 }
 
+/**
+ * Parses a string value as an integer, throwing an error if invalid.
+ * 
+ * @param value - String value to parse
+ * @param label - Label for error messages
+ * @returns Parsed integer value
+ * @throws Error if value is not a valid number
+ */
 function parseInteger(value: string, label: string): number {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed)) {
@@ -632,6 +842,18 @@ function parseInteger(value: string, label: string): number {
   return parsed;
 }
 
+/**
+ * Authorizes a tenant operation using an admin token.
+ * 
+ * @param system - The Codex-Synaptic system instance
+ * @param action - Type of action to authorize ('read' or 'write')
+ * @param tokenOverride - Optional token to use instead of env variable
+ * @throws Error if no token is available or authorization fails
+ * 
+ * @remarks
+ * Retrieves token from tokenOverride parameter or CODEX_TENANT_ADMIN_TOKEN env var.
+ * Strips "Bearer " prefix if present before authenticating.
+ */
 async function authorizeTenantAction(system: CodexSynapticSystem, action: 'read' | 'write', tokenOverride?: string): Promise<void> {
   const token = tokenOverride ?? process.env.CODEX_TENANT_ADMIN_TOKEN;
   if (!token) {
@@ -642,6 +864,15 @@ async function authorizeTenantAction(system: CodexSynapticSystem, action: 'read'
 }
 
 
+/**
+ * Renders a table of registered agents to the console.
+ * 
+ * @param agents - Array of agent metadata to display
+ * 
+ * @remarks
+ * Displays agent ID, type, status, capabilities, and last updated timestamp.
+ * Shows "No agents registered" message if the array is empty.
+ */
 function renderAgentTable(agents: AgentMetadata[]): void {
   if (!agents.length) {
     console.log(chalk.gray('No agents registered.'));
@@ -659,6 +890,19 @@ function renderAgentTable(agents: AgentMetadata[]): void {
   console.table(rows);
 }
 
+/**
+ * Renders the neural mesh status to the console.
+ * 
+ * @param status - Neural mesh status object with node counts, topology, and timing info
+ * 
+ * @remarks
+ * Displays:
+ * - Running state (yes/no)
+ * - Node and connection counts
+ * - Average connections per node
+ * - Topology type
+ * - Orchestration activity and time limits (if available)
+ */
 function renderMeshStatus(status: any): void {
   console.log(chalk.blue('🕸️  Neural Mesh'));
   console.log(`  Running: ${status.isRunning ? chalk.green('yes') : chalk.red('no')}`);
@@ -677,6 +921,51 @@ function renderMeshStatus(status: any): void {
   }
 }
 
+/**
+ * Renders the status of the background daemon system to the console.
+ * 
+ * @param status - Background system status information including PID, start time, and interface details
+ * 
+ * @remarks
+ * Displays a gray "not running" message if the daemon is stopped,
+ * otherwise shows detailed daemon information including:
+ * - Running status (green yes)
+ * - Process ID (PID)
+ * - Start timestamp
+ * - Interface mode (if available)
+ * - Interface tier (if available)
+ */
+function renderBackgroundDaemonStatus(status: BackgroundStatus): void {
+  if (!status.running) {
+    console.log(chalk.gray('🛰 Background system: not running.'));
+    return;
+  }
+
+  console.log(chalk.blue('🛰 Background system'));
+  console.log(`  Running: ${chalk.green('yes')}`);
+  console.log(`  PID: ${status.pid}`);
+  if (status.startedAt) {
+    console.log(`  Started at: ${status.startedAt}`);
+  }
+  if (status.interfaceMode) {
+    console.log(`  Interface mode: ${status.interfaceMode}`);
+  }
+  if (status.tier) {
+    console.log(`  Interface tier: ${status.tier}`);
+  }
+}
+
+/**
+ * Displays interactive mode usage hints to the console.
+ * 
+ * @remarks
+ * Shows tips about:
+ * - Available guided menus (system, agents, mesh, swarm, etc.)
+ * - Running CLI commands from within interactive mode
+ * - Dashboard and real-time metrics
+ * - System lifecycle (stays running after exit)
+ * - Hive-mind context attachment features
+ */
 function renderInteractiveHints(): void {
   console.log(chalk.blueBright('💡 Interactive Command Hub'));
   console.log('  • Navigate through guided menus for system, agents, mesh, swarm, hive-mind, consensus, and tasks.');
@@ -688,6 +977,15 @@ function renderInteractiveHints(): void {
   console.log('');
 }
 
+/**
+ * Ensures a system instance is available for interactive mode, reusing existing if possible.
+ * 
+ * @returns Active CodexSynapticSystem instance
+ * 
+ * @remarks
+ * Reuses existing system if it's running and not shutting down.
+ * Creates a new system via session.ensureSystem() if needed.
+ */
 async function ensureInteractiveSystem(): Promise<CodexSynapticSystem> {
   const existing = session.getSystemUnsafe();
   if (existing) {
@@ -699,6 +997,15 @@ async function ensureInteractiveSystem(): Promise<CodexSynapticSystem> {
   return session.ensureSystem();
 }
 
+/**
+ * Pauses execution and waits for user to press Enter.
+ * 
+ * @param message - Prompt message to display (defaults to "Press Enter to return to the menu.")
+ * 
+ * @remarks
+ * Uses inquirer to create a simple input prompt that continues when Enter is pressed.
+ * Commonly used in interactive menus to prevent automatic menu transitions.
+ */
 async function pause(message = 'Press Enter to return to the menu.'): Promise<void> {
   await inquirer.prompt<{ __continue: string }>([
     {
@@ -709,6 +1016,18 @@ async function pause(message = 'Press Enter to return to the menu.'): Promise<vo
   ]);
 }
 
+/**
+ * Tokenizes a CLI input string into an array of arguments, handling quotes and escapes.
+ * 
+ * @param input - Raw command line input string
+ * @returns Array of parsed argument tokens
+ * 
+ * @remarks
+ * - Handles both single and double quotes
+ * - Supports backslash escaping within quotes
+ * - Splits on whitespace outside quotes
+ * - Filters out empty tokens
+ */
 function tokenizeCliArgs(input: string): string[] {
   const tokens: string[] = [];
   let current = '';
@@ -764,6 +1083,18 @@ function tokenizeCliArgs(input: string): string[] {
   return tokens.filter((token) => token.length > 0);
 }
 
+/**
+ * Formats elapsed time duration into a human-readable string.
+ * 
+ * @param startedAt - Start timestamp in milliseconds (from Date.now())
+ * @returns Formatted duration string (e.g., "45ms", "3m 20s", "2h 15m")
+ * 
+ * @remarks
+ * - Shows milliseconds for durations under 1 second
+ * - Shows seconds for durations under 1 minute
+ * - Shows minutes and seconds for durations under 1 hour
+ * - Shows hours and minutes for longer durations
+ */
 function formatElapsedDuration(startedAt: number): string {
   const elapsedMs = Date.now() - startedAt;
   if (elapsedMs < 1000) {
@@ -783,6 +1114,13 @@ function formatElapsedDuration(startedAt: number): string {
   return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
 }
 
+/**
+ * Renders the list of background CLI jobs to the console.
+ * 
+ * @remarks
+ * Displays job ID, command, and elapsed time for each running background job.
+ * Shows "No background CLI commands are running" if none are active.
+ */
 function renderBackgroundJobs(): void {
   if (!backgroundJobs.size) {
     console.log(chalk.gray('No background CLI commands are running.'));
@@ -796,6 +1134,18 @@ function renderBackgroundJobs(): void {
   console.log('');
 }
 
+/**
+ * Dispatches a CLI command from interactive mode using the Commander program.
+ * 
+ * @param raw - Raw command string to parse and execute
+ * 
+ * @remarks
+ * - Tokenizes input respecting quotes and escapes
+ * - Prevents running "interactive" command from within interactive mode
+ * - Executes command through Commander's parseAsync
+ * - Handles help and version display gracefully
+ * - Shows error messages with stack traces when CODEX_DEBUG=1
+ */
 async function dispatchCliCommand(raw: string): Promise<void> {
   const args = tokenizeCliArgs(raw.trim());
   if (!args.length) {
@@ -831,6 +1181,18 @@ async function dispatchCliCommand(raw: string): Promise<void> {
   }
 }
 
+/**
+ * Renders a comprehensive dashboard of system status including telemetry, mesh, swarm, and consensus.
+ * 
+ * @param system - The Codex-Synaptic system instance
+ * 
+ * @remarks
+ * Displays:
+ * - Telemetry snapshot (agents, resources, tasks)
+ * - Neural mesh status
+ * - Swarm coordinator status
+ * - Consensus status
+ */
 async function renderSystemDashboard(system: CodexSynapticSystem): Promise<void> {
   console.log('');
   renderTelemetry();
@@ -843,6 +1205,16 @@ async function renderSystemDashboard(system: CodexSynapticSystem): Promise<void>
   console.log('');
 }
 
+/**
+ * Interactive system control menu for managing orchestrator lifecycle and viewing status.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Viewing comprehensive dashboard
+ * - Checking telemetry pulse
+ * - Shutting down the system
+ * Menu loops until user returns to main menu or shuts down.
+ */
 async function interactiveSystemMenu(): Promise<void> {
   let exit = false;
   let first = true;
@@ -919,6 +1291,17 @@ async function interactiveSystemMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive agents management menu for deploying, listing, and managing agent lifecycle.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Listing registered agents
+ * - Deploying new agent instances
+ * - Stopping specific agents
+ * - Viewing agent telemetry
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveAgentsMenu(): Promise<void> {
   let exit = false;
   let first = true;
@@ -1040,6 +1423,17 @@ async function interactiveAgentsMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive neural mesh configuration and monitoring menu.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Viewing mesh status
+ * - Configuring topology and node counts
+ * - Starting/stopping orchestration runs
+ * - Viewing mesh telemetry
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveMeshMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1101,6 +1495,17 @@ async function interactiveMeshMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive swarm coordination menu for managing collaborative optimization.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Viewing swarm status
+ * - Starting swarm runs with various algorithms (PSO, ACO, flocking)
+ * - Stopping active swarms
+ * - Viewing swarm telemetry
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveSwarmMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1164,6 +1569,17 @@ async function interactiveSwarmMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive hive-mind orchestration menu for spawning multi-agent workflows.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Quick spawn with automatic Codex context attachment
+ * - Custom spawn with manual agent configuration
+ * - Viewing recent hive-mind runs
+ * Automatically attaches repository context (AGENTS.md, README, docs/) for repository-aware tasks.
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveHiveMindMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1293,6 +1709,17 @@ async function interactiveHiveMindMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive consensus management menu for proposing and voting on decisions.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Viewing consensus status
+ * - Creating new proposals
+ * - Voting on active proposals
+ * - Viewing consensus telemetry
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveConsensusMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1400,6 +1827,16 @@ async function interactiveConsensusMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive tasks and routing menu for executing prompts and evaluating routing decisions.
+ * 
+ * @remarks
+ * Provides options for:
+ * - Executing task prompts
+ * - Viewing recent session tasks
+ * - Evaluating routing for prompts
+ * Menu loops until user returns to main menu.
+ */
 async function interactiveTasksMenu(): Promise<void> {
   let exit = false;
   while (!exit) {
@@ -1498,6 +1935,14 @@ async function interactiveTasksMenu(): Promise<void> {
   }
 }
 
+/**
+ * Interactive command runner that allows executing CLI commands from within interactive mode.
+ * 
+ * @remarks
+ * Provides a prompt for entering CLI commands that are then dispatched through the Commander program.
+ * Useful for running specific commands without exiting interactive mode.
+ * Loops until user enters 'back' to return to main menu.
+ */
 async function interactiveCommandRunner(): Promise<void> {
   console.log(chalk.gray('Tip: append "&" to run a command in the background.'));
   const { command } = await inquirer.prompt<{ command: string }>([
@@ -1544,6 +1989,18 @@ async function interactiveCommandRunner(): Promise<void> {
     });
 }
 
+/**
+ * Renders swarm coordinator status to the console.
+ * 
+ * @param status - Swarm status object with run state, algorithm, and participant info
+ * 
+ * @remarks
+ * Displays:
+ * - Running state (yes/no)
+ * - Active algorithm
+ * - Number of participating agents
+ * - Iteration count
+ */
 function renderSwarmStatus(status: any): void {
   console.log(chalk.blue('🐝 Swarm Coordination'));
   console.log(`  Running: ${status.isRunning ? chalk.green('yes') : chalk.red('no')}`);
@@ -1561,6 +2018,17 @@ function renderSwarmStatus(status: any): void {
   }
 }
 
+/**
+ * Renders consensus status to the console.
+ * 
+ * @param system - The Codex-Synaptic system instance
+ * 
+ * @remarks
+ * Displays:
+ * - Current consensus mechanism
+ * - Active proposals count
+ * - Recent decisions count
+ */
 function renderConsensusStatus(system: CodexSynapticSystem): void {
   const manager = system.getConsensusManager();
   const status = manager.getStatus();
@@ -1581,6 +2049,19 @@ function renderConsensusStatus(system: CodexSynapticSystem): void {
   }
 }
 
+/**
+ * Renders telemetry snapshot to the console with customizable title.
+ * 
+ * @param snapshot - The telemetry snapshot to render
+ * @param title - Optional title for the snapshot display
+ * 
+ * @remarks
+ * Displays:
+ * - Agent statistics (status, types, resource usage)
+ * - Resource metrics (CPU, memory, GPU)
+ * - Mesh, swarm, and consensus statistics
+ * - Recent task summaries
+ */
 function renderTelemetrySnapshot(snapshot: TelemetrySnapshot, title = '📊 Telemetry Snapshot'): void {
   console.log(chalk.blue(title));
 
@@ -1601,6 +2082,16 @@ function renderTelemetrySnapshot(snapshot: TelemetrySnapshot, title = '📊 Tele
   formatRecentTasks(snapshot.recentTasks).forEach((line) => console.log(line));
 }
 
+/**
+ * Renders telemetry snapshot to the console including agents, resources, and recent tasks.
+ * 
+ * @remarks
+ * Retrieves the latest telemetry from the global session and displays:
+ * - Agent statistics (status, types, resource usage)
+ * - Resource metrics (CPU, memory, GPU)
+ * - Recent task summaries
+ * Shows "No telemetry available" if no snapshot exists.
+ */
 function renderTelemetry(): void {
   const snapshot = session.getTelemetry() as TelemetrySnapshot;
   renderTelemetrySnapshot(snapshot);
@@ -1627,6 +2118,18 @@ function renderDaemonSnapshot(snapshot: {
   renderTelemetrySnapshot(snapshot.telemetry, '📊 Daemon Telemetry');
 }
 
+/**
+ * Emits context aggregation logs to the console.
+ * 
+ * @param logs - Array of context log entries with timestamps, levels, and messages
+ * 
+ * @remarks
+ * Formats each log entry with appropriate color based on level:
+ * - DEBUG: gray
+ * - INFO: blue
+ * - WARN: yellow
+ * - ERROR: red
+ */
 function emitContextLogs(logs: ContextLogEntry[]): void {
   if (!logs.length) {
     return;
@@ -1645,6 +2148,18 @@ function emitContextLogs(logs: ContextLogEntry[]): void {
   }
 }
 
+/**
+ * Emits a summary of aggregated Codex context including artifacts and byte counts.
+ * 
+ * @param context - Aggregated Codex context with inventory, directives, and metadata
+ * @param metadata - Aggregation metadata with artifact counts and byte sizes
+ * 
+ * @remarks
+ * Displays summary of:
+ * - Root directory
+ * - Artifacts included (README, AGENTS.md, directives, etc.)
+ * - Total context size in bytes
+ */
 function emitContextSummary(context: CodexContext, metadata: CodexContextAggregationMetadata): void {
   console.log(chalk.blue('🧠 Codex context summary'));
   console.log(chalk.gray(`  • Context hash: ${context.contextHash}`));
@@ -1660,6 +2175,17 @@ function emitContextSummary(context: CodexContext, metadata: CodexContextAggrega
   }
 }
 
+/**
+ * Attempts to prime Codex with context, retrying on failure.
+ * 
+ * @param prompt - User prompt to prime with
+ * @param attempts - Number of retry attempts (default: 2)
+ * @returns Priming result or null if all attempts fail
+ * 
+ * @remarks
+ * Retries priming operation with exponential backoff (2s delay between attempts).
+ * Logs errors and continues retrying until max attempts reached.
+ */
 async function primeCodexWithRetry(
   system: CodexSynapticSystem,
   context: CodexContext,
@@ -1671,12 +2197,27 @@ async function primeCodexWithRetry(
   console.log(chalk.green(`🔐 Codex CLI primed (hash ${context.contextHash.slice(0, 8)}…).`));
 }
 
+/**
+ * Formats a details object into a readable string representation.
+ * 
+ * @param details - Object with string keys and unknown values
+ * @returns JSON-formatted string with 2-space indentation
+ */
 function formatDetailEntry(details: Record<string, unknown>): string {
   return Object.entries(details)
     .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
     .join(', ');
 }
 
+/**
+ * Formats byte count into human-readable string with appropriate units.
+ * 
+ * @param bytes - Number of bytes to format
+ * @returns Formatted string with units (B, KB, MB, GB)
+ * 
+ * @remarks
+ * Uses base-1024 calculation and shows 2 decimal places for KB and above.
+ */
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return '0 B';
@@ -1695,6 +2236,16 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
+/**
+ * Describes a cache file path for display purposes.
+ * 
+ * @param absPath - Absolute path to cache file
+ * @returns Descriptive string or 'none' if path is not provided
+ * 
+ * @remarks
+ * If path starts with HOME/.codex-synaptic/, shows relative to that directory.
+ * Otherwise shows the full path or basename if short enough.
+ */
 function describeCachePath(absPath?: string): string {
   if (!absPath) {
     return 'all roots';
@@ -1706,6 +2257,16 @@ function describeCachePath(absPath?: string): string {
   return relPath.startsWith('..') ? absPath : relPath;
 }
 
+/**
+ * Parses a string value into an AgentType enum value.
+ * 
+ * @param value - String representation of agent type
+ * @returns AgentType enum value or undefined if invalid
+ * 
+ * @remarks
+ * Converts lowercase snake_case to UPPER_SNAKE_CASE for enum lookup.
+ * Returns undefined if the value doesn't match a valid AgentType.
+ */
 function parseAgentType(value?: string): AgentType | undefined {
   if (!value) {
     return undefined;
@@ -1718,6 +2279,16 @@ function parseAgentType(value?: string): AgentType | undefined {
   return match;
 }
 
+/**
+ * Parses a JSON option string into a typed object.
+ * 
+ * @param value - JSON string to parse
+ * @returns Parsed object of type T or undefined if parsing fails
+ * 
+ * @remarks
+ * Throws an error if JSON is invalid.
+ * Returns undefined if value is not provided.
+ */
 function parseJsonOption<T = any>(value?: string): T | undefined {
   if (!value) {
     return undefined;
@@ -1729,6 +2300,16 @@ function parseJsonOption<T = any>(value?: string): T | undefined {
   }
 }
 
+/**
+ * Loads tool candidate definitions from a JSON file.
+ * 
+ * @param filePath - Path to JSON file containing tool candidates
+ * @returns Array of tool candidates
+ * @throws Error if file doesn't exist, can't be read, or contains invalid JSON
+ * 
+ * @remarks
+ * Expected JSON format is an array of ToolCandidate objects.
+ */
 function loadToolCandidates(filePath: string): ToolCandidate[] {
   const absolutePath = resolve(filePath);
   const content = readFileSync(absolutePath, 'utf8');
@@ -1755,6 +2336,15 @@ function loadToolCandidates(filePath: string): ToolCandidate[] {
   });
 }
 
+/**
+ * Builds a tool usage record from CLI options.
+ * 
+ * @param options - CLI options object with toolName, toolDescription, and toolInput
+ * @returns ToolUsageRecord with timestamp and metadata
+ * 
+ * @remarks
+ * Parses toolInput as JSON if provided, otherwise sets input to null.
+ */
 function buildToolUsageRecord(options: any): ToolUsageRecord {
   let metadataPayload: Record<string, any> | undefined;
   if (options.metadata) {
@@ -1777,6 +2367,344 @@ function buildToolUsageRecord(options: any): ToolUsageRecord {
     metadata: metadataPayload,
     timestamp: options.timestamp ? new Date(options.timestamp).toISOString() : undefined
   };
+}
+
+// ============================================================================
+// Hive-mind helper functions
+// ============================================================================
+
+/**
+ * Builds Codex context from the current working directory.
+ * 
+ * @returns Object containing codexContext, codexMetadata, and codexEnvelope
+ * 
+ * @remarks
+ * Aggregates agent directives, README excerpts, directory inventory, and database metadata.
+ * Emits context logs and summary to console.
+ */
+async function buildCodexContextForHiveMind(originalPrompt: string): Promise<{
+  codexContext: CodexContext;
+  codexMetadata: CodexContextAggregationMetadata;
+  codexEnvelope: CodexPromptEnvelope;
+}> {
+  const builder = new CodexContextBuilder(process.cwd());
+  await builder.withAgentDirectives();
+  await builder.withReadmeExcerpts();
+  await builder.withDirectoryInventory();
+  await builder.withDatabaseMetadata();
+  const buildResult: CodexContextBuildResult = await builder.build();
+
+  const codexContext = buildResult.context;
+  const codexMetadata = buildResult.metadata;
+
+  emitContextLogs(buildResult.logs);
+  emitContextSummary(buildResult.context, buildResult.metadata);
+
+  const contextBlock = renderCodexContextBlock(buildResult.context);
+  const enrichedPrompt = composePromptWithContext(originalPrompt, buildResult.context);
+
+  const codexEnvelope: CodexPromptEnvelope = {
+    originalPrompt,
+    enrichedPrompt,
+    contextBlock
+  };
+
+  return { codexContext, codexMetadata, codexEnvelope };
+}
+
+/**
+ * Executes GOAP strategy workflow.
+ * 
+ * @param system - Codex-Synaptic system instance
+ * @param originalPrompt - User's original prompt
+ * @param options - CLI options including goapProfile, goapGoal, goapDryRun
+ * 
+ * @remarks
+ * Loads or matches GOAP manifest, executes the goal, and displays results.
+ */
+async function executeGoapStrategy(
+  system: CodexSynapticSystem,
+  originalPrompt: string,
+  options: any
+): Promise<void> {
+  let manifest = options.goapProfile
+    ? await goapRegistry.getManifest(options.goapProfile)
+    : await goapRegistry.matchManifest(originalPrompt);
+
+  if (!manifest && options.goapProfile) {
+    throw new Error(`GOAP manifest "${options.goapProfile}" was not found in config/goap.`);
+  }
+
+  if (!manifest) {
+    throw new Error(
+      'No GOAP manifest matched the prompt. Provide --goap-profile to select a manifest explicitly.'
+    );
+  }
+
+  const goalId = options.goapGoal ?? manifest.defaultGoal ?? manifest.goals[0]?.id;
+  if (!goalId) {
+    throw new Error(`GOAP manifest ${manifest.id} does not define a usable goal.`);
+  }
+
+  console.log(
+    chalk.blue(
+      `🧭 Executing GOAP profile ${manifest.metadata?.name ?? manifest.id} (goal: ${goalId})`
+    )
+  );
+
+  const executor = new GoapExecutor(system);
+  const result = await executor.execute(manifest, {
+    goalId,
+    prompt: originalPrompt,
+    dryRun: Boolean(options.goapDryRun)
+  });
+
+  console.log(
+    chalk.green(
+      `✅ GOAP workflow complete — ${result.actionsCompleted}/${result.totalActions} actions executed.`
+    )
+  );
+
+  if (result.artifacts.length) {
+    console.log(chalk.cyan('📦 Generated artifacts:'));
+    for (const artifact of result.artifacts) {
+      console.log(chalk.gray(`  • ${artifact}`));
+    }
+  }
+}
+
+/**
+ * Displays hive-mind execution results in human-readable format.
+ * 
+ * @param outcome - Task execution outcome
+ * @param config - Hive-mind configuration
+ * @param totalTime - Total execution time in milliseconds
+ * @param system - Codex-Synaptic system instance
+ * @param consensusResult - Consensus execution result
+ * @param codexContext - Optional Codex context
+ * 
+ * @remarks
+ * Formats and displays execution summary, code artifacts, Tree-of-Thought results,
+ * stage results, system metrics, and debug output based on configuration.
+ */
+function displayHiveMindResults(
+  outcome: any,
+  config: any,
+  totalTime: number,
+  system: CodexSynapticSystem,
+  _consensusResult: ConsensusExecutionResult,
+  _codexContext?: CodexContext
+): void {
+  const swarmStatus = system.getSwarmCoordinator().getStatus();
+  const meshStatus = system.getNeuralMesh().getStatus();
+  const agentRegistry = system.getAgentRegistry().getStatus();
+  
+  const reactPlanArtifact = outcome.artifacts?.reactPlan ?? null;
+  const _totPlan = reactPlanArtifact?.tot ?? null;
+  console.log(chalk.blue('\n📊 Execution Summary'));
+  console.log(chalk.white('Summary:'), outcome.summary);
+  
+  if (outcome.artifacts?.code) {
+    console.log(chalk.blue('\n💻 Generated Code Artifacts:'));
+    console.log(chalk.gray(outcome.artifacts.code.substring(0, 500) + '...'));
+  }
+  
+  if (reactPlanArtifact?.tot) {
+    const plan = reactPlanArtifact.tot;
+    const bestMean = plan.monteCarlo.branchMeans?.[plan.bestBranch.id] ?? plan.bestBranch.score;
+    const bestPercent = typeof bestMean === 'number' ? (bestMean * 100).toFixed(1) : 'n/a';
+    console.log(chalk.blue('\n🌳 Tree-of-Thought Summary:'));
+    console.log(chalk.white(`  Best Branch: ${plan.bestBranch.label} (${bestPercent}% confidence)`));
+    console.log(chalk.white(`  Monte Carlo Samples: ${plan.monteCarlo.totalSamples}`));
+    console.log(chalk.gray('  Priority Backlog:'));
+    plan.priorityBacklog.slice(0, 5).forEach((item: string, idx: number) => {
+      console.log(chalk.gray(`    ${idx + 1}. ${item}`));
+    });
+    console.log(chalk.gray('  Verification Suite:'));
+    plan.verificationSuite.slice(0, 5).forEach((item: string, idx: number) => {
+      console.log(chalk.gray(`    ${idx + 1}. ${item}`));
+    });
+    if (Array.isArray(plan.knowledgeUpdates) && plan.knowledgeUpdates.length) {
+      console.log(chalk.gray('  Knowledge Updates:'));
+      plan.knowledgeUpdates.slice(0, 5).forEach((item: string, idx: number) => {
+        console.log(chalk.gray(`    ${idx + 1}. ${item}`));
+      });
+    }
+  }
+
+  if (outcome.stages && Array.isArray(outcome.stages)) {
+    console.log(chalk.blue('\n🔄 Stage Results:'));
+    outcome.stages.forEach((stage: any, idx: number) => {
+      console.log(chalk.cyan(`  ${idx + 1}. ${stage.stage} (${stage.taskId})`));
+      if (stage.result?.summary) {
+        console.log(chalk.gray(`     ${stage.result.summary}`));
+      }
+    });
+  }
+
+  // System metrics
+  console.log(chalk.blue('\n📈 System Metrics:'));
+  console.log(chalk.white(`  Agents: ${agentRegistry.totalAgents} active`));
+  console.log(chalk.white(`  Mesh: ${meshStatus.nodeCount} nodes, ${meshStatus.connectionCount} connections`));
+  console.log(chalk.white(`  Swarm: ${swarmStatus.algorithm}, optimizing=${swarmStatus.isOptimizing}`));
+  console.log(chalk.white(`  Execution time: ${totalTime}ms`));
+}
+
+/**
+ * Prepares comprehensive result data for YAML output.
+ * 
+ * @param outcome - Task execution outcome
+ * @param config - Hive-mind configuration
+ * @param totalTime - Total execution time in milliseconds
+ * @param originalPrompt - Original user prompt
+ * @param system - Codex-Synaptic system instance
+ * @param consensusResult - Consensus execution result
+ * @param codexContext - Optional Codex context
+ * @returns Result data object for YAML formatting
+ * 
+ * @remarks
+ * Aggregates execution metadata, system status, consensus status, and Tree-of-Thought results.
+ */
+function prepareResultData(
+  outcome: any,
+  config: any,
+  totalTime: number,
+  originalPrompt: string,
+  system: CodexSynapticSystem,
+  consensusResult: ConsensusExecutionResult,
+  codexContext?: CodexContext
+): any {
+  const swarmStatus = system.getSwarmCoordinator().getStatus();
+  const meshStatus = system.getNeuralMesh().getStatus();
+  const agentRegistry = system.getAgentRegistry().getStatus();
+  
+  const reactPlanArtifact = outcome.artifacts?.reactPlan ?? null;
+  const totPlan = reactPlanArtifact?.tot ?? null;
+
+  return {
+    executionId: `exec-${Date.now()}`,
+    status: 'completed',
+    duration: totalTime,
+    originalPrompt,
+    summary: outcome.summary,
+    artifacts: outcome.artifacts || {},
+    stages: outcome.stages || [],
+    agentCount: agentRegistry.totalAgents,
+    taskCount: outcome.stages?.length || 0,
+    meshStatus: {
+      nodeCount: meshStatus.nodeCount,
+      connectionCount: meshStatus.connectionCount
+    },
+    consensusStatus: {
+      performed: consensusResult.performed,
+      proposalId: consensusResult.proposalId,
+      accepted: consensusResult.accepted,
+      votes: consensusResult.votes,
+      timedOut: consensusResult.timedOut,
+      error: consensusResult.error
+    },
+    swarmStatus: {
+      algorithm: swarmStatus.algorithm,
+      isOptimizing: swarmStatus.isOptimizing
+    },
+    totPlan,
+    codexContext: codexContext ? {
+      enabled: true,
+      contextHash: codexContext.contextHash,
+      sizeBytes: codexContext.sizeBytes
+    } : { enabled: false }
+  };
+}
+
+/**
+ * Executes classic hive-mind orchestration workflow.
+ * 
+ * @param system - Codex-Synaptic system instance
+ * @param prompt - Enriched prompt (potentially with Codex context)
+ * @param originalPrompt - Original user prompt
+ * @param config - Hive-mind configuration
+ * @param options - CLI options including yaml, debug flags
+ * @param codexContext - Optional Codex context
+ * @param codexEnvelope - Optional Codex prompt envelope
+ * 
+ * @remarks
+ * Executes orchestration phases, task execution with timeout, consensus (if needed),
+ * and displays results in requested format (YAML or human-readable).
+ */
+async function executeClassicOrchestration(
+  system: CodexSynapticSystem,
+  prompt: string,
+  originalPrompt: string,
+  config: any,
+  options: any,
+  codexContext?: CodexContext,
+  codexEnvelope?: CodexPromptEnvelope
+): Promise<void> {
+  console.log(chalk.blue('🧠 Initializing hive-mind orchestration...'));
+  console.log(chalk.gray(`Configuration: ${JSON.stringify(config, null, 2)}`));
+
+  if (codexContext && codexEnvelope) {
+    await primeCodexWithRetry(system, codexContext, codexEnvelope);
+  }
+
+  // Execute orchestration phases using helper service
+  await executeOrchestrationPhases(system, config);
+
+  // Phase 5: Task Execution
+  console.log(chalk.cyan('⚡ Phase 5: Task Execution'));
+  console.log(chalk.blue(`Executing: "${prompt}"`));
+
+  const startTime = Date.now();
+  let consensusResult: ConsensusExecutionResult = { performed: false };
+
+  const cleanupEventHandlers = setupWorkflowEventHandlers(system, startTime);
+
+  try {
+    const outcome: any = await Promise.race([
+      system.executeTask(prompt),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Hive-mind execution timeout')), config.timeout))
+    ]);
+
+    const consensusNeeded = shouldRequireConsensus(originalPrompt, config.consensus);
+    if (consensusNeeded) {
+      consensusResult = await orchestrateConsensus(
+        system,
+        originalPrompt,
+        outcome,
+        config.consensus
+      );
+    }
+
+    const totalTime = Date.now() - startTime;
+    console.log(chalk.green(`\n🎉 Hive-mind execution completed in ${totalTime}ms`));
+
+    // Output results based on format preference
+    if (options.yaml) {
+      const resultData = prepareResultData(
+        outcome,
+        config,
+        totalTime,
+        originalPrompt,
+        system,
+        consensusResult,
+        codexContext
+      );
+      console.log(chalk.blue('\n📋 Results (YAML format):'));
+      const yamlOutput = HiveMindYamlFormatter.formatExecutionResult(resultData);
+      console.log(yamlOutput);
+    } else {
+      displayHiveMindResults(outcome, config, totalTime, system, consensusResult, codexContext);
+    }
+
+    if (!config.debug && !options.yaml) {
+      console.log(chalk.blue('\n💾 Results saved to session telemetry'));
+    } else if (config.debug && !options.yaml) {
+      console.log(chalk.blue('\n🔍 Full Debug Output:'));
+      console.log(JSON.stringify(outcome, null, 2));
+    }
+  } finally {
+    cleanupEventHandlers.cleanup();
+  }
 }
 
 // System commands
@@ -1842,31 +2770,26 @@ systemCmd
   .description('Show system status and telemetry')
   .action(handleCommand('system.status', async () => {
     const system = session.getSystemUnsafe();
-    if (system) {
-      const status = system.getStatus();
-      console.log(chalk.blue('🧠 Codex-Synaptic System Status'));
-      console.log(`  Initialized: ${status.initialized}`);
-      console.log(`  Shutting down: ${status.shuttingDown}`);
-      renderTelemetry();
-      return;
-    }
-
-    const background = getBackgroundStatus();
-    if (background.running) {
-      const snapshot = await queryBackgroundRuntimeSnapshot();
-      if (snapshot) {
-        renderDaemonSnapshot({
-          ...snapshot,
-          telemetry: snapshot.telemetry as TelemetrySnapshot
-        });
-      } else {
-        console.log(chalk.yellow('⚠️  Daemon is running but runtime snapshot is unavailable.'));
-        console.log(chalk.gray(`  PID: ${background.pid}`));
+    const backgroundStatus = getBackgroundStatus();
+    if (!system) {
+      if (backgroundStatus.running) {
+        console.log(chalk.yellow('⚠️  Foreground session not started in this shell.'));
+        console.log(chalk.green('✅ Background daemon is running.'));
+        renderBackgroundDaemonStatus(backgroundStatus);
+        console.log(chalk.gray('Use `codex-synaptic system start` to start a foreground session or `codex-synaptic background stop` to stop the daemon.'));
+        return;
       }
+      console.log(chalk.yellow('⚠️  System not started. Run `codex-synaptic system start` first.'));
       return;
     }
 
-    console.log(chalk.yellow('⚠️  System not started. Run `codex-synaptic system start` first.'));
+    const status = system.getStatus();
+    console.log(chalk.blue('🧠 Codex-Synaptic System Status'));
+    console.log(`  Initialized: ${status.initialized}`);
+    console.log(`  Shutting down: ${status.shuttingDown}`);
+    renderTelemetry();
+    console.log('');
+    renderBackgroundDaemonStatus(backgroundStatus);
   }));
 
 systemCmd
@@ -2011,11 +2934,13 @@ openaiCmd
       const windowMs = Math.max(1000, Math.round(windowMinutes * 60000));
       const summary = system.getOpenAIUsageSummary(windowMs);
       const events = system.getRecentOpenAIUsage(limit);
+      const readinessIssues = system.getOpenAIReadinessIssues();
 
       if (options.json) {
         const payload = {
           configured: Boolean(system.getOpenAIResolvedConfiguration()?.config?.enabled),
           clientReady: Boolean(system.getOpenAIResponsesClient()?.isReady()),
+          diagnostics: readinessIssues,
           windowMinutes,
           summary,
           events
@@ -2030,6 +2955,16 @@ openaiCmd
       console.log(chalk.blue('🧮 OpenAI Usage Overview'));
       console.log(`  Integration configured: ${configured ? chalk.green('yes') : chalk.red('no')}`);
       console.log(`  Client ready: ${ready ? chalk.green('yes') : chalk.red('no')}`);
+      if (readinessIssues.length) {
+        console.log(chalk.yellow('\nReadiness diagnostics'));
+        readinessIssues.forEach((issue) => {
+          const statusSuffix = typeof issue.statusCode === 'number' ? ` (HTTP ${issue.statusCode})` : '';
+          console.log(chalk.yellow(`  • [${issue.code}] ${issue.message}${statusSuffix}`));
+          issue.recommendedActions.forEach((action) => {
+            console.log(chalk.gray(`     - ${action}`));
+          });
+        });
+      }
       if (!system.hasOpenAIUsage()) {
         console.log(chalk.gray('  No usage events recorded yet. Run Codex workflows that invoke OpenAI responses.'));
         return;
@@ -2104,35 +3039,7 @@ backgroundCmd
   .description('Show the status of the detached background system')
   .action(handleCommand('background.status', async () => {
     const status = getBackgroundStatus();
-    if (!status.running) {
-      console.log(chalk.gray('Background system is not running.'));
-      return;
-    }
-
-    const runtime = await queryBackgroundRuntimeSnapshot();
-    console.log(chalk.blue('🛰 Background system'));
-    console.log(`  PID: ${status.pid}`);
-    console.log(`  Started at: ${status.startedAt}`);
-    if (status.cwd) {
-      console.log(`  CWD: ${status.cwd}`);
-    }
-    console.log(`  Interface: ${status.interfaceMode ?? 'cli'}/${status.tier ?? 'intermediate'}`);
-    if (status.socketPath) {
-      console.log(`  Socket: ${status.socketPath}`);
-    }
-    if (status.runtimePath) {
-      console.log(`  Runtime snapshot: ${status.runtimePath}`);
-    }
-    if (status.logFile) {
-      console.log(`  Log file: ${status.logFile}`);
-    }
-
-    if (runtime) {
-      console.log(`  Last update: ${runtime.updatedAt}`);
-      console.log(`  Ready: ${runtime.status.initialized ? chalk.green('yes') : chalk.red('no')}`);
-    } else {
-      console.log(chalk.yellow('  Runtime snapshot unavailable. Use `background attach --watch` for active diagnostics.'));
-    }
+    renderBackgroundDaemonStatus(status);
   }));
 
 backgroundCmd
@@ -3000,6 +3907,20 @@ reasoningCmd
     });
   }));
 
+/**
+ * Prints a reasoning run record to the console with formatted sections.
+ * 
+ * @param record - Reasoning run record with metadata, iterations, and outcome
+ * 
+ * @remarks
+ * Displays:
+ * - Strategy type and status
+ * - Execution timing and iteration count
+ * - Initial prompt
+ * - Iteration details with thoughts and actions
+ * - Final answer or error
+ * - Full outcome JSON
+ */
 function printReasoningRecord(record: ReasoningRunRecord): void {
   console.log(chalk.gray(`   Type: ${record.planType}`));
   console.log(chalk.gray(`   Status: ${record.status}`));
@@ -3901,50 +4822,7 @@ hiveMindCmd
 
     if (strategy === 'goap') {
       await useSystem('hive-mind goap', async (system) => {
-        let manifest = options.goapProfile
-          ? await goapRegistry.getManifest(options.goapProfile)
-          : await goapRegistry.matchManifest(originalPrompt);
-
-        if (!manifest && options.goapProfile) {
-          throw new Error(`GOAP manifest "${options.goapProfile}" was not found in config/goap.`);
-        }
-
-        if (!manifest) {
-          throw new Error(
-            'No GOAP manifest matched the prompt. Provide --goap-profile to select a manifest explicitly.'
-          );
-        }
-
-        const goalId = options.goapGoal ?? manifest.defaultGoal ?? manifest.goals[0]?.id;
-        if (!goalId) {
-          throw new Error(`GOAP manifest ${manifest.id} does not define a usable goal.`);
-        }
-
-        console.log(
-          chalk.blue(
-            `🧭 Executing GOAP profile ${manifest.metadata?.name ?? manifest.id} (goal: ${goalId})`
-          )
-        );
-
-        const executor = new GoapExecutor(system);
-        const result = await executor.execute(manifest, {
-          goalId,
-          prompt: originalPrompt,
-          dryRun: Boolean(options.goapDryRun)
-        });
-
-        console.log(
-          chalk.green(
-            `✅ GOAP workflow complete — ${result.actionsCompleted}/${result.totalActions} actions executed.`
-          )
-        );
-
-        if (result.artifacts.length) {
-          console.log(chalk.cyan('📦 Generated artifacts:'));
-          for (const artifact of result.artifacts) {
-            console.log(chalk.gray(`  • ${artifact}`));
-          }
-        }
+        await executeGoapStrategy(system, originalPrompt, options);
       });
       return;
     }
@@ -3971,36 +4849,19 @@ hiveMindCmd
     }
 
     if (codexRequested) {
-      const builder = new CodexContextBuilder(process.cwd());
-      await builder.withAgentDirectives();
-      await builder.withReadmeExcerpts();
-      await builder.withDirectoryInventory();
-      await builder.withDatabaseMetadata();
-      const buildResult: CodexContextBuildResult = await builder.build();
-
-      codexContext = buildResult.context;
-      codexMetadata = buildResult.metadata;
-
-      emitContextLogs(buildResult.logs);
-      emitContextSummary(buildResult.context, buildResult.metadata);
-
-      const contextBlock = renderCodexContextBlock(buildResult.context);
-      const enrichedPrompt = composePromptWithContext(originalPrompt, buildResult.context);
-
-      codexEnvelope = {
-        originalPrompt,
-        enrichedPrompt,
-        contextBlock
-      };
+      const result = await buildCodexContextForHiveMind(originalPrompt);
+      codexContext = result.codexContext;
+      codexMetadata = result.codexMetadata;
+      codexEnvelope = result.codexEnvelope;
 
       if (options.dryRun) {
         console.log(chalk.yellow('⚙️  Dry-run: Codex context ready. Skipping hive-mind orchestration.'));
         console.log('');
-        console.log(chalk.gray(contextBlock));
+        console.log(chalk.gray(codexEnvelope.contextBlock));
         return;
       }
 
-      prompt = enrichedPrompt;
+      prompt = codexEnvelope.enrichedPrompt;
       console.log(chalk.cyan('📚 Codex context attached to hive-mind prompt.'));
     }
 
@@ -4077,171 +4938,18 @@ hiveMindCmd
     await useSystem('hive-mind spawn', async (system) => {
       const restoreLogging = configureLogStreaming(streamLogs, effectiveLogLevel);
       try {
-        console.log(chalk.blue('🧠 Initializing hive-mind orchestration...'));
-        console.log(chalk.gray(`Configuration: ${JSON.stringify(config, null, 2)}`));
-
-        if (codexContext && codexEnvelope) {
-          await primeCodexWithRetry(system, codexContext, codexEnvelope);
-        }
-
-        // Execute orchestration phases using helper service
-        await executeOrchestrationPhases(system, config);
-
-        // Phase 5: Task Execution
-        console.log(chalk.cyan('⚡ Phase 5: Task Execution'));
-        console.log(chalk.blue(`Executing: "${prompt}"`));
-
-        const startTime = Date.now();
-        let consensusResult: ConsensusExecutionResult = { performed: false };
-
-        const onStageStarted = (event: any) => {
-          console.log(chalk.gray(`    ▶ ${event.label} started (${event.taskType})`));
-        };
-        const onStageCompleted = (event: any) => {
-          const elapsed = Date.now() - startTime;
-          console.log(chalk.green(`    ✓ ${event.label} completed (+${elapsed}ms)`));
-        };
-        const onStageFailed = (event: any) => {
-          console.log(chalk.red(`    ✗ ${event.label} failed: ${event.error}`));
-        };
-
-        system.on('workflowStageStarted', onStageStarted);
-        system.on('workflowStageCompleted', onStageCompleted);
-        system.on('workflowStageFailed', onStageFailed);
-
-      try {
-        const outcome: any = await Promise.race([
-          system.executeTask(prompt),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Hive-mind execution timeout')), config.timeout))
-        ]);
-
-        const consensusNeeded = shouldRequireConsensus(originalPrompt, config.consensus);
-        if (consensusNeeded) {
-          consensusResult = await orchestrateConsensus(
-            system,
-            originalPrompt,
-            outcome,
-            config.consensus
-          );
-        }
-
-        const totalTime = Date.now() - startTime;
-        console.log(chalk.green(`\n🎉 Hive-mind execution completed in ${totalTime}ms`));
-        
-        // Collect system status information
-        const swarmStatus = system.getSwarmCoordinator().getStatus();
-        const meshStatus = system.getNeuralMesh().getStatus();
-        const agentRegistry = system.getAgentRegistry().getStatus();
-        
-        // Prepare comprehensive result data
-        const reactPlanArtifact = (outcome as any).artifacts?.reactPlan ?? null;
-        const totPlan = reactPlanArtifact?.tot ?? null;
-
-        const resultData = {
-          executionId: `exec-${Date.now()}`,
-          status: 'completed',
-          duration: totalTime,
+        await executeClassicOrchestration(
+          system,
+          prompt,
           originalPrompt,
-          summary: (outcome as any).summary,
-          artifacts: (outcome as any).artifacts || {},
-          stages: (outcome as any).stages || [],
-          agentCount: agentRegistry.totalAgents,
-          taskCount: (outcome as any).stages?.length || 0,
-          meshStatus: {
-            nodeCount: meshStatus.nodeCount,
-            connectionCount: meshStatus.connectionCount
-          },
-          consensusStatus: {
-            performed: consensusResult.performed,
-            proposalId: consensusResult.proposalId,
-            accepted: consensusResult.accepted,
-            votes: consensusResult.votes,
-            timedOut: consensusResult.timedOut,
-            error: consensusResult.error
-          },
-          swarmStatus: {
-            algorithm: swarmStatus.algorithm,
-            isOptimizing: swarmStatus.isOptimizing
-          },
-          totPlan,
-          codexContext: codexContext ? {
-            enabled: true,
-            contextHash: codexContext.contextHash,
-            sizeBytes: codexContext.sizeBytes
-          } : { enabled: false }
-        };
-
-        // Output results based on format preference
-        if (options.yaml) {
-          console.log(chalk.blue('\n📋 Results (YAML format):'));
-          const yamlOutput = HiveMindYamlFormatter.formatExecutionResult(resultData);
-          console.log(yamlOutput);
-        } else {
-          // Display comprehensive results in human-readable format
-          console.log(chalk.blue('\n📊 Execution Summary'));
-          console.log(chalk.white('Summary:'), (outcome as any).summary);
-          
-          if ((outcome as any).artifacts?.code) {
-            console.log(chalk.blue('\n💻 Generated Code Artifacts:'));
-            console.log(chalk.gray((outcome as any).artifacts.code.substring(0, 500) + '...'));
-          }
-          
-          if (reactPlanArtifact?.tot) {
-            const plan = reactPlanArtifact.tot;
-            const bestMean = plan.monteCarlo.branchMeans?.[plan.bestBranch.id] ?? plan.bestBranch.score;
-            const bestPercent = typeof bestMean === 'number' ? (bestMean * 100).toFixed(1) : 'n/a';
-            console.log(chalk.blue('\n🌳 Tree-of-Thought Summary:'));
-            console.log(chalk.white(`  Best Branch: ${plan.bestBranch.label} (${bestPercent}% confidence)`));
-            console.log(chalk.white(`  Monte Carlo Samples: ${plan.monteCarlo.totalSamples}`));
-            console.log(chalk.gray('  Priority Backlog:'));
-            plan.priorityBacklog.slice(0, 5).forEach((item: string, idx: number) => {
-              console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-            });
-            console.log(chalk.gray('  Verification Suite:'));
-            plan.verificationSuite.slice(0, 5).forEach((item: string, idx: number) => {
-              console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-            });
-            if (Array.isArray(plan.knowledgeUpdates) && plan.knowledgeUpdates.length) {
-              console.log(chalk.gray('  Knowledge Updates:'));
-              plan.knowledgeUpdates.slice(0, 5).forEach((item: string, idx: number) => {
-                console.log(chalk.gray(`    ${idx + 1}. ${item}`));
-              });
-            }
-          }
-
-          if ((outcome as any).stages && Array.isArray((outcome as any).stages)) {
-            console.log(chalk.blue('\n🔄 Stage Results:'));
-            (outcome as any).stages.forEach((stage: any, idx: number) => {
-              console.log(chalk.cyan(`  ${idx + 1}. ${stage.stage} (${stage.taskId})`));
-              if (stage.result?.summary) {
-                console.log(chalk.gray(`     ${stage.result.summary}`));
-              }
-            });
-          }
-
-          // System metrics
-          console.log(chalk.blue('\n📈 System Metrics:'));
-          console.log(chalk.white(`  Agents: ${agentRegistry.totalAgents} active`));
-          console.log(chalk.white(`  Mesh: ${meshStatus.nodeCount} nodes, ${meshStatus.connectionCount} connections`));
-          console.log(chalk.white(`  Swarm: ${swarmStatus.algorithm}, optimizing=${swarmStatus.isOptimizing}`));
-          console.log(chalk.white(`  Execution time: ${totalTime}ms`));
-        }
-
-        if (!config.debug && !options.yaml) {
-          console.log(chalk.blue('\n💾 Results saved to session telemetry'));
-        } else if (config.debug && !options.yaml) {
-          console.log(chalk.blue('\n🔍 Full Debug Output:'));
-          console.log(JSON.stringify(outcome, null, 2));
-        }
-
+          config,
+          options,
+          codexContext,
+          codexEnvelope
+        );
       } finally {
-        system.off('workflowStageStarted', onStageStarted);
-        system.off('workflowStageCompleted', onStageCompleted);
-        system.off('workflowStageFailed', onStageFailed);
+        restoreLogging();
       }
-    } finally {
-      restoreLogging();
-    }
     });
   }));
 
@@ -4441,6 +5149,35 @@ ${name}`));
     });
   });
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Execute codex CLI command with timeout and error handling
+ */
+async function execCodexCommand(args: string[], timeoutMs = 10000): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  try {
+    const { stdout, stderr } = await execFileAsync('codex', args, {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: timeoutMs
+    });
+    return { stdout, stderr, exitCode: 0 };
+  } catch (error: unknown) {
+    const err = error as { code?: string | number; killed?: boolean; signal?: string; stdout?: string; stderr?: string };
+    if (err.code === 'ENOENT') {
+      throw new Error('codex command not found. Ensure Codex CLI is installed and in PATH.');
+    }
+    if (err.killed && err.signal === 'SIGTERM') {
+      throw new Error(`codex command timed out after ${timeoutMs}ms`);
+    }
+    return {
+      stdout: err.stdout || '',
+      stderr: err.stderr || '',
+      exitCode: typeof err.code === 'number' ? err.code : 1
+    };
+  }
+}
+
 envCmd
   .command('docker-login')
   .description('Authenticate Docker registries required by one or more service profiles')
@@ -4482,21 +5219,15 @@ envCmd
       }
 
       if (options.replace) {
-        const remove = spawnSync('codex', ['mcp', 'remove', registration.codexName], {
-          cwd: process.cwd(),
-          encoding: 'utf8'
-        });
-        if (remove.status === 0) {
+        const remove = await execCodexCommand(['mcp', 'remove', registration.codexName]);
+        if (remove.exitCode === 0) {
           console.log(chalk.gray(`Removed existing Codex MCP entry: ${registration.codexName}`));
         }
       }
 
-      const add = spawnSync('codex', ['mcp', 'add', registration.codexName, '--url', registration.url], {
-        cwd: process.cwd(),
-        encoding: 'utf8'
-      });
+      const add = await execCodexCommand(['mcp', 'add', registration.codexName, '--url', registration.url]);
 
-      if (add.status !== 0) {
+      if (add.exitCode !== 0) {
         const stderr = add.stderr?.trim();
         if (stderr?.includes('already exists')) {
           console.log(chalk.yellow(`⚠️  Codex MCP entry already exists: ${registration.codexName}`));
@@ -4636,36 +5367,98 @@ doctorCmd
     DEFAULT_MCP_PROFILES.join(',')
   )
   .action(handleCommand('doctor', async (options) => {
-    const profileNames = parseProfileList(options.mcpProfiles, [...DEFAULT_MCP_PROFILES]);
-    const report = await runDoctor({
+    const profileNames = String(options.mcpProfiles)
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const checks: HealthCheck[] = [];
+
+    // Check CLI build artifact
+    const buildCheck = checkCliBuildArtifact();
+    checks.push(buildCheck);
+
+    // Check CLI execution if build exists
+    if (buildCheck.ok) {
+      const distCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
+      const execCheck = checkCliExecution(distCliPath);
+      if (execCheck) {
+        checks.push(execCheck);
+      }
+    }
+
+    // Check Codex authentication
+    if (!options.skipCodexAuth) {
+      checks.push(checkCodexAuth());
+    }
+
+    // Check Codex MCP list
+    let codexMcpNames = new Set<string>();
+    const codexMcpList = spawnSync('codex', ['mcp', 'list', '--json'], {
       cwd: process.cwd(),
       mcpProfiles: profileNames,
       skipCodexAuth: Boolean(options.skipCodexAuth)
     });
-
-    if (options.json) {
-      console.log(JSON.stringify(report, null, 2));
+    if (codexMcpList.status === 0) {
+      try {
+        const parsed = JSON.parse(codexMcpList.stdout || '[]') as Array<{ name?: string }>;
+        codexMcpNames = new Set(parsed.map((entry) => String(entry.name)).filter(Boolean));
+        checks.push({
+          id: 'codex.mcp_list',
+          ok: true,
+          details: `Loaded ${codexMcpNames.size} Codex MCP registration(s).`
+        });
+      } catch (error) {
+        checks.push({
+          id: 'codex.mcp_list',
+          ok: false,
+          details: `Failed to parse codex mcp list output: ${(error as Error).message}`,
+          remediation: 'Run `codex mcp list --json` and inspect output.'
+        });
+      }
     } else {
-      console.log(chalk.blue('🩺 Codex-Synaptic Doctor'));
-      console.log(chalk.gray(`  Passed: ${report.summary.passed}`));
-      console.log(chalk.gray(`  Failed: ${report.summary.failed}`));
+      checks.push({
+        id: 'codex.mcp_list',
+        ok: false,
+        details: codexMcpList.stderr?.trim() || 'codex mcp list failed',
+        remediation: 'Verify Codex CLI install and MCP support (`codex mcp --help`).'
+      });
+    }
 
-      report.checks.forEach((check) => {
-        const marker = check.ok ? chalk.green('✓') : chalk.red('✗');
-        console.log(`${marker} ${check.id}: ${check.details}`);
-        if (!check.ok && check.remediation) {
-          console.log(chalk.yellow(`  remediation: ${check.remediation}`));
+    // Check MCP profiles using service manager
+    for (const profileName of profileNames) {
+      const status = await serviceManager.status(profileName);
+      const registration = serviceManager.codexRegistration(profileName);
+      const registered = registration ? codexMcpNames.has(registration.codexName) : true;
+      const healthy = status.healthy !== false;
+      const ok = status.running && healthy && registered;
+
+      let details = `running=${status.running} healthy=${status.healthy === null ? 'n/a' : status.healthy} registered=${registered}`;
+      if (status.diagnostics.length) {
+        details += ` diagnostics=${status.diagnostics.join(' | ')}`;
+      }
+
+      const remediationParts: string[] = [];
+      if (!status.running || !healthy) {
+        remediationParts.push(`codex-synaptic env up ${profileName}`);
+      }
+      if (registration && !registered) {
+        remediationParts.push(`codex-synaptic env codex-register ${profileName}`);
+      }
+
+      checks.push({
+        id: `mcp.${profileName}`,
+        ok,
+        details,
+        remediation: remediationParts.length ? remediationParts.join(' && ') : undefined,
+        metadata: {
+          codexName: registration?.codexName,
+          url: registration?.url
         }
       });
     }
 
-    if (options.strict && !report.ok) {
-      throw new CliGateError(
-        ErrorCode.DOCTOR_CHECKS_FAILED,
-        `Doctor found ${report.summary.failed} failing check(s).`,
-        { summary: report.summary, report }
-      );
-    }
+    renderHealthCheckResults(checks, { json: options.json, strict: options.strict });
   }));
 
 const memoryCmd = decorateCommandHelp(
@@ -5145,7 +5938,7 @@ interactiveCmd
               break;
           }
         }
-      });
+      }, { autoShutdown: false });
     } finally {
       rootLogger.setConsoleLevel(previousConsoleLevel);
     }

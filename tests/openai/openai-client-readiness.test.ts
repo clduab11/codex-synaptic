@@ -40,6 +40,9 @@ describe('OpenAIResponsesClient readiness behavior', () => {
 
     expect(client.isReady()).toBe(false);
     expect(client.getUnavailableReason()).toBe('missing_api_key');
+    expect(client.getReadinessDiagnostic()).toMatchObject({
+      code: 'missing_api_key'
+    });
     await expect(client.listAvailableModels()).resolves.toEqual([]);
   });
 
@@ -56,6 +59,10 @@ describe('OpenAIResponsesClient readiness behavior', () => {
     await expect(client.listAvailableModels()).resolves.toEqual([]);
     expect(client.isReady()).toBe(false);
     expect(client.getUnavailableReason()).toBe('invalid_credentials');
+    expect(client.getReadinessDiagnostic()).toMatchObject({
+      code: 'invalid_credentials',
+      statusCode: 401
+    });
     await expect(client.createResponse({ input: 'hello' })).rejects.toThrow(
       'OpenAI client disabled for this session due to invalid credentials.'
     );
