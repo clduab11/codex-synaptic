@@ -41,7 +41,7 @@ export interface DoctorDependencies {
     command: string,
     args: string[],
     options: { cwd: string; encoding: BufferEncoding }
-  ) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>;
+  ) => Promise<Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>>;
   getServiceStatus?: (name: string) => Promise<ServiceStatus>;
   getCodexRegistration?: (name: string) => { codexName: string; url: string } | null;
 }
@@ -129,7 +129,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   const profileNames = parseProfileList(options.mcpProfiles);
   const fileExists = deps.fileExists ?? existsSync;
   const spawnCommand = deps.spawnCommand
-    ?? ((command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
+    ?? (async (command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
   const getServiceStatus = deps.getServiceStatus ?? ((name: string) => serviceManager.status(name));
   const getCodexRegistration = deps.getCodexRegistration
     ?? ((name: string) => serviceManager.codexRegistration(name));
@@ -146,7 +146,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   });
 
   if (distExists) {
-    const cliHelp = spawnCommand('node', [distCliPath, '--help'], {
+    const cliHelp = await spawnCommand('node', [distCliPath, '--help'], {
       cwd,
       encoding: 'utf8'
     });
@@ -164,7 +164,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   }
 
   if (!options.skipCodexAuth) {
-    const loginStatus = spawnCommand('codex', ['login', 'status'], {
+    const loginStatus = await spawnCommand('codex', ['login', 'status'], {
       cwd,
       encoding: 'utf8'
     });
@@ -180,7 +180,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
     });
   }
 
-  const codexMcpList = spawnCommand('codex', ['mcp', 'list', '--json'], {
+  const codexMcpList = await spawnCommand('codex', ['mcp', 'list', '--json'], {
     cwd,
     encoding: 'utf8'
   });

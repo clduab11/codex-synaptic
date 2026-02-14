@@ -15,7 +15,7 @@ describe('runLaunch', () => {
 
     const deps: LaunchDependencies = {
       fileExists: () => true,
-      spawnCommand: (command, args) => {
+      spawnCommand: async (command, args) => {
         spawnCalls.push(`${command} ${args.join(' ')}`);
 
         if (command === 'node' && args.includes('--help')) {
@@ -113,7 +113,7 @@ describe('runLaunch', () => {
       },
       {
         fileExists: () => true,
-        spawnCommand: (command, args) => {
+        spawnCommand: async (command, args) => {
           if (command === 'node' && args.includes('--help')) {
             return { status: 0, stdout: 'ok', stderr: '' };
           }
@@ -147,7 +147,7 @@ describe('runLaunch', () => {
       },
       {
         fileExists: () => true,
-        spawnCommand: (command, args) => {
+        spawnCommand: async (command, args) => {
           if (command === 'node' && args.includes('--help')) {
             return { status: 0, stdout: 'ok', stderr: '' };
           }

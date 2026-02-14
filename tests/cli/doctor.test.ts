@@ -18,7 +18,7 @@ describe('runDoctor', () => {
   it('fails when the dist CLI artifact is missing', async () => {
     const deps: DoctorDependencies = {
       fileExists: () => false,
-      spawnCommand: (command, args) => {
+      spawnCommand: async (command, args) => {
         if (command === 'codex' && args.join(' ') === 'mcp list --json') {
           return {
             status: 0,
@@ -49,7 +49,7 @@ describe('runDoctor', () => {
   it('fails codex auth check when codex login status returns non-zero', async () => {
     const deps: DoctorDependencies = {
       fileExists: () => true,
-      spawnCommand: (command, args) => {
+      spawnCommand: async (command, args) => {
         if (command === 'node' && args.includes('--help')) {
           return { status: 0, stdout: 'ok', stderr: '' };
         }
@@ -95,7 +95,7 @@ describe('runDoctor', () => {
 
     const deps: DoctorDependencies = {
       fileExists: () => true,
-      spawnCommand: (command, args) => {
+      spawnCommand: async (command, args) => {
         if (command === 'node' && args.includes('--help')) {
           return { status: 0, stdout: 'ok', stderr: '' };
         }
@@ -139,7 +139,7 @@ describe('runDoctor', () => {
   it('returns actionable remediation for failing MCP profile checks', async () => {
     const deps: DoctorDependencies = {
       fileExists: () => true,
-      spawnCommand: (command, args) => {
+      spawnCommand: async (command, args) => {
         if (command === 'node' && args.includes('--help')) {
           return { status: 0, stdout: 'ok', stderr: '' };
         }
@@ -176,7 +176,7 @@ describe('runDoctor', () => {
   it('fails codex MCP parsing checks when codex mcp list returns malformed JSON', async () => {
     const deps: DoctorDependencies = {
       fileExists: () => true,
-      spawnCommand: (command, args) => {
+      spawnCommand: async (command, args) => {
         if (command === 'node' && args.includes('--help')) {
           return { status: 0, stdout: 'ok', stderr: '' };
         }

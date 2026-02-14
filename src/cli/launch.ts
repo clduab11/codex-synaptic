@@ -62,9 +62,9 @@ function normalizeSpawn(
     command: string,
     args: string[],
     options: { cwd: string; encoding: BufferEncoding }
-  ) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'> {
+  ) => Promise<Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>> {
   return deps.spawnCommand
-    ?? ((command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
+    ?? (async (command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
 }
 
 function buildLaunchReport(steps: LaunchStep[], doctorReport: DoctorReport): LaunchReport {
@@ -148,8 +148,8 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
   const distExists = fileExists(distCliPath);
 
   const preflightStep: LaunchStep = distExists
-    ? (() => {
-      const cliHelp = spawnCommand('node', [distCliPath, '--help'], {
+    ? await (async () => {
+      const cliHelp = await spawnCommand('node', [distCliPath, '--help'], {
         cwd,
         encoding: 'utf8'
       });
@@ -185,8 +185,8 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
       ok: true,
       details: 'Skipped codex auth check (--skip-codex-auth).'
     }
-    : (() => {
-      const loginStatus = spawnCommand('codex', ['login', 'status'], {
+    : await (async () => {
+      const loginStatus = await spawnCommand('codex', ['login', 'status'], {
         cwd,
         encoding: 'utf8'
       });
@@ -295,7 +295,7 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
           continue;
         }
 
-        const remove = spawnCommand('codex', ['mcp', 'remove', registration.codexName], {
+        const remove = await spawnCommand('codex', ['mcp', 'remove', registration.codexName], {
           cwd,
           encoding: 'utf8'
         });
@@ -307,7 +307,7 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
           );
         }
 
-        const add = spawnCommand('codex', ['mcp', 'add', registration.codexName, '--url', registration.url], {
+        const add = await spawnCommand('codex', ['mcp', 'add', registration.codexName, '--url', registration.url], {
           cwd,
           encoding: 'utf8'
         });
