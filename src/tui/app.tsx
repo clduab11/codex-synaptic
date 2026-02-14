@@ -1,234 +1,113 @@
-/**
- * TUI Application Entry Point
- * 
- * Main Ink application component for the Terminal User Interface.
- * This file provides the foundation for the React-based TUI.
- * 
- * Note: Ink must be installed as a dependency to use this module:
- *   npm install ink ink-select-input ink-text-input ink-spinner
- */
-
-import React, { useReducer, useEffect, useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FC } from 'react';
 import type { InterfaceTier } from '../core/config.js';
-import type {
-  TuiState,
-  TuiAction,
-  TuiViewType,
-  TuiPanel,
-} from './types.js';
-import { getTheme } from './themes.js';
-import { getTuiAdapter } from './tui-adapter.js';
+import { Logger } from '../core/logger.js';
 
-/**
- * Default panels configuration
- */
-const defaultPanels: TuiPanel[] = [
-  { id: 'sidebar', title: 'Navigation', visible: true, position: 'left', width: 20 },
-  { id: 'main', title: 'Main', visible: true, position: 'center' },
-  { id: 'status', title: 'Status', visible: true, position: 'bottom', height: 3 },
-  { id: 'details', title: 'Details', visible: false, position: 'right', width: 30, minTier: 'intermediate' },
-];
-
-/**
- * Initial TUI state
- */
-function createInitialState(tier: InterfaceTier): TuiState {
-  return {
-    navigation: {
-      currentView: 'dashboard',
-      breadcrumbs: ['Dashboard'],
-      selectedIndex: 0,
-      scrollOffset: 0,
-    },
-    theme: getTheme('dark'),
-    tier,
-    refreshInterval: 1000,
-    showShortcuts: true,
-    animations: true,
-    panels: defaultPanels,
-    pendingOutput: [],
-    activeProgress: new Map(),
-    connected: false,
-    lastUpdate: new Date(),
+export interface TuiRuntimeSnapshot {
+  source: 'local' | 'daemon';
+  pid?: number;
+  startedAt?: string;
+  updatedAt?: string;
+  cwd?: string;
+  interfaceMode?: string;
+  tier?: InterfaceTier;
+  status: {
+    initialized: boolean;
+    shuttingDown: boolean;
+    daemon: boolean;
+  };
+  telemetry: {
+    agents: {
+      total: number;
+      available: number;
+      byType: Record<string, number>;
+      byStatus: Record<string, number>;
+    };
+    resources?: {
+      memoryMB?: number;
+      cpuPercent?: number;
+      activeAgents?: number;
+      concurrentTasks?: number;
+      requestsPerMinute?: number;
+    };
+    mesh?: {
+      topology?: string;
+      nodeCount?: number;
+      connectionCount?: number;
+    };
+    swarm?: {
+      isRunning?: boolean;
+      algorithm?: string;
+      particleCount?: number;
+      isOptimizing?: boolean;
+    };
+    consensus?: {
+      isRunning?: boolean;
+      activeProposals?: number;
+      totalVotes?: number;
+    };
+    recentTasks: Array<{
+      id: string;
+      status: 'completed' | 'failed';
+      summary?: string;
+      timestamp: string;
+    }>;
   };
 }
 
-/**
- * TUI state reducer
- */
-function tuiReducer(state: TuiState, action: TuiAction): TuiState {
-  switch (action.type) {
-    case 'NAVIGATE': {
-      const viewLabels: Record<TuiViewType, string> = {
-        dashboard: 'Dashboard',
-        agents: 'Agents',
-        tasks: 'Tasks',
-        mesh: 'Neural Mesh',
-        swarm: 'Swarm',
-        consensus: 'Consensus',
-        memory: 'Memory',
-        settings: 'Settings',
-        help: 'Help',
-        logs: 'Logs',
-      };
-      
-      return {
-        ...state,
-        navigation: {
-          ...state.navigation,
-          previousView: state.navigation.currentView,
-          currentView: action.view,
-          breadcrumbs: [viewLabels[action.view]],
-          selectedIndex: 0,
-          scrollOffset: 0,
-        },
-      };
-    }
-    
-    case 'GO_BACK':
-      if (state.navigation.previousView) {
-        return tuiReducer(state, { type: 'NAVIGATE', view: state.navigation.previousView });
-      }
-      return state;
-    
-    case 'SET_THEME':
-      return {
-        ...state,
-        theme: getTheme(action.theme),
-      };
-    
-    case 'SET_TIER':
-      return {
-        ...state,
-        tier: action.tier,
-        panels: state.panels.map(panel => ({
-          ...panel,
-          visible: panel.minTier ? shouldShowForTier(action.tier, panel.minTier) : panel.visible,
-        })),
-      };
-    
-    case 'SET_REFRESH_INTERVAL':
-      return {
-        ...state,
-        refreshInterval: action.interval,
-      };
-    
-    case 'TOGGLE_SHORTCUTS':
-      return {
-        ...state,
-        showShortcuts: !state.showShortcuts,
-      };
-    
-    case 'TOGGLE_ANIMATIONS':
-      return {
-        ...state,
-        animations: !state.animations,
-      };
-    
-    case 'TOGGLE_PANEL': {
-      return {
-        ...state,
-        panels: state.panels.map(panel =>
-          panel.id === action.panelId
-            ? { ...panel, visible: !panel.visible }
-            : panel
-        ),
-      };
-    }
-    
-    case 'ADD_OUTPUT':
-      return {
-        ...state,
-        pendingOutput: [...state.pendingOutput, action.payload].slice(-100), // Keep last 100
-        lastUpdate: new Date(),
-      };
-    
-    case 'CLEAR_OUTPUT':
-      return {
-        ...state,
-        pendingOutput: [],
-      };
-    
-    case 'UPDATE_PROGRESS': {
-      const newProgress = new Map(state.activeProgress);
-      const existing = newProgress.get(action.id);
-      if (existing) {
-        newProgress.set(action.id, { ...existing, ...action.progress });
-      }
-      return {
-        ...state,
-        activeProgress: newProgress,
-      };
-    }
-    
-    case 'COMPLETE_PROGRESS': {
-      const newProgress = new Map(state.activeProgress);
-      newProgress.delete(action.id);
-      return {
-        ...state,
-        activeProgress: newProgress,
-      };
-    }
-    
-    case 'SET_CONNECTED':
-      return {
-        ...state,
-        connected: action.connected,
-      };
-    
-    case 'SET_SELECTION':
-      return {
-        ...state,
-        navigation: {
-          ...state.navigation,
-          selectedIndex: action.index,
-        },
-      };
-    
-    case 'SCROLL':
-      return {
-        ...state,
-        navigation: {
-          ...state.navigation,
-          scrollOffset: action.offset,
-        },
-      };
-    
-    default:
-      return state;
-  }
+export interface TuiSnapshotProvider {
+  sourceLabel: string;
+  refreshIntervalMs?: number;
+  fetchSnapshot: () => Promise<TuiRuntimeSnapshot>;
 }
 
-/**
- * Check if content should be shown for tier
- */
-function shouldShowForTier(current: InterfaceTier, minimum: InterfaceTier): boolean {
-  const order: InterfaceTier[] = ['beginner', 'intermediate', 'advanced'];
-  return order.indexOf(current) >= order.indexOf(minimum);
+interface InkBindings {
+  Box: React.ComponentType<{
+    flexDirection?: 'row' | 'column' | 'row-reverse' | 'column-reverse';
+    padding?: number;
+    marginTop?: number;
+    // Allow additional Ink Box props not explicitly typed here
+    [key: string]: any;
+  }>;
+  Text: React.ComponentType<{
+    color?: string;
+    // Allow additional Ink Text props not explicitly typed here
+    [key: string]: any;
+  }>;
+  useInput: (handler: (input: string, key: {
+    upArrow: boolean;
+    downArrow: boolean;
+    leftArrow: boolean;
+    rightArrow: boolean;
+    return: boolean;
+    escape: boolean;
+    ctrl: boolean;
+    shift: boolean;
+    tab: boolean;
+    backspace: boolean;
+    delete: boolean;
+    // Allow additional key properties from Ink's Key type
+    [key: string]: boolean;
+  }) => void) => void;
+  useApp: () => { exit: () => void };
 }
 
-/**
- * Props for the TUI App
- */
 export interface TuiAppProps {
+  provider: TuiSnapshotProvider;
   initialTier?: InterfaceTier;
   onExit?: () => void;
+  ink: InkBindings;
 }
 
-/**
- * TUI Context for sharing state with child components
- */
 export interface TuiContextValue {
-  state: TuiState;
-  dispatch: (action: TuiAction) => void;
+  snapshot?: TuiRuntimeSnapshot;
+  loading: boolean;
+  error?: string;
+  refreshedAt?: Date;
 }
 
 export const TuiContext = React.createContext<TuiContextValue | null>(null);
 
-/**
- * Hook to use TUI context
- */
 export function useTui(): TuiContextValue {
   const context = React.useContext(TuiContext);
   if (!context) {
@@ -237,134 +116,196 @@ export function useTui(): TuiContextValue {
   return context;
 }
 
-/**
- * Main TUI Application Component
- * 
- * This is a placeholder implementation. The full implementation
- * requires Ink to be installed and will include:
- * - Navigation sidebar
- * - Main content area with view routing
- * - Status bar
- * - Keyboard shortcuts
- * - Theme support
- */
-export const TuiApp: FC<TuiAppProps> = ({ initialTier = 'intermediate', onExit }) => {
-  const [state, dispatch] = useReducer(tuiReducer, initialTier, createInitialState);
-  
-  // Connect to the TUI adapter
-  useEffect(() => {
-    const adapter = getTuiAdapter();
-    adapter.connectDispatcher(dispatch);
-    
-    // Set connected status
-    dispatch({ type: 'SET_CONNECTED', connected: true });
-    
-    return () => {
-      dispatch({ type: 'SET_CONNECTED', connected: false });
-    };
-  }, []);
-  
-  // Handle keyboard shortcuts
-  const handleKeyPress = useCallback((key: string) => {
-    switch (key) {
-      case 'q':
-        onExit?.();
-        break;
-      case 'd':
-        dispatch({ type: 'NAVIGATE', view: 'dashboard' });
-        break;
-      case 'a':
-        dispatch({ type: 'NAVIGATE', view: 'agents' });
-        break;
-      case 't':
-        dispatch({ type: 'NAVIGATE', view: 'tasks' });
-        break;
-      case 'm':
-        dispatch({ type: 'NAVIGATE', view: 'mesh' });
-        break;
-      case 's':
-        dispatch({ type: 'NAVIGATE', view: 'swarm' });
-        break;
-      case 'c':
-        dispatch({ type: 'NAVIGATE', view: 'consensus' });
-        break;
-      case '?':
-        dispatch({ type: 'NAVIGATE', view: 'help' });
-        break;
-      case 'escape':
-        dispatch({ type: 'GO_BACK' });
-        break;
+function truncate(input: string, max = 100): string {
+  if (input.length <= max) {
+    return input;
+  }
+  return `${input.slice(0, max - 1)}…`;
+}
+
+function formatUpdatedLabel(snapshot?: TuiRuntimeSnapshot, refreshedAt?: Date): string {
+  const updatedAt = snapshot?.updatedAt ? new Date(snapshot.updatedAt) : refreshedAt;
+  if (!updatedAt) {
+    return 'unknown';
+  }
+  return updatedAt.toLocaleTimeString();
+}
+
+export const TuiApp: FC<TuiAppProps> = ({ provider, onExit, ink }) => {
+  const { Box, Text, useInput, useApp } = ink;
+  const { exit } = useApp();
+
+  const [snapshot, setSnapshot] = useState<TuiRuntimeSnapshot | undefined>(undefined);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [refreshedAt, setRefreshedAt] = useState<Date | undefined>(undefined);
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await provider.fetchSnapshot();
+      setSnapshot(next);
+      setError(undefined);
+      setRefreshedAt(new Date());
+    } catch (refreshError) {
+      setError((refreshError as Error).message);
+    } finally {
+      setLoading(false);
     }
-  }, [onExit]);
-  
-  // Context value
-  const contextValue = useMemo(() => ({ state, dispatch }), [state]);
-  
-  // Note: This is a placeholder. The actual rendering would use Ink components:
-  // import { Box, Text, useInput } from 'ink';
-  // 
-  // return (
-  //   <TuiContext.Provider value={contextValue}>
-  //     <Box flexDirection="column" width="100%" height="100%">
-  //       <Header />
-  //       <Box flexGrow={1}>
-  //         <Sidebar />
-  //         <MainContent />
-  //         {state.panels.find(p => p.id === 'details')?.visible && <DetailsPanel />}
-  //       </Box>
-  //       <StatusBar />
-  //     </Box>
-  //   </TuiContext.Provider>
-  // );
-  
-  return React.createElement(
-    TuiContext.Provider,
-    { value: contextValue },
-    React.createElement('div', { 
-      'data-testid': 'tui-app',
-      'data-view': state.navigation.currentView,
-      'data-tier': state.tier,
-      'data-connected': state.connected,
-    },
-      `Codex-Synaptic TUI - ${state.navigation.currentView} (${state.tier} tier)`
-    )
+  }, [provider]);
+
+  useEffect(() => {
+    void refresh();
+    const interval = setInterval(() => {
+      void refresh();
+    }, provider.refreshIntervalMs ?? 1000);
+    return () => clearInterval(interval);
+  }, [provider.refreshIntervalMs, refresh]);
+
+  useInput((input, key) => {
+    if (key.ctrl && input === 'c') {
+      onExit?.();
+      exit();
+      return;
+    }
+
+    if (input === 'q') {
+      onExit?.();
+      exit();
+      return;
+    }
+
+    if (input === 'r') {
+      void refresh();
+    }
+  });
+
+  const contextValue = useMemo<TuiContextValue>(() => ({
+    snapshot,
+    loading,
+    error,
+    refreshedAt
+  }), [snapshot, loading, error, refreshedAt]);
+
+  const recentTasks = snapshot?.telemetry.recentTasks ?? [];
+
+  return (
+    <TuiContext.Provider value={contextValue}>
+      <Box flexDirection="column" padding={1}>
+        <Text color="cyan">Codex-Synaptic TUI ({provider.sourceLabel})</Text>
+        <Text color="gray">Shortcuts: q=quit, r=refresh</Text>
+        <Text color="gray">Last update: {formatUpdatedLabel(snapshot, refreshedAt)}</Text>
+
+        {loading && <Text color="yellow">Loading telemetry…</Text>}
+        {error && <Text color="red">Error: {error}</Text>}
+
+        {snapshot && (
+          <>
+            <Box marginTop={1} flexDirection="column">
+              <Text>
+                Runtime: {snapshot.status.initialized ? 'ready' : 'not ready'} | source={snapshot.source} | daemon={snapshot.status.daemon ? 'yes' : 'no'}
+              </Text>
+              <Text>
+                Interface: {snapshot.interfaceMode ?? 'unknown'}/{snapshot.tier ?? 'unknown'} | shuttingDown={snapshot.status.shuttingDown ? 'yes' : 'no'}
+              </Text>
+              {snapshot.cwd && <Text>CWD: {truncate(snapshot.cwd, 120)}</Text>}
+            </Box>
+
+            <Box marginTop={1} flexDirection="column">
+              <Text color="green">Agents</Text>
+              <Text>
+                total={snapshot.telemetry.agents.total} available={snapshot.telemetry.agents.available}
+              </Text>
+            </Box>
+
+            <Box marginTop={1} flexDirection="column">
+              <Text color="green">Resources</Text>
+              <Text>
+                cpu={snapshot.telemetry.resources?.cpuPercent?.toFixed(2) ?? 'n/a'}%
+                {' | '}
+                memory={snapshot.telemetry.resources?.memoryMB?.toFixed(1) ?? 'n/a'}MB
+                {' | '}
+                tasks={snapshot.telemetry.resources?.concurrentTasks ?? 'n/a'}
+              </Text>
+            </Box>
+
+            <Box marginTop={1} flexDirection="column">
+              <Text color="green">Mesh / Swarm / Consensus</Text>
+              <Text>
+                mesh={snapshot.telemetry.mesh?.topology ?? 'n/a'}
+                {' | '}
+                swarm={snapshot.telemetry.swarm?.algorithm ?? 'n/a'}
+                {' | '}
+                consensusVotes={snapshot.telemetry.consensus?.totalVotes ?? 'n/a'}
+              </Text>
+            </Box>
+
+            <Box marginTop={1} flexDirection="column">
+              <Text color="green">Recent Tasks</Text>
+              {recentTasks.length === 0 && <Text color="gray">No recent tasks</Text>}
+              {recentTasks.slice(0, 6).map((task, index) => (
+                <Text key={`${task.id}-${index}`}>
+                  {index + 1}. {task.status.toUpperCase()} {task.id} {task.summary ? `- ${truncate(task.summary, 80)}` : ''}
+                </Text>
+              ))}
+            </Box>
+          </>
+        )}
+      </Box>
+    </TuiContext.Provider>
   );
 };
 
-/**
- * Start the TUI application
- * 
- * This function would normally use Ink's render function:
- * import { render } from 'ink';
- * 
- * export async function startTui(options: TuiAppProps): Promise<void> {
- *   const { waitUntilExit } = render(<TuiApp {...options} />);
- *   await waitUntilExit();
- * }
- */
-export async function startTui(options: TuiAppProps = {}): Promise<void> {
-  // Placeholder implementation
-  console.log('TUI mode requires Ink to be installed.');
-  console.log('Install with: npm install ink ink-select-input ink-text-input');
-  console.log('');
-  console.log('Starting with fallback CLI mode...');
-  
-  // In a real implementation, this would render the Ink app
-  const { onExit } = options;
-  
-  // Simulate TUI running
-  return new Promise((resolve) => {
-    const cleanup = () => {
+export interface StartTuiOptions {
+  provider: TuiSnapshotProvider;
+  onExit?: () => void;
+  initialTier?: InterfaceTier;
+}
+
+function renderFallbackMessage(provider: TuiSnapshotProvider): void {
+  console.log('TUI dependencies are not installed.');
+  console.log('Install with: npm install ink');
+  console.log(`Falling back to snapshot mode (${provider.sourceLabel}).`);
+}
+
+export async function startTui(options: StartTuiOptions): Promise<void> {
+  const { provider, onExit, initialTier } = options;
+  const logger = Logger.getInstance();
+
+  let inkModule: any;
+  try {
+    inkModule = await import('ink');
+  } catch {
+    logger.info('tui', 'TUI dependencies are not installed. Falling back to snapshot mode.', {
+      source: provider.sourceLabel
+    });
+    logger.info('tui', 'Install with: npm install ink');
+
+    try {
+      const snapshot = await provider.fetchSnapshot();
+      logger.info('tui', `Runtime ready: ${snapshot.status.initialized ? 'yes' : 'no'}`);
+      logger.info('tui', `Agents: ${snapshot.telemetry.agents.total}`);
+    } catch (error) {
+      logger.error('tui', 'Failed to fetch snapshot in fallback mode', error as Error);
+    } finally {
       onExit?.();
-      resolve();
-    };
-    
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
-    
-    // Keep running until signal received
-    console.log('Press Ctrl+C to exit.');
-  });
+    }
+    return;
+  }
+
+  const { render, Box, Text, useInput, useApp } = inkModule;
+  const { waitUntilExit } = render(
+    <TuiApp
+      provider={provider}
+      initialTier={initialTier}
+      onExit={onExit}
+      ink={{ Box, Text, useInput, useApp }}
+    />,
+    {
+      exitOnCtrlC: true
+    }
+  );
+
+  await waitUntilExit();
 }
 
 export default TuiApp;

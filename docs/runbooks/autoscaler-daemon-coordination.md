@@ -1,282 +1,135 @@
-# Autoscaler-Daemon Coordination Runbook
+# Autoscaler And Daemon Coordination Runbook
 
-This runbook documents how autoscaling and the background daemon interact, plus supported operational commands for Codex-Synaptic.
+Last updated: 2026-02-13
 
-## 1. Overview
+This runbook documents how autoscaling behavior relates to detached daemon operation, and how to run status/monitoring commands without introducing split-brain runtime behavior.
 
-The autoscaler evaluates resource pressure and proposes up/down adjustments. The background daemon executes persistent lifecycle coordination.
+## 1. Runtime Authority Model
 
-### Key relationship
+- The detached daemon is the authoritative runtime when started with `background start`.
+- `system status`, `system monitor`, and `background attach` can read daemon-backed state.
+- If daemon mode is active, local in-process startup is blocked by default to avoid running two independent orchestrators.
 
-- Autoscaler computes scaling decisions from utilization signals.
-- Daemon-backed coordination is required for reliable background scale-down execution.
-- If the daemon is offline, scale-down intent is recorded but cleanup may be delayed.
-
-## 2. Autoscaling behavior
-
-### Scale-up
-
-Trigger: utilization above threshold.
-
-Behavior:
-
-- New worker replicas are deployed.
-- Events are persisted to the `autoscaler_events` memory namespace.
-
-Command:
+Override (use sparingly):
 
 ```bash
-codex-synaptic memory list autoscaler_events --limit 10
+CODEX_ALLOW_LOCAL_WITH_DAEMON=1 node dist/cli/index.js system start
 ```
 
-### Scale-down
+## 2. Why This Matters For Autoscaling
 
-Trigger: utilization below threshold.
+Autoscaler decisions and lifecycle actions are only reliable when all operator surfaces look at the same runtime authority.
 
-Behavior:
+Before this update, it was possible to read local session state while a daemon was active. The CLI now routes status/monitor surfaces to daemon state when available, preventing silent drift between dashboards and detached runtime behavior.
 
-- Autoscaler attempts to retire idle capacity.
-- When daemon coordination is unavailable, retirement is deferred and warnings/events are emitted.
+## 3. Standard Operational Modes
 
-Command:
+### Production / Long-Running Mode (Recommended)
+
+Use detached mode and attach dashboards:
 
 ```bash
-codex-synaptic system status
+node dist/cli/index.js background start
+node dist/cli/index.js background status
+node dist/cli/index.js background attach --watch --interval 2000
+node dist/cli/index.js tui --attach-daemon --interval 1000
 ```
 
-### Cooldown
+### Local Debug Mode
 
-Scale-up and scale-down both respect cooldown windows to avoid thrashing.
-
-## 3. Daemon dependency
-
-### Why scale-down depends on daemon coordination
-
-The background daemon (`src/cli/daemon-manager.ts`) holds persistent process coordination state used by detached/background workflows.
-
-When daemon is offline:
-
-- Foreground operations still run.
-- Scale-down cleanup can be delayed.
-- `autoscaler_events` will include deferred/diagnostic records.
-
-### Check daemon state
+Run an in-process orchestrator when detached daemon is not active:
 
 ```bash
-# Check daemon state
-codex-synaptic background status
-
-# Inspect daemon logs (project-local)
-tail -n 50 logs/daemon.log
+node dist/cli/index.js system start
+node dist/cli/index.js system monitor --interval 2000
+node dist/cli/index.js system stop
 ```
 
-## 4. Operational modes
+### Test Isolation Mode
 
-### Production mode (recommended)
-
-Configuration:
-
-- Daemon: running continuously.
-- Autoscaler: enabled (`scaling.enabled: true`).
-
-Commands:
+If testing requires deterministic local behavior, stop daemon first:
 
 ```bash
-codex-synaptic background start
-grep -E '"scaling"|"enabled"' config/system.json
+node dist/cli/index.js background stop --timeout 10000
+node dist/cli/index.js system start
 ```
 
-### Testing mode (swarm/perf tests)
+## 4. Command Reference (Current CLI Surface)
 
-Configuration:
-
-- Daemon: stopped during isolated tests.
-- Autoscaler: paused (`scaling.enabled: false`).
-
-Procedure:
+### Daemon Lifecycle
 
 ```bash
-# 1) Stop daemon
-codex-synaptic background stop
-
-# 2) Disable autoscaler in config/system.json
-#    set: "scaling": { "enabled": false }
-
-# 3) Run test workload
-codex-synaptic hive-mind spawn "performance test" --codex --dry-run
-
-# 4) Inspect agent registry state
-codex-synaptic agent list
-
-# 5) Re-enable autoscaler and restart daemon
-#    set: "scaling": { "enabled": true }
-codex-synaptic background start
+node dist/cli/index.js background start
+node dist/cli/index.js background status
+node dist/cli/index.js background attach --watch
+node dist/cli/index.js background logs --tail 100
+node dist/cli/index.js background restart --timeout 10000
+node dist/cli/index.js background stop --timeout 10000
 ```
 
-### Development mode
-
-Configuration:
-
-- Daemon: optional.
-- Autoscaler: usually disabled for predictable debugging.
-
-Commands:
+### Runtime Status And Telemetry
 
 ```bash
-codex-synaptic agent deploy --type code_worker --replicas 3
-codex-synaptic agent deploy --type consensus_coordinator --replicas 2
+node dist/cli/index.js system status
+node dist/cli/index.js system monitor --interval 2000
+node dist/cli/index.js tui --attach-daemon
+node dist/cli/index.js doctor --strict
 ```
 
-## 5. Command reference (supported)
+## 5. Troubleshooting
 
-### Daemon management
+### Symptom: `system start` refuses to start
+
+Cause: detached daemon already running.
+
+Check:
 
 ```bash
-codex-synaptic background status
-codex-synaptic background start
-codex-synaptic background stop
-
-# restart sequence
-codex-synaptic background stop
-codex-synaptic background start
+node dist/cli/index.js background status
 ```
-
-### Autoscaler configuration checks
-
-```bash
-rg '"scaling"|"enabled"|"minAgents"|"maxAgents"|"scaleUpThreshold"|"scaleDownThreshold"|"cooldownMs"' config/system.json
-```
-
-### Agent management
-
-```bash
-codex-synaptic agent list
-codex-synaptic agent status <agent-id>
-codex-synaptic agent deploy --type <agent-type> --replicas <n>
-```
-
-## 6. Troubleshooting
-
-### Symptom: scale-down warnings
-
-Cause: daemon offline or unable to process retirement coordination.
 
 Resolution:
 
-```bash
-codex-synaptic background status
-codex-synaptic background start
-codex-synaptic memory list autoscaler_events --limit 20
-```
+1. Preferred: use attach/monitor commands against daemon.
+2. Alternative: stop daemon first, then start local session.
+3. Last resort: set `CODEX_ALLOW_LOCAL_WITH_DAEMON=1` if dual runtime is intentional.
 
-### Symptom: idle capacity persists
+### Symptom: Dashboard shows no daemon telemetry
 
-Cause: deferred cleanup while daemon was unavailable.
-
-Diagnosis:
+Check:
 
 ```bash
-codex-synaptic agent list
-codex-synaptic background status
-codex-synaptic memory list autoscaler_events --limit 20
+node dist/cli/index.js background status
+node dist/cli/index.js background logs --tail 100
 ```
 
 Resolution:
 
 ```bash
-codex-synaptic background start
-# allow cooldown window, then re-check
-codex-synaptic system status
-codex-synaptic agent list
+node dist/cli/index.js background restart
+node dist/cli/index.js background attach --watch
 ```
 
-### Symptom: autoscaler not scaling up
+### Symptom: Autoscaling appears ineffective or stale
 
-Cause: scaling disabled or configured limits reached.
-
-Diagnosis:
+Run an authoritative health sweep:
 
 ```bash
-rg '"scaling"|"enabled"|"maxAgents"|"minAgents"' config/system.json
-codex-synaptic agent list
+node dist/cli/index.js system status
+node dist/cli/index.js system monitor --interval 2000
+node dist/cli/index.js doctor --strict
 ```
 
-Resolution:
+If daemon is offline, start it and re-check:
 
 ```bash
-# verify scaling.enabled=true in config/system.json
-# optionally add temporary capacity manually:
-codex-synaptic agent deploy --type <agent-type> --replicas <n>
+node dist/cli/index.js background start
+node dist/cli/index.js background status
 ```
 
-### Symptom: daemon fails to start
+## 6. Configuration Reference
 
-Cause: stale daemon state or environment/runtime issue.
-
-Diagnosis:
-
-```bash
-codex-synaptic background status
-tail -n 100 logs/daemon.log
-```
-
-Resolution:
-
-```bash
-rm -f ~/.codex-synaptic/daemon.json
-codex-synaptic background start
-```
-
-## 7. Best practices
-
-### Hive-mind/performance testing
-
-1. Before test:
-   - `codex-synaptic background stop`
-   - disable autoscaler in `config/system.json`
-   - `codex-synaptic agent list`
-2. During test:
-   - run workload in an isolated thread/worktree
-   - periodically `codex-synaptic system status`
-3. After test:
-   - `codex-synaptic agent list`
-   - re-enable autoscaler
-   - `codex-synaptic background start`
-
-### Production
-
-- Keep daemon running.
-- Keep autoscaler enabled.
-- Monitor `autoscaler_events` for repeated deferred cleanups.
-
-## 8. Monitoring & observability
-
-### Useful checks
-
-```bash
-# registry snapshot
-codex-synaptic agent list
-
-# system + telemetry snapshot
-codex-synaptic system status
-
-# autoscaler event history
-codex-synaptic memory list autoscaler_events --limit 20
-
-# daemon health
-codex-synaptic background status
-```
-
-### Event namespaces
-
-- `autoscaler_events`: scale decisions and coordination outcomes
-- `agent_lifecycle`: worker deploy/unregister signals
-- `mesh_events`: topology changes
-- `consensus_events`: consensus outcomes
-
-## 9. Configuration reference
-
-### Autoscaler settings (`config/system.json`)
+Autoscaling configuration is defined in `config/system.json` under `scaling`, for example:
 
 ```json
 {
@@ -291,14 +144,15 @@ codex-synaptic background status
 }
 ```
 
-### Related docs
+After changing scaling config, restart runtime authority to apply changes:
 
-- `docs/runbooks/validation-gating.md`
+```bash
+node dist/cli/index.js background restart
+```
+
+## 7. Related Docs
+
+- `docs/guides/codex-macos-workflows.md`
+- `docs/mcp/README.md`
 - `docs/observability/README.md`
-- `docs/codex-synaptic-cheat-codes.md`
-- `AGENTS.md`
-
----
-
-Last updated: 2026-02-11  
-Maintainer: Codex-Synaptic Platform Team
+- `docs/reports/runtime-architecture-delta-2026-02-13.md`

@@ -34,7 +34,7 @@
     "autonomous-agents"
   ],
   "author": "Parallax Analytics <info@parallaxanalytics.io>",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "devDependencies": {
     "@types/estree": "^1.0.8",
     "@types/js-yaml": "^4.0.9",
@@ -57,6 +57,7 @@
     "chalk": "^5.6.2",
     "commander": "^14.0.0",
     "crypto-js": "^4.2.0",
+    "ink": "^5.1.0",
     "inquirer": "^12.9.4",
     "js-yaml": "^4.1.1",
     "openai": "^6.5.0",

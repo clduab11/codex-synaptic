@@ -114,6 +114,31 @@ describe('codex-synaptic CLI smoke suite', () => {
     expect(stdout).toContain('Mock Codex passthrough enabled (tests only)');
   });
 
+  it('documents expanded background daemon command surface', () => {
+    const { stdout } = runCli(['background', '--help']);
+    expect(stdout).toContain('attach');
+    expect(stdout).toContain('logs');
+    expect(stdout).toContain('restart');
+  });
+
+  it('runs doctor command with actionable output', () => {
+    const { stdout } = runCli(['doctor']);
+    expect(stdout).toContain('Codex-Synaptic Doctor');
+    expect(stdout).toContain('repo.cli_build_artifact');
+  });
+
+  it('includes desktop commander profile in env planning', () => {
+    const { stdout } = runCli(['env', 'plan', 'mcp-desktop-commander']);
+    expect(stdout).toContain('mcp-desktop-commander');
+    expect(stdout).toContain('codex mcp name');
+  });
+
+  it('exposes the tui command surface', () => {
+    const { stdout } = runCli(['tui', '--help']);
+    expect(stdout).toContain('attach-daemon');
+    expect(stdout).toContain('Launch the live terminal dashboard');
+  });
+
   it('emits startup auth warnings for invalid OpenAI credentials without stack trace noise', () => {
     const { status, stderr } = runCli(['openai', 'usage', '--json'], {
       allowFailure: true,

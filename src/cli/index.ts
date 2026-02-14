@@ -14,6 +14,9 @@ import { AgentType, AgentMetadata } from '../core/types.js';
 import {
   type BackgroundStatus,
   getBackgroundStatus,
+  getBackgroundRuntimeSnapshot,
+  queryBackgroundRuntimeSnapshot,
+  restartBackgroundSystem,
   startBackgroundSystem,
   stopBackgroundSystem
 } from './daemon-manager.js';
@@ -29,19 +32,21 @@ import type {
   CodexPromptEnvelope,
   ContextLogEntry
 } from '../types/codex-context.js';
-import { RetryManager } from '../core/errors.js';
+import { RetryManager, DaemonConflictError } from '../core/errors.js';
 import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 import { parseFileContent, parseJsonInput, loadFileThroughFeedforward } from './feedforward.js';
 import { InstructionParser } from '../instructions/index.js';
 import { RoutingPolicyService, type RoutingRequest } from '../router/index.js';
 import { readFileSync, existsSync } from 'fs';
 import { join, resolve, relative } from 'path';
+import { spawnSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import { ToolOptimizer, type ToolCandidate } from '../tools/optimizer/index.js';
 import { type ToolUsageRecord, type ReasoningRunRecord } from '../memory/memory-system.js';
 import type { ReasoningPlanOptions, ReasoningCompletionOptions, ReasoningCheckpointInput } from '../reasoning/planner.js';
-import { GoapExecutor } from '../reasoning/goap/executor.js';
 import { goapRegistry } from '../reasoning/goap/registry.js';
-import type { SystemConfiguration } from '../core/config.js';
+import { GoapExecutor } from '../reasoning/goap/executor.js';
+import type { InterfaceMode, InterfaceTier, SystemConfiguration } from '../core/config.js';
 import { serviceManager } from '../env/service-manager.js';
 import {
   executeStrategy,
@@ -64,12 +69,27 @@ import {
   formatRecentTasks,
   type TelemetrySnapshot
 } from './telemetry-renderer.js';
+import { startTui, type TuiRuntimeSnapshot } from '../tui/index.js';
 import { executeOrchestrationPhases } from './hive-mind-orchestrator.js';
 import {
   validateQuotaOptions,
   buildPolicyInput,
   type QuotaOptions
 } from './tenant-quota-helpers.js';
+import {
+  executeGoapWorkflow,
+  executeTaskWithConsensus,
+  collectExecutionResults,
+  renderExecutionSummary,
+  setupWorkflowEventHandlers
+} from './hive-mind-helpers.js';
+import {
+  checkCliBuildArtifact,
+  checkCliExecution,
+  checkCodexAuth,
+  renderHealthCheckResults,
+  type HealthCheck
+} from './doctor-helpers.js';
 
 /**
  * Loads environment variables from a file into process.env.
@@ -771,6 +791,21 @@ async function useSystem(
 ): Promise<void> {
   bootstrapEnvForCli();
   const alreadyRunning = !!session.getSystemUnsafe();
+  if (!alreadyRunning && process.env.CODEX_ALLOW_LOCAL_WITH_DAEMON !== '1') {
+    const background = getBackgroundStatus();
+    if (background.running) {
+      throw new DaemonConflictError(
+        `Background daemon already running (pid ${background.pid}). ` +
+        'To avoid split-brain state, use `codex-synaptic background attach` for daemon-backed monitoring, ' +
+        '`codex-synaptic background stop` before local commands, or set CODEX_ALLOW_LOCAL_WITH_DAEMON=1 to override.',
+        {
+          daemonPid: background.pid,
+          alreadyRunning,
+          allowLocalWithDaemon: process.env.CODEX_ALLOW_LOCAL_WITH_DAEMON
+        }
+      );
+    }
+  }
   const autoShutdown = options.autoShutdown ?? cliAutoShutdown;
   if (!alreadyRunning && !cliSilent) {
     console.log(chalk.blue(`🔧 Initializing Codex-Synaptic system (${description})...`));
@@ -2009,6 +2044,39 @@ function renderConsensusStatus(system: CodexSynapticSystem): void {
 }
 
 /**
+ * Renders telemetry snapshot to the console with customizable title.
+ * 
+ * @param snapshot - The telemetry snapshot to render
+ * @param title - Optional title for the snapshot display
+ * 
+ * @remarks
+ * Displays:
+ * - Agent statistics (status, types, resource usage)
+ * - Resource metrics (CPU, memory, GPU)
+ * - Mesh, swarm, and consensus statistics
+ * - Recent task summaries
+ */
+function renderTelemetrySnapshot(snapshot: TelemetrySnapshot, title = '📊 Telemetry Snapshot'): void {
+  console.log(chalk.blue(title));
+
+  formatAgentStats(snapshot.agents).forEach((line) => console.log(line));
+  formatResourceStats(snapshot.resources).forEach((line) => console.log(line));
+  const meshStats = formatMeshStats(snapshot.mesh);
+  if (meshStats) {
+    console.log(meshStats);
+  }
+  const swarmStats = formatSwarmStats(snapshot.swarm);
+  if (swarmStats) {
+    console.log(swarmStats);
+  }
+  const consensusStats = formatConsensusStats(snapshot.consensus);
+  if (consensusStats) {
+    console.log(consensusStats);
+  }
+  formatRecentTasks(snapshot.recentTasks).forEach((line) => console.log(line));
+}
+
+/**
  * Renders telemetry snapshot to the console including agents, resources, and recent tasks.
  * 
  * @remarks
@@ -2020,34 +2088,28 @@ function renderConsensusStatus(system: CodexSynapticSystem): void {
  */
 function renderTelemetry(): void {
   const snapshot = session.getTelemetry() as TelemetrySnapshot;
-  console.log(chalk.blue('📊 Telemetry Snapshot'));
+  renderTelemetrySnapshot(snapshot);
+}
 
-  // Render agent stats
-  formatAgentStats(snapshot.agents).forEach((line) => console.log(line));
-
-  // Render resource stats
-  formatResourceStats(snapshot.resources).forEach((line) => console.log(line));
-
-  // Render mesh stats
-  const meshStats = formatMeshStats(snapshot.mesh);
-  if (meshStats) {
-    console.log(meshStats);
-  }
-
-  // Render swarm stats
-  const swarmStats = formatSwarmStats(snapshot.swarm);
-  if (swarmStats) {
-    console.log(swarmStats);
-  }
-
-  // Render consensus stats
-  const consensusStats = formatConsensusStats(snapshot.consensus);
-  if (consensusStats) {
-    console.log(consensusStats);
-  }
-
-  // Render recent tasks
-  formatRecentTasks(snapshot.recentTasks).forEach((line) => console.log(line));
+function renderDaemonSnapshot(snapshot: {
+  pid: number;
+  startedAt: string;
+  updatedAt: string;
+  cwd: string;
+  interfaceMode: InterfaceMode;
+  tier: InterfaceTier;
+  status: { initialized: boolean; shuttingDown: boolean; daemon: boolean };
+  telemetry: TelemetrySnapshot;
+}): void {
+  console.log(chalk.blue('🛰 Daemon Runtime Snapshot'));
+  console.log(`  PID: ${snapshot.pid}`);
+  console.log(`  Started at: ${snapshot.startedAt}`);
+  console.log(`  Updated at: ${snapshot.updatedAt}`);
+  console.log(`  Working directory: ${snapshot.cwd}`);
+  console.log(`  Interface: ${snapshot.interfaceMode}/${snapshot.tier}`);
+  console.log(`  Initialized: ${snapshot.status.initialized ? chalk.green('yes') : chalk.red('no')}`);
+  console.log(`  Shutting down: ${snapshot.status.shuttingDown ? chalk.yellow('yes') : chalk.green('no')}`);
+  renderTelemetrySnapshot(snapshot.telemetry, '📊 Daemon Telemetry');
 }
 
 /**
@@ -2406,42 +2468,6 @@ async function executeGoapStrategy(
 }
 
 /**
- * Sets up workflow event handlers for stage tracking.
- * 
- * @param system - Codex-Synaptic system instance
- * @param startTime - Workflow start timestamp for elapsed time calculation
- * @returns Cleanup function to remove event handlers
- * 
- * @remarks
- * Attaches handlers for workflowStageStarted, workflowStageCompleted, and workflowStageFailed events.
- */
-function setupWorkflowEventHandlers(
-  system: CodexSynapticSystem,
-  startTime: number
-): () => void {
-  const onStageStarted = (event: any) => {
-    console.log(chalk.gray(`    ▶ ${event.label} started (${event.taskType})`));
-  };
-  const onStageCompleted = (event: any) => {
-    const elapsed = Date.now() - startTime;
-    console.log(chalk.green(`    ✓ ${event.label} completed (+${elapsed}ms)`));
-  };
-  const onStageFailed = (event: any) => {
-    console.log(chalk.red(`    ✗ ${event.label} failed: ${event.error}`));
-  };
-
-  system.on('workflowStageStarted', onStageStarted);
-  system.on('workflowStageCompleted', onStageCompleted);
-  system.on('workflowStageFailed', onStageFailed);
-
-  return () => {
-    system.off('workflowStageStarted', onStageStarted);
-    system.off('workflowStageCompleted', onStageCompleted);
-    system.off('workflowStageFailed', onStageFailed);
-  };
-}
-
-/**
  * Displays hive-mind execution results in human-readable format.
  * 
  * @param outcome - Task execution outcome
@@ -2671,7 +2697,7 @@ async function executeClassicOrchestration(
       console.log(JSON.stringify(outcome, null, 2));
     }
   } finally {
-    cleanupEventHandlers();
+    cleanupEventHandlers.cleanup();
   }
 }
 
@@ -2707,7 +2733,17 @@ const systemCmd = decorateCommandHelp(
 systemCmd
   .command('start')
   .description('Start the Codex-Synaptic system (idempotent)')
-  .action(handleCommand('system.start', async () => {
+  .option('--daemon', 'Start the detached daemon instead of in-process system session')
+  .action(handleCommand('system.start', async (options) => {
+    if (options.daemon) {
+      const status = await startBackgroundSystem();
+      console.log(chalk.green(`✅ Background system running (pid ${status.pid})`));
+      if (status.startedAt) {
+        console.log(`  Started at: ${status.startedAt}`);
+      }
+      return;
+    }
+
     if (session.getSystemUnsafe()) {
       console.log(chalk.yellow('⚠️  Codex-Synaptic system already running.'));
       renderTelemetry();
@@ -2754,13 +2790,26 @@ systemCmd
   .command('stop')
   .description('Stop the Codex-Synaptic system and release resources')
   .action(handleCommand('system.stop', async () => {
-    if (!session.getSystemUnsafe()) {
-      console.log(chalk.gray('System already stopped.'));
+    if (session.getSystemUnsafe()) {
+      await session.shutdown('manual-stop');
+      console.log(chalk.green('✅ Codex-Synaptic system shutdown complete.'));
       return;
     }
 
-    await session.shutdown('manual-stop');
-    console.log(chalk.green('✅ Codex-Synaptic system shutdown complete.'));
+    const background = getBackgroundStatus();
+    if (background.running) {
+      const result = await stopBackgroundSystem();
+      if (result === 'stopped') {
+        console.log(chalk.green('✅ Background system stopped.'));
+      } else if (result === 'timeout') {
+        console.log(chalk.yellow('⚠️  Background system stop timed out and required force termination.'));
+      } else {
+        console.log(chalk.gray('Background system was not running.'));
+      }
+      return;
+    }
+
+    console.log(chalk.gray('System already stopped.'));
   }));
 
 systemCmd
@@ -2768,9 +2817,48 @@ systemCmd
   .description('Stream live telemetry until interrupted')
   .option('-i, --interval <ms>', 'Refresh interval in milliseconds', '2000')
   .action(handleCommand('system.monitor', async (options) => {
+    const intervalMs = parseInteger(options.interval, 'interval');
+    console.log(chalk.blue('📡 Streaming telemetry (Ctrl+C to stop)...'));
+
+    const localSystem = session.getSystemUnsafe();
+    const background = getBackgroundStatus();
+
+    if (!localSystem && background.running) {
+      const render = async () => {
+        console.log('\n' + chalk.gray('─'.repeat(40)));
+        const snapshot = await queryBackgroundRuntimeSnapshot();
+        if (!snapshot) {
+          console.log(chalk.yellow('Daemon snapshot unavailable.'));
+          return;
+        }
+        renderDaemonSnapshot({
+          ...snapshot,
+          telemetry: snapshot.telemetry as TelemetrySnapshot
+        });
+      };
+
+      await render();
+      const timer = setInterval(() => {
+        void render();
+      }, intervalMs);
+
+      const stop = () => clearInterval(timer);
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+      await new Promise<void>((resolve) => {
+        const cleanup = () => {
+          process.removeListener('SIGINT', stop);
+          process.removeListener('SIGTERM', stop);
+          stop();
+          resolve();
+        };
+        process.once('SIGINT', cleanup);
+        process.once('SIGTERM', cleanup);
+      });
+      return;
+    }
+
     await useSystem('system monitor', async () => {
-      const intervalMs = parseInteger(options.interval, 'interval');
-      console.log(chalk.blue('📡 Streaming telemetry (Ctrl+C to stop)...'));
       const render = () => {
         console.log('\n' + chalk.gray('─'.repeat(40)));
         renderTelemetry();
@@ -2964,6 +3052,58 @@ backgroundCmd
   }));
 
 backgroundCmd
+  .command('attach')
+  .description('Attach to daemon-backed telemetry without creating a second orchestrator')
+  .option('-w, --watch', 'Continuously stream daemon status until interrupted')
+  .option('-i, --interval <ms>', 'Refresh interval in milliseconds when using --watch', '2000')
+  .action(handleCommand('background.attach', async (options) => {
+    const status = getBackgroundStatus();
+    if (!status.running) {
+      console.log(chalk.yellow('⚠️  Background system is not running. Start it with `codex-synaptic background start`.'));
+      return;
+    }
+
+    const render = async () => {
+      const snapshot = await queryBackgroundRuntimeSnapshot();
+      if (!snapshot) {
+        console.log(chalk.yellow('Daemon snapshot unavailable.'));
+        return;
+      }
+      renderDaemonSnapshot({
+        ...snapshot,
+        telemetry: snapshot.telemetry as TelemetrySnapshot
+      });
+    };
+
+    if (!options.watch) {
+      await render();
+      return;
+    }
+
+    const intervalMs = parseInteger(options.interval, 'interval');
+    console.log(chalk.blue('📡 Attached to background daemon telemetry (Ctrl+C to stop)...'));
+    await render();
+    const timer = setInterval(() => {
+      console.log('\n' + chalk.gray('─'.repeat(40)));
+      void render();
+    }, intervalMs);
+
+    const stop = () => clearInterval(timer);
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+    await new Promise<void>((resolve) => {
+      const cleanup = () => {
+        process.removeListener('SIGINT', stop);
+        process.removeListener('SIGTERM', stop);
+        stop();
+        resolve();
+      };
+      process.once('SIGINT', cleanup);
+      process.once('SIGTERM', cleanup);
+    });
+  }));
+
+backgroundCmd
   .command('stop')
   .description('Terminate the detached background system')
   .option('-t, --timeout <ms>', 'Timeout before force stopping', '10000')
@@ -2978,9 +3118,54 @@ backgroundCmd
         console.log(chalk.gray('Background system was not running.'));
         break;
       case 'timeout':
-        console.log(chalk.yellow('⚠️  Background system did not stop before timeout.')); 
+        console.log(chalk.yellow('⚠️  Background system did not stop before timeout and was force terminated.'));
         break;
     }
+  }));
+
+backgroundCmd
+  .command('restart')
+  .description('Restart the detached background system')
+  .option('-t, --timeout <ms>', 'Timeout before force stopping', '10000')
+  .action(handleCommand('background.restart', async (options) => {
+    const timeout = parseInteger(options.timeout, 'timeout');
+    const status = await restartBackgroundSystem(timeout);
+    console.log(chalk.green(`✅ Background system running (pid ${status.pid})`));
+    if (status.startedAt) {
+      console.log(`  Started at: ${status.startedAt}`);
+    }
+  }));
+
+backgroundCmd
+  .command('logs')
+  .description('Show daemon log output')
+  .option('--tail <lines>', 'Number of log lines to display', '50')
+  .action(handleCommand('background.logs', async (options) => {
+    const tailLines = parseInteger(options.tail, 'tail');
+    const status = getBackgroundStatus();
+    const runtime = getBackgroundRuntimeSnapshot();
+
+    const logPath = status.logFile
+      ?? (status.cwd ? join(status.cwd, 'logs', 'daemon.log') : join(process.cwd(), 'logs', 'daemon.log'));
+
+    if (!existsSync(logPath)) {
+      console.log(chalk.yellow(`⚠️  Log file not found: ${logPath}`));
+      if (!status.running) {
+        console.log(chalk.gray('Background daemon is not running.'));
+      }
+      return;
+    }
+
+    const content = readFileSync(logPath, 'utf8');
+    const lines = content.split(/\\r?\\n/).filter((line) => line.length > 0);
+    const selected = lines.slice(-Math.max(1, tailLines));
+
+    console.log(chalk.blue(`📜 Daemon logs (${selected.length}/${lines.length})`));
+    console.log(chalk.gray(`  File: ${logPath}`));
+    if (runtime?.updatedAt) {
+      console.log(chalk.gray(`  Last daemon update: ${runtime.updatedAt}`));
+    }
+    selected.forEach((line) => console.log(line));
   }));
 
 // Instructions commands
@@ -4251,6 +4436,10 @@ bridgeCmd
     await useSystem('mcp send', async (system) => {
       const payload = parseJsonInput(options.payload, 'payload');
       const response = await system.sendMcpMessage(options.endpoint, payload);
+      if (!response?.ok) {
+        const details = response?.error ? JSON.stringify(response.error) : 'unknown MCP bridge failure';
+        throw new Error(`MCP bridge request failed: ${details}`);
+      }
       console.log(chalk.green('✅ MCP message delivered. Response:'));
       console.log(JSON.stringify(response, null, 2));
     });
@@ -4866,22 +5055,34 @@ envCmd
       console.log(chalk.cyan(`  ${name}`));
       console.log(chalk.gray(`    ${profile.description}`));
       console.log(chalk.gray(`    compose: ${profile.composeFile}`));
+      if (profile.port) {
+        console.log(chalk.gray(`    port: ${profile.port}`));
+      }
+      if (profile.requiredEnv?.length) {
+        console.log(chalk.gray(`    required env: ${profile.requiredEnv.join(', ')}`));
+      }
     });
   });
 
 envCmd
   .command('status')
   .description('Show status for a service profile')
-  .argument('[name]', 'Service profile name')
-  .action((name?: string) => {
-    const targets = name ? [name] : serviceManager.listProfiles().map(({ name }) => name);
-    targets.forEach((target) => {
-      const status = serviceManager.status(target);
-      console.log(chalk.cyan(`
-${status.name}`));
+  .argument('[names...]', 'Service profile name(s)')
+  .action(async (names?: string[]) => {
+    const targets = names && names.length ? names : serviceManager.listProfiles().map(({ name }) => name);
+    for (const target of targets) {
+      const status = await serviceManager.status(target);
+      console.log(chalk.cyan(`\n${status.name}`));
       console.log(chalk.gray(`  running: ${status.running ? 'yes' : 'no'}`));
+      console.log(chalk.gray(`  healthy: ${status.healthy === null ? 'n/a' : (status.healthy ? 'yes' : 'no')}`));
+      console.log(chalk.gray(`  checkedAt: ${status.checkedAt}`));
+      if (status.diagnostics.length) {
+        status.diagnostics.forEach((diagnostic) => {
+          console.log(chalk.yellow(`  diag: ${diagnostic}`));
+        });
+      }
       console.log(chalk.gray(status.raw.trim()));
-    });
+    }
   });
 
 envCmd
@@ -4889,12 +5090,18 @@ envCmd
   .description('Start one or more service profiles')
   .argument('<names...>', 'Service profile names')
   .option('--no-wait', 'Do not wait for health checks')
-  .action(async (names: string[], options) => {
+  .option('--filesystem-mode <mode>', 'Filesystem profile mode: read-only or controlled-write', 'read-only')
+  .option('--allow-filesystem-write', 'Allow controlled-write filesystem profile mode')
+  .action(handleCommand('env.up', async (names: string[], options) => {
     for (const name of names) {
-      await serviceManager.ensureService(name, { waitForHealth: options.wait !== false });
+      await serviceManager.ensureService(name, {
+        waitForHealth: options.wait !== false,
+        filesystemMode: options.filesystemMode,
+        allowFilesystemWrite: options.allowFilesystemWrite === true
+      });
       console.log(chalk.green(`✅ ${name} started`));
     }
-  });
+  }));
 
 envCmd
   .command('down')
@@ -4921,8 +5128,214 @@ ${name}`));
       if (profile.services && profile.services.length) {
         console.log(chalk.gray(`  services: ${profile.services.join(', ')}`));
       }
+      if (profile.port) {
+        console.log(chalk.gray(`  port: ${profile.port}`));
+      }
+      if (profile.codexName) {
+        console.log(chalk.gray(`  codex mcp name: ${profile.codexName}`));
+      }
+      if (profile.requiredEnv?.length) {
+        console.log(chalk.gray(`  required env: ${profile.requiredEnv.join(', ')}`));
+      }
+      if (name === 'mcp-filesystem') {
+        console.log(chalk.gray('  filesystem mode: read-only (default) or controlled-write with explicit approval'));
+      }
     });
   });
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Execute codex CLI command with timeout and error handling
+ */
+async function execCodexCommand(args: string[], timeoutMs = 10000): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  try {
+    const { stdout, stderr } = await execFileAsync('codex', args, {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: timeoutMs
+    });
+    return { stdout, stderr, exitCode: 0 };
+  } catch (error: unknown) {
+    const err = error as { code?: string | number; killed?: boolean; signal?: string; stdout?: string; stderr?: string };
+    if (err.code === 'ENOENT') {
+      throw new Error('codex command not found. Ensure Codex CLI is installed and in PATH.');
+    }
+    if (err.killed && err.signal === 'SIGTERM') {
+      throw new Error(`codex command timed out after ${timeoutMs}ms`);
+    }
+    return {
+      stdout: err.stdout || '',
+      stderr: err.stderr || '',
+      exitCode: typeof err.code === 'number' ? err.code : 1
+    };
+  }
+}
+
+envCmd
+  .command('codex-register')
+  .description('Register MCP HTTP profiles in Codex CLI MCP config')
+  .argument('<names...>', 'Service profile names to register')
+  .option('--replace', 'Replace existing MCP registration if it already exists')
+  .action(handleCommand('env.codex-register', async (names: string[], options) => {
+    for (const name of names) {
+      const registration = serviceManager.codexRegistration(name);
+      if (!registration) {
+        throw new Error(`Profile ${name} does not expose codex registration metadata.`);
+      }
+
+      if (options.replace) {
+        const remove = await execCodexCommand(['mcp', 'remove', registration.codexName]);
+        if (remove.exitCode === 0) {
+          console.log(chalk.gray(`Removed existing Codex MCP entry: ${registration.codexName}`));
+        }
+      }
+
+      const add = await execCodexCommand(['mcp', 'add', registration.codexName, '--url', registration.url]);
+
+      if (add.exitCode !== 0) {
+        const stderr = add.stderr?.trim();
+        if (stderr?.includes('already exists')) {
+          console.log(chalk.yellow(`⚠️  Codex MCP entry already exists: ${registration.codexName}`));
+          continue;
+        }
+        throw new Error(`codex mcp add failed for ${registration.codexName}: ${stderr || add.stdout || 'unknown error'}`);
+      }
+
+      console.log(chalk.green(`✅ Registered Codex MCP server ${registration.codexName} -> ${registration.url}`));
+    }
+  }));
+
+const doctorCmd = decorateCommandHelp(
+  program
+    .command('doctor')
+    .description('Run bootstrap and integration diagnostics for Codex + MCP + repo CLI readiness'),
+  {
+    title: 'Doctor Console',
+    subtitle: 'Validate auth, MCP services, Codex registrations, and local CLI readiness in one pass.',
+    context: [
+      'Doctor catches setup drift before you launch long-running Codex or swarm sessions.',
+      'Use this after pulling changes or rotating local MCP/server credentials.'
+    ],
+    skills: [
+      'Correlate MCP service health with Codex registration state.',
+      'Generate concrete remediation commands when readiness checks fail.'
+    ],
+    vibeTips: [
+      'Run doctor before broad orchestration changes and keep the output in your release notes.'
+    ],
+    actions: [
+      { command: 'codex-synaptic doctor', description: 'Run default readiness checks.' },
+      { command: 'codex-synaptic doctor --strict', description: 'Exit non-zero if any readiness check fails.' }
+    ],
+    docs: [
+      { label: 'docs/guides/codex-macos-workflows.md', description: 'macOS setup flow aligned with this doctor output.' }
+    ]
+  }
+);
+
+doctorCmd
+  .option('--json', 'Output doctor report as JSON')
+  .option('--strict', 'Exit with an error when any check fails')
+  .option('--skip-codex-auth', 'Skip codex login status check')
+  .option(
+    '--mcp-profiles <profiles>',
+    'Comma-separated MCP service profiles to verify',
+    'mcp-filesystem,mcp-playwright,mcp-desktop-commander'
+  )
+  .action(handleCommand('doctor', async (options) => {
+    const profileNames = String(options.mcpProfiles)
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const checks: HealthCheck[] = [];
+
+    // Check CLI build artifact
+    const buildCheck = checkCliBuildArtifact();
+    checks.push(buildCheck);
+
+    // Check CLI execution if build exists
+    if (buildCheck.ok) {
+      const distCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
+      const execCheck = checkCliExecution(distCliPath);
+      if (execCheck) {
+        checks.push(execCheck);
+      }
+    }
+
+    // Check Codex authentication
+    if (!options.skipCodexAuth) {
+      checks.push(checkCodexAuth());
+    }
+
+    // Check Codex MCP list
+    let codexMcpNames = new Set<string>();
+    const codexMcpList = spawnSync('codex', ['mcp', 'list', '--json'], {
+      cwd: process.cwd(),
+      encoding: 'utf8'
+    });
+    if (codexMcpList.status === 0) {
+      try {
+        const parsed = JSON.parse(codexMcpList.stdout || '[]') as Array<{ name?: string }>;
+        codexMcpNames = new Set(parsed.map((entry) => String(entry.name)).filter(Boolean));
+        checks.push({
+          id: 'codex.mcp_list',
+          ok: true,
+          details: `Loaded ${codexMcpNames.size} Codex MCP registration(s).`
+        });
+      } catch (error) {
+        checks.push({
+          id: 'codex.mcp_list',
+          ok: false,
+          details: `Failed to parse codex mcp list output: ${(error as Error).message}`,
+          remediation: 'Run `codex mcp list --json` and inspect output.'
+        });
+      }
+    } else {
+      checks.push({
+        id: 'codex.mcp_list',
+        ok: false,
+        details: codexMcpList.stderr?.trim() || 'codex mcp list failed',
+        remediation: 'Verify Codex CLI install and MCP support (`codex mcp --help`).'
+      });
+    }
+
+    // Check MCP profiles using service manager
+    for (const profileName of profileNames) {
+      const status = await serviceManager.status(profileName);
+      const registration = serviceManager.codexRegistration(profileName);
+      const registered = registration ? codexMcpNames.has(registration.codexName) : true;
+      const healthy = status.healthy !== false;
+      const ok = status.running && healthy && registered;
+
+      let details = `running=${status.running} healthy=${status.healthy === null ? 'n/a' : status.healthy} registered=${registered}`;
+      if (status.diagnostics.length) {
+        details += ` diagnostics=${status.diagnostics.join(' | ')}`;
+      }
+
+      const remediationParts: string[] = [];
+      if (!status.running || !healthy) {
+        remediationParts.push(`codex-synaptic env up ${profileName}`);
+      }
+      if (registration && !registered) {
+        remediationParts.push(`codex-synaptic env codex-register ${profileName}`);
+      }
+
+      checks.push({
+        id: `mcp.${profileName}`,
+        ok,
+        details,
+        remediation: remediationParts.length ? remediationParts.join(' && ') : undefined,
+        metadata: {
+          codexName: registration?.codexName,
+          url: registration?.url
+        }
+      });
+    }
+
+    renderHealthCheckResults(checks, { json: options.json, strict: options.strict });
+  }));
 
 const memoryCmd = decorateCommandHelp(
   program
@@ -5160,6 +5573,130 @@ hiveMindCmd
       system.getSwarmCoordinator().stopSwarm();
       console.log(chalk.green('✅ Hive-mind swarms halted. Resources remain available.'));
     });
+  }));
+
+// TUI mode
+const tuiCmd = decorateCommandHelp(
+  program
+    .command('tui')
+    .description('Launch the live terminal dashboard (Ink-based TUI)'),
+  {
+    title: 'TUI Monitor Deck',
+    subtitle: 'Run a live terminal dashboard backed by local or daemon telemetry.',
+    context: [
+      'TUI mode gives you a persistent operational pane with low-latency status updates.',
+      'If a detached daemon is running, attach mode avoids creating a second orchestrator instance.'
+    ],
+    skills: [
+      'Track agent/scheduler health in one view while you run swarm and bridge workflows.',
+      'Use refresh/quit key bindings to keep diagnostics fast during incident response.'
+    ],
+    vibeTips: [
+      'Use daemon attach mode for long-lived monitoring while other shells run task commands.'
+    ],
+    actions: [
+      { command: 'codex-synaptic tui --attach-daemon', description: 'Attach to background daemon telemetry.' },
+      { command: 'codex-synaptic tui', description: 'Start a local runtime dashboard in this shell.' }
+    ],
+    docs: [
+      { label: 'docs/guides/codex-macos-workflows.md', description: 'Operational workflow for Local/Worktree/Cloud and MCP setup.' }
+    ]
+  }
+);
+
+tuiCmd
+  .option('--attach-daemon', 'Attach to detached daemon state instead of starting a local runtime')
+  .option('--local', 'Force local in-process runtime dashboard')
+  .option('-i, --interval <ms>', 'Refresh interval in milliseconds', '1000')
+  .option('--tier <tier>', 'UI tier hint (beginner|intermediate|advanced)', 'intermediate')
+  .action(handleCommand('tui', async (options) => {
+    const intervalMs = parseInteger(options.interval, 'interval');
+    const tier = String(options.tier ?? 'intermediate') as InterfaceTier;
+    if (!['beginner', 'intermediate', 'advanced'].includes(tier)) {
+      throw new Error('tier must be one of beginner|intermediate|advanced');
+    }
+
+    const background = getBackgroundStatus();
+    const attachDaemon = Boolean(options.attachDaemon) || (!options.local && background.running && !session.getSystemUnsafe());
+
+    if (attachDaemon) {
+      if (!background.running) {
+        throw new Error('Background daemon is not running. Start it with `codex-synaptic background start`.');
+      }
+
+      await startTui({
+        initialTier: tier,
+        provider: {
+          sourceLabel: 'daemon',
+          refreshIntervalMs: intervalMs,
+          fetchSnapshot: async () => {
+            const snapshot = await queryBackgroundRuntimeSnapshot();
+            if (!snapshot) {
+              throw new Error('Daemon snapshot unavailable.');
+            }
+            return {
+              source: 'daemon',
+              ...snapshot
+            } as TuiRuntimeSnapshot;
+          }
+        }
+      });
+      return;
+    }
+
+    if (background.running && process.env.CODEX_ALLOW_LOCAL_WITH_DAEMON !== '1') {
+      throw new Error(
+        'Background daemon is already running. Use `codex-synaptic tui --attach-daemon` ' +
+        'or stop the daemon first to avoid split-brain orchestration.'
+      );
+    }
+
+    bootstrapEnvForCli();
+    const hadSystem = Boolean(session.getSystemUnsafe());
+    const system = hadSystem ? session.getSystemUnsafe()! : await session.ensureSystem();
+
+    await startTui({
+      initialTier: tier,
+      provider: {
+        sourceLabel: 'local',
+        refreshIntervalMs: intervalMs,
+        fetchSnapshot: async () => {
+          const status = system.getStatus();
+          const registryStatus = system.getAgentRegistry().getStatus();
+          return {
+            source: 'local',
+            pid: process.pid,
+            startedAt: undefined,
+            updatedAt: new Date().toISOString(),
+            cwd: process.cwd(),
+            interfaceMode: 'tui',
+            tier,
+            status: {
+              initialized: Boolean(status?.initialized),
+              shuttingDown: Boolean(status?.shuttingDown),
+              daemon: false
+            },
+            telemetry: {
+              agents: {
+                total: registryStatus.totalAgents,
+                available: registryStatus.availableAgents,
+                byType: { ...registryStatus.typeCounts },
+                byStatus: { ...registryStatus.statusCounts }
+              },
+              resources: system.getResourceManager().getCurrentUsage(),
+              mesh: system.getNeuralMesh().getStatus(),
+              swarm: system.getSwarmCoordinator().getStatus(),
+              consensus: system.getConsensusManager().getStatus(),
+              recentTasks: session.getTelemetry().recentTasks
+            }
+          } as TuiRuntimeSnapshot;
+        }
+      }
+    });
+
+    if (!hadSystem && cliAutoShutdown) {
+      await session.shutdown('tui-auto-shutdown');
+    }
   }));
 
 // Interactive mode
