@@ -31,7 +31,7 @@ import type {
   CodexPromptEnvelope,
   ContextLogEntry
 } from '../types/codex-context.js';
-import { RetryManager } from '../core/errors.js';
+import { CliGateError, ErrorCode, RetryManager } from '../core/errors.js';
 import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 import { parseFileContent, parseJsonInput, loadFileThroughFeedforward } from './feedforward.js';
 import { InstructionParser } from '../instructions/index.js';
@@ -4590,7 +4590,11 @@ launchCmd
     }
 
     if (strict && !report.ok) {
-      throw new Error('Launch failed one or more readiness gates.');
+      throw new CliGateError(
+        ErrorCode.LAUNCH_GATE_FAILURE,
+        'Launch failed one or more readiness gates.',
+        { strict, report }
+      );
     }
   }));
 
@@ -4656,7 +4660,11 @@ doctorCmd
     }
 
     if (options.strict && !report.ok) {
-      throw new Error(`Doctor found ${report.summary.failed} failing check(s).`);
+      throw new CliGateError(
+        ErrorCode.DOCTOR_CHECKS_FAILED,
+        `Doctor found ${report.summary.failed} failing check(s).`,
+        { summary: report.summary, report }
+      );
     }
   }));
 

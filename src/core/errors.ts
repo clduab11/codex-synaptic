@@ -7,6 +7,8 @@ export enum ErrorCode {
   SYSTEM_NOT_INITIALIZED = 'SYSTEM_NOT_INITIALIZED',
   SYSTEM_SHUTDOWN = 'SYSTEM_SHUTDOWN',
   SYSTEM_OVERLOAD = 'SYSTEM_OVERLOAD',
+  LAUNCH_GATE_FAILURE = 'LAUNCH_GATE_FAILURE',
+  DOCTOR_CHECKS_FAILED = 'DOCTOR_CHECKS_FAILED',
   
   // Agent errors
   AGENT_NOT_FOUND = 'AGENT_NOT_FOUND',
@@ -80,6 +82,17 @@ export class SystemError extends CodexSynapticError {
   constructor(message: string, context?: Record<string, any>) {
     super(ErrorCode.SYSTEM_NOT_INITIALIZED, message, context, false);
     this.name = 'SystemError';
+  }
+}
+
+export class CliGateError extends CodexSynapticError {
+  constructor(
+    code: ErrorCode.LAUNCH_GATE_FAILURE | ErrorCode.DOCTOR_CHECKS_FAILED,
+    message: string,
+    context?: Record<string, any>
+  ) {
+    super(code, message, context, false);
+    this.name = 'CliGateError';
   }
 }
 

@@ -135,4 +135,47 @@ describe('runLaunch', () => {
     expect(mcpStep?.remediation).toContain('codex-synaptic env up mcp-filesystem');
     expect(mcpStep?.remediation).toContain('codex-synaptic env codex-register mcp-filesystem --replace');
   });
+
+  it('captures MCP bridge error classification when codex registration add fails', async () => {
+    let doctorCalled = false;
+    const report = await runLaunch(
+      {
+        cwd: '/tmp/codex-synaptic',
+        strict: true,
+        skipCodexAuth: true,
+        mcpProfiles: ['mcp-filesystem']
+      },
+      {
+        fileExists: () => true,
+        spawnCommand: (command, args) => {
+          if (command === 'node' && args.includes('--help')) {
+            return { status: 0, stdout: 'ok', stderr: '' };
+          }
+          if (command === 'codex' && args[0] === 'mcp' && args[1] === 'remove') {
+            return { status: 0, stdout: '', stderr: '' };
+          }
+          if (command === 'codex' && args[0] === 'mcp' && args[1] === 'add') {
+            return { status: 1, stdout: 'denied', stderr: 'permission denied' };
+          }
+          throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
+        },
+        getBackgroundStatus: () => ({ running: true, pid: 999 }),
+        ensureService: async () => {},
+        getCodexRegistration: () => ({ codexName: 'filesystem-local', url: 'http://localhost:7040' }),
+        runDoctor: async () => {
+          doctorCalled = true;
+          return passingDoctorReport;
+        }
+      }
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.nextAction).toBe('stop');
+    expect(doctorCalled).toBe(false);
+    const registrationStep = report.steps.find((step) => step.id === 'mcp.codex_register');
+    expect(registrationStep?.ok).toBe(false);
+    expect(registrationStep?.details).toContain('codex mcp add failed for filesystem-local');
+    expect(registrationStep?.remediation).toContain('codex-synaptic env codex-register mcp-filesystem --replace');
+    expect((registrationStep?.metadata as { code?: string } | undefined)?.code).toBe('MCP_ERROR');
+  });
 });

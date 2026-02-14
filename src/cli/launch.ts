@@ -15,6 +15,7 @@ import {
   type DoctorOptions,
   type DoctorReport
 } from './doctor.js';
+import { BridgeError, ErrorCode } from '../core/errors.js';
 
 export interface LaunchStep {
   id: string;
@@ -318,8 +319,14 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
             continue;
           }
 
-          throw new Error(
-            `codex mcp add failed for ${registration.codexName}: ${stderr || add.stdout?.trim() || 'unknown error'}`
+          throw new BridgeError(
+            ErrorCode.MCP_ERROR,
+            `codex mcp add failed for ${registration.codexName}: ${stderr || add.stdout?.trim() || 'unknown error'}`,
+            {
+              registration: registration.codexName,
+              stderr,
+              stdout: add.stdout
+            }
           );
         }
 
@@ -334,11 +341,18 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
           : 'Selected MCP profiles do not expose Codex registration metadata.'
       };
     } catch (error) {
+      const bridgeError = error instanceof BridgeError ? error : null;
       codexRegisterStep = {
         id: 'mcp.codex_register',
         ok: false,
         details: `Failed to register MCP profile(s) with Codex: ${(error as Error).message}`,
-        remediation: `codex-synaptic env codex-register ${profileNames.join(' ')} --replace`
+        remediation: `codex-synaptic env codex-register ${profileNames.join(' ')} --replace`,
+        metadata: bridgeError
+          ? {
+            code: bridgeError.code,
+            context: bridgeError.context
+          }
+          : undefined
       };
     }
   }
