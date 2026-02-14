@@ -72,6 +72,7 @@ import {
   OpenAIModelRouter,
   resolveOpenAIConfiguration,
   isOpenAIIntegrationReady,
+  type OpenAIReadinessDiagnostic,
   type OpenAIResolvedConfiguration,
   type OpenAIResponseRequest,
   type OpenAIModelCatalogEntry
@@ -93,6 +94,23 @@ interface WorkflowStage {
   payloadBuilder: (context: WorkflowContext) => Record<string, any>;
 }
 
+export interface OpenAIReadinessIssue {
+  code: string;
+  message: string;
+  statusCode?: number;
+  recommendedActions: string[];
+}
+
+/**
+ * Creates a deep clone of a Codex context object.
+ * 
+ * @param context - CodexContext to clone
+ * @returns Deep copy of the context
+ * 
+ * @remarks
+ * Recursively clones nested structures including directory tree nodes.
+ * Used to prevent mutations of shared context objects.
+ */
 function cloneCodexContext(context: CodexContext): CodexContext {
   return {
     agentDirectives: context.agentDirectives,
@@ -109,6 +127,16 @@ function cloneCodexContext(context: CodexContext): CodexContext {
   };
 }
 
+/**
+ * Creates a shallow clone of a Codex prompt envelope.
+ * 
+ * @param envelope - CodexPromptEnvelope to clone
+ * @returns Shallow copy of the envelope
+ * 
+ * @remarks
+ * Copies string references without deep cloning.
+ * Used to prevent accidental mutations during prompt processing.
+ */
 function cloneCodexEnvelope(envelope: CodexPromptEnvelope): CodexPromptEnvelope {
   return {
     originalPrompt: envelope.originalPrompt,
@@ -117,6 +145,16 @@ function cloneCodexEnvelope(envelope: CodexPromptEnvelope): CodexPromptEnvelope 
   };
 }
 
+/**
+ * Recursively clones a file tree node and all its children.
+ * 
+ * @param node - FileTreeNode to clone
+ * @returns Deep copy of the node and its subtree
+ * 
+ * @remarks
+ * Recursively clones children array to ensure complete isolation.
+ * Used when sharing directory inventory across contexts.
+ */
 function cloneFileTreeNode(node: FileTreeNode): FileTreeNode {
   return {
     name: node.name,
@@ -403,7 +441,6 @@ export class CodexSynapticSystem extends EventEmitter {
         this.logger.warn('openai', 'OpenAI responses client unavailable during initialization; continuing without API-backed responses.', {
           reason: this.openaiResponsesClient?.getUnavailableReason?.() ?? 'unknown'
         });
-        this.openaiResponsesClient = undefined;
       } else {
         try {
           const snapshot = await this.openaiResponsesClient.getModelCatalogSnapshot();
@@ -415,7 +452,6 @@ export class CodexSynapticSystem extends EventEmitter {
             });
           } else {
             this.logger.info('openai', 'OpenAI responses client became unavailable during startup validation; using static model catalog only.');
-            this.openaiResponsesClient = undefined;
           }
         } catch (error) {
           this.logger.warn('openai', 'Failed to retrieve OpenAI model catalog from API', undefined, error as Error);
@@ -545,6 +581,73 @@ export class CodexSynapticSystem extends EventEmitter {
     return this.openaiResolved;
   }
 
+  getOpenAIReadinessIssues(): OpenAIReadinessIssue[] {
+    const resolved = this.openaiResolved;
+    if (!resolved) {
+      return [];
+    }
+
+    if (!resolved.config.enabled) {
+      return [
+        {
+          code: 'integration_disabled',
+          message: 'OpenAI integration is disabled in configuration.',
+          recommendedActions: [
+            'Set `openai.enabled=true` in config/system.json if API-backed workflows are required.'
+          ]
+        }
+      ];
+    }
+
+    if (resolved.config.responses?.enabled === false) {
+      return [
+        {
+          code: 'responses_disabled',
+          message: 'OpenAI Responses integration is disabled by configuration.',
+          recommendedActions: [
+            'Set `openai.responses.enabled=true` in config/system.json to enable OpenAI Responses usage telemetry.'
+          ]
+        }
+      ];
+    }
+
+    const apiKey = resolved.credentials.apiKey;
+    const hasApiKey = typeof apiKey === 'string' && apiKey.trim().length > 0;
+    if (!hasApiKey) {
+      const apiKeyEnv = resolved.config.credentials?.apiKeyEnv ?? 'OPENAI_API_KEY';
+      return [
+        {
+          code: 'missing_api_key',
+          message: `OpenAI API key is missing in environment variable ${apiKeyEnv}.`,
+          recommendedActions: [
+            `Export ${apiKeyEnv}=<redacted> in your shell or project environment file.`,
+            'Re-run `codex-synaptic openai usage --json` and confirm `clientReady=true`.'
+          ]
+        }
+      ];
+    }
+
+    if (this.openaiResponsesClient?.isReady()) {
+      return [];
+    }
+
+    const diagnostic = this.openaiResponsesClient?.getReadinessDiagnostic();
+    if (diagnostic) {
+      return [this.normalizeOpenAIReadinessDiagnostic(diagnostic)];
+    }
+
+    return [
+      {
+        code: 'client_unavailable',
+        message: 'OpenAI responses client is unavailable for this session.',
+        recommendedActions: [
+          'Run `codex-synaptic openai usage --json` with CODEX_DEBUG=1 to inspect startup diagnostics.',
+          'Restart the CLI session after validating OpenAI credentials and network reachability.'
+        ]
+      }
+    ];
+  }
+
   getOpenAIUsageSummary(windowMs?: number): OpenAIUsageSummary {
     return this.openaiUsageMonitor.getSummary(windowMs);
   }
@@ -555,6 +658,15 @@ export class CodexSynapticSystem extends EventEmitter {
 
   hasOpenAIUsage(): boolean {
     return this.openaiUsageMonitor.hasData();
+  }
+
+  private normalizeOpenAIReadinessDiagnostic(diagnostic: OpenAIReadinessDiagnostic): OpenAIReadinessIssue {
+    return {
+      code: diagnostic.code,
+      message: diagnostic.message,
+      statusCode: diagnostic.statusCode,
+      recommendedActions: [...diagnostic.recommendedActions]
+    };
   }
 
   private shouldAppendOpenAISynthesisStage(): boolean {

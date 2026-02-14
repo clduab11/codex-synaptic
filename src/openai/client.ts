@@ -22,7 +22,14 @@ export type OpenAIResponseRequest = Record<string, unknown> & {
   model?: string;
 };
 
-type OpenAIClientAvailabilityReason = 'missing_api_key' | 'invalid_credentials';
+export type OpenAIClientAvailabilityReason = 'missing_api_key' | 'invalid_credentials';
+
+export interface OpenAIReadinessDiagnostic {
+  code: OpenAIClientAvailabilityReason;
+  message: string;
+  statusCode?: number;
+  recommendedActions: string[];
+}
 
 export class OpenAIResponsesClient {
   private readonly client: OpenAI | null;
@@ -37,6 +44,7 @@ export class OpenAIResponsesClient {
   private readonly requestTimeoutMs?: number;
   private readonly usageMonitor?: OpenAIUsageMonitor;
   private unavailableReason?: OpenAIClientAvailabilityReason;
+  private readinessDiagnostic?: OpenAIReadinessDiagnostic;
 
   constructor(options: OpenAIClientOptions) {
     this.logger = options.logger ?? Logger.getInstance('openai');
@@ -53,6 +61,14 @@ export class OpenAIResponsesClient {
     if (!options.apiKey) {
       this.logger.warn('openai', 'OpenAI API key not provided. Responses client is disabled.');
       this.unavailableReason = 'missing_api_key';
+      this.readinessDiagnostic = {
+        code: 'missing_api_key',
+        message: 'OpenAI API key is missing, so API-backed responses are disabled.',
+        recommendedActions: [
+          'Set OPENAI_API_KEY (or the configured OpenAI credential environment variable).',
+          'Re-run `codex-synaptic openai usage --json` and confirm `clientReady` is true.'
+        ]
+      };
       this.client = null;
       return;
     }
@@ -83,6 +99,16 @@ export class OpenAIResponsesClient {
     return this.unavailableReason;
   }
 
+  getReadinessDiagnostic(): OpenAIReadinessDiagnostic | undefined {
+    if (!this.readinessDiagnostic) {
+      return undefined;
+    }
+    return {
+      ...this.readinessDiagnostic,
+      recommendedActions: [...this.readinessDiagnostic.recommendedActions]
+    };
+  }
+
   private resolveHttpStatus(error: unknown): number | undefined {
     if (!error || typeof error !== 'object') {
       return undefined;
@@ -110,11 +136,28 @@ export class OpenAIResponsesClient {
     return 'unknown_error';
   }
 
-  private disableForSession(reason: OpenAIClientAvailabilityReason, message: string, data?: Record<string, unknown>): void {
+  private disableForSession(
+    reason: OpenAIClientAvailabilityReason,
+    message: string,
+    data?: Record<string, unknown>,
+    statusCode?: number
+  ): void {
     if (this.unavailableReason === reason) {
       return;
     }
     this.unavailableReason = reason;
+    if (reason === 'invalid_credentials') {
+      this.readinessDiagnostic = {
+        code: 'invalid_credentials',
+        message: 'OpenAI credentials were rejected by the API during startup validation.',
+        statusCode,
+        recommendedActions: [
+          'Verify OPENAI_API_KEY is valid for this account and project.',
+          'If needed, rotate the key and retry.',
+          'Confirm organization/project scoping values (OPENAI_ORG_ID / OPENAI_PROJECT_ID) are correct when set.'
+        ]
+      };
+    }
     this.logger.warn('openai', message, data);
   }
 
@@ -146,7 +189,8 @@ export class OpenAIResponsesClient {
         this.disableForSession(
           'invalid_credentials',
           'OpenAI credentials rejected; responses client disabled for this session.',
-          { statusCode: status ?? 'unknown' }
+          { statusCode: status ?? 'unknown' },
+          status
         );
         return false;
       }
@@ -175,7 +219,8 @@ export class OpenAIResponsesClient {
         this.disableForSession(
           'invalid_credentials',
           'OpenAI credentials rejected while listing models; responses client disabled for this session.',
-          { statusCode: status ?? 'unknown' }
+          { statusCode: status ?? 'unknown' },
+          status
         );
         return [];
       }
