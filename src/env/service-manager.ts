@@ -10,6 +10,8 @@ export interface ServiceProfile {
   composeFile: string;
   services?: string[];
   port?: number;
+  dockerImages?: string[];
+  dockerRegistries?: string[];
   requiredEnv?: string[];
   codexName?: string;
   healthcheck?: {
@@ -73,6 +75,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.github.yml',
     services: ['mcp-github'],
     port: 7010,
+    dockerImages: ['ghcr.io/context-labs/github-mcp:latest'],
     requiredEnv: ['GITHUB_TOKEN'],
     codexName: 'github'
   },
@@ -81,6 +84,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.context7.yml',
     services: ['mcp-context7'],
     port: 7020,
+    dockerImages: ['ghcr.io/context-labs/context7-mcp:latest'],
     requiredEnv: ['CONTEXT7_API_KEY'],
     codexName: 'context7'
   },
@@ -89,6 +93,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.playwright.yml',
     services: ['mcp-playwright'],
     port: 7030,
+    dockerImages: ['ghcr.io/context-labs/playwright-mcp:latest'],
     codexName: 'playwright-local'
   },
   'mcp-filesystem': {
@@ -96,6 +101,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.filesystem.yml',
     services: ['mcp-filesystem'],
     port: 7040,
+    dockerImages: ['ghcr.io/context-labs/filesystem-mcp:latest'],
     codexName: 'filesystem-local'
   },
   'mcp-desktop-commander': {
@@ -103,6 +109,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.desktop-commander.yml',
     services: ['mcp-desktop-commander'],
     port: 7070,
+    dockerImages: ['ghcr.io/wonderwhy-er/desktop-commander:latest'],
     codexName: 'desktop-commander'
   },
   'mcp-tavily': {
@@ -110,6 +117,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.tavily.yml',
     services: ['mcp-tavily'],
     port: 7050,
+    dockerImages: ['ghcr.io/context-labs/tavily-mcp:latest'],
     requiredEnv: ['TAVILY_API_KEY'],
     codexName: 'tavily'
   },
@@ -118,6 +126,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.firecrawl.yml',
     services: ['mcp-firecrawl'],
     port: 7060,
+    dockerImages: ['ghcr.io/firecrawl/firecrawl-mcp:latest'],
     requiredEnv: ['FIRECRAWL_API_KEY'],
     codexName: 'firecrawl'
   }
@@ -267,6 +276,79 @@ class ServiceManager {
       codexName: profile.codexName,
       url: `http://localhost:${profile.port}`
     };
+  }
+
+  dockerImagesForProfiles(names: string[]): string[] {
+    const images = new Set<string>();
+
+    for (const name of names) {
+      const profile = this.getProfile(name);
+      for (const image of profile.dockerImages ?? []) {
+        const normalized = image.trim();
+        if (normalized) {
+          images.add(normalized);
+        }
+      }
+    }
+
+    return Array.from(images);
+  }
+
+  registriesForProfiles(names: string[]): string[] {
+    const registries = new Set<string>();
+
+    for (const name of names) {
+      const profile = this.getProfile(name);
+
+      for (const registry of profile.dockerRegistries ?? []) {
+        const normalized = registry.trim();
+        if (normalized) {
+          registries.add(normalized);
+        }
+      }
+
+      for (const image of profile.dockerImages ?? []) {
+        const registry = this.registryForImage(image);
+        if (registry) {
+          registries.add(registry);
+        }
+      }
+    }
+
+    return Array.from(registries);
+  }
+
+  dockerLogin(registry: string): void {
+    const normalized = registry.trim();
+    if (!normalized) {
+      throw new Error('Docker registry is required for docker login.');
+    }
+    const cmd = `docker login ${normalized}`;
+    this.logger.info('env', 'Authenticating Docker registry', { registry: normalized });
+    execSync(cmd, { stdio: 'inherit' });
+  }
+
+  private registryForImage(image: string): string | null {
+    const normalized = image.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const firstSegment = normalized.split('/')[0] ?? '';
+    if (!firstSegment) {
+      return null;
+    }
+
+    // Registry host is explicit only when the first segment contains host-like syntax.
+    if (
+      firstSegment.includes('.')
+      || firstSegment.includes(':')
+      || firstSegment === 'localhost'
+    ) {
+      return firstSegment;
+    }
+
+    return null;
   }
 
   private async probeService(profile: ServiceProfile): Promise<boolean | null> {

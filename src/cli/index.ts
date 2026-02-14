@@ -74,6 +74,12 @@ import {
   buildPolicyInput,
   type QuotaOptions
 } from './tenant-quota-helpers.js';
+import {
+  DEFAULT_MCP_PROFILES,
+  parseProfileList,
+  runDoctor
+} from './doctor.js';
+import { collectLaunchRemediations, runLaunch } from './launch.js';
 
 function loadEnvFile(filePath: string): boolean {
   if (!existsSync(filePath)) {
@@ -4436,6 +4442,34 @@ ${name}`));
   });
 
 envCmd
+  .command('docker-login')
+  .description('Authenticate Docker registries required by one or more service profiles')
+  .argument('[names...]', 'Service profile names (defaults to launch gate profiles)')
+  .option('--dry-run', 'Print docker login commands without executing them')
+  .action(handleCommand('env.docker-login', async (names: string[] = [], options) => {
+    const targets = names.length ? names : [...DEFAULT_MCP_PROFILES];
+    const registries = serviceManager.registriesForProfiles(targets);
+
+    if (!registries.length) {
+      console.log(chalk.gray(`No registry authentication required for profiles: ${targets.join(', ')}`));
+      return;
+    }
+
+    if (options.dryRun) {
+      console.log(chalk.blue('Docker registry login commands (dry-run):'));
+      registries.forEach((registry) => {
+        console.log(chalk.gray(`  docker login ${registry}`));
+      });
+      return;
+    }
+
+    for (const registry of registries) {
+      serviceManager.dockerLogin(registry);
+      console.log(chalk.green(`✅ Docker auth completed for ${registry}`));
+    }
+  }));
+
+envCmd
   .command('codex-register')
   .description('Register MCP HTTP profiles in Codex CLI MCP config')
   .argument('<names...>', 'Service profile names to register')
@@ -4475,6 +4509,91 @@ envCmd
     }
   }));
 
+const launchCmd = decorateCommandHelp(
+  program
+    .command('launch')
+    .description('Start detached runtime and hard-gate readiness before repository work'),
+  {
+    title: 'Launch Gate',
+    subtitle: 'Boot daemon + MCP dependencies and fail-fast if the repo is not work-ready.',
+    context: [
+      'Launch is the single-command bootstrap for Codex for macOS first prompts.',
+      'In strict mode, launch stops on the first failing gate and exits non-zero.'
+    ],
+    skills: [
+      'Guarantee daemon, MCP profile, and doctor readiness before edits start.',
+      'Emit machine-readable launch reports for automation and handoffs.'
+    ],
+    actions: [
+      { command: 'codex-synaptic launch --json', description: 'Run the full bootstrap gate and emit structured output.' },
+      { command: 'codex-synaptic launch --no-strict --json', description: 'Collect gate results without immediate fail-fast exit.' }
+    ],
+    docs: [
+      { label: 'docs/guides/codex-macos-workflows.md', description: 'Single-command first-launch flow for Codex for macOS.' }
+    ]
+  }
+);
+
+launchCmd
+  .option('--json', 'Output launch report as JSON')
+  .option('--strict', 'Exit with an error when any launch gate fails', true)
+  .option('--no-strict', 'Report failing gates without exiting non-zero')
+  .option('--skip-codex-auth', 'Skip codex login status check')
+  .option(
+    '--mcp-profiles <profiles>',
+    'Comma-separated MCP service profiles to verify',
+    DEFAULT_MCP_PROFILES.join(',')
+  )
+  .action(handleCommand('launch', async (options) => {
+    const strict = options.strict !== false;
+    const profileNames = parseProfileList(options.mcpProfiles, [...DEFAULT_MCP_PROFILES]);
+    const report = await runLaunch({
+      cwd: process.cwd(),
+      strict,
+      skipCodexAuth: Boolean(options.skipCodexAuth),
+      mcpProfiles: profileNames
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(chalk.blue('🚀 Codex-Synaptic Launch'));
+      console.log(chalk.gray(`  Status: ${report.ok ? 'ready' : 'blocked'}`));
+      console.log(chalk.gray(`  Next action: ${report.nextAction}`));
+
+      report.steps.forEach((step) => {
+        const marker = step.ok ? chalk.green('✓') : chalk.red('✗');
+        console.log(`${marker} ${step.id}: ${step.details}`);
+        if (!step.ok && step.remediation) {
+          console.log(chalk.yellow(`  remediation: ${step.remediation}`));
+        }
+      });
+
+      if (report.doctor.summary.total > 0) {
+        console.log(chalk.gray(`  Doctor summary: passed=${report.doctor.summary.passed} failed=${report.doctor.summary.failed}`));
+      } else {
+        console.log(chalk.gray('  Doctor summary: skipped (launch exited before strict doctor run).'));
+      }
+
+      if (report.ok) {
+        console.log(chalk.green('✅ Launch gate passed. Safe to begin repository work.'));
+      } else {
+        console.log(chalk.red('🛑 Launch gate failed. Stop repository work until remediations pass.'));
+        const remediation = collectLaunchRemediations(report);
+        if (remediation.length) {
+          console.log(chalk.yellow('  Suggested commands:'));
+          remediation.forEach((command) => {
+            console.log(chalk.yellow(`    - ${command}`));
+          });
+        }
+      }
+    }
+
+    if (strict && !report.ok) {
+      throw new Error('Launch failed one or more readiness gates.');
+    }
+  }));
+
 const doctorCmd = decorateCommandHelp(
   program
     .command('doctor')
@@ -4510,137 +4629,24 @@ doctorCmd
   .option(
     '--mcp-profiles <profiles>',
     'Comma-separated MCP service profiles to verify',
-    'mcp-filesystem,mcp-playwright,mcp-desktop-commander'
+    DEFAULT_MCP_PROFILES.join(',')
   )
   .action(handleCommand('doctor', async (options) => {
-    const profileNames = String(options.mcpProfiles)
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    const checks: Array<{
-      id: string;
-      ok: boolean;
-      details: string;
-      remediation?: string;
-      metadata?: Record<string, unknown>;
-    }> = [];
-
-    const distCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
-    const distExists = existsSync(distCliPath);
-    checks.push({
-      id: 'repo.cli_build_artifact',
-      ok: distExists,
-      details: distExists ? `Found ${distCliPath}` : `Missing ${distCliPath}`,
-      remediation: distExists ? undefined : 'Run `npm run build`.'
-    });
-
-    if (distExists) {
-      const cliHelp = spawnSync('node', [distCliPath, '--help'], {
-        cwd: process.cwd(),
-        encoding: 'utf8'
-      });
-      checks.push({
-        id: 'repo.cli_exec',
-        ok: cliHelp.status === 0,
-        details: cliHelp.status === 0 ? 'CLI help command succeeded.' : (cliHelp.stderr?.trim() || 'CLI help command failed.'),
-        remediation: cliHelp.status === 0 ? undefined : 'Run `npm run build` and re-run `node dist/cli/index.js --help`.'
-      });
-    }
-
-    if (!options.skipCodexAuth) {
-      const loginStatus = spawnSync('codex', ['login', 'status'], {
-        cwd: process.cwd(),
-        encoding: 'utf8'
-      });
-      const stdout = loginStatus.stdout?.trim() || '';
-      const ok = loginStatus.status === 0 && !/not logged in/i.test(stdout);
-      checks.push({
-        id: 'codex.auth',
-        ok,
-        details: stdout || loginStatus.stderr?.trim() || 'No output',
-        remediation: ok ? undefined : 'Run `codex login` then re-run `codex login status`.'
-      });
-    }
-
-    let codexMcpNames = new Set<string>();
-    const codexMcpList = spawnSync('codex', ['mcp', 'list', '--json'], {
+    const profileNames = parseProfileList(options.mcpProfiles, [...DEFAULT_MCP_PROFILES]);
+    const report = await runDoctor({
       cwd: process.cwd(),
-      encoding: 'utf8'
+      mcpProfiles: profileNames,
+      skipCodexAuth: Boolean(options.skipCodexAuth)
     });
-    if (codexMcpList.status === 0) {
-      try {
-        const parsed = JSON.parse(codexMcpList.stdout || '[]') as Array<{ name?: string }>;
-        codexMcpNames = new Set(parsed.map((entry) => String(entry.name)).filter(Boolean));
-        checks.push({
-          id: 'codex.mcp_list',
-          ok: true,
-          details: `Loaded ${codexMcpNames.size} Codex MCP registration(s).`
-        });
-      } catch (error) {
-        checks.push({
-          id: 'codex.mcp_list',
-          ok: false,
-          details: `Failed to parse codex mcp list output: ${(error as Error).message}`,
-          remediation: 'Run `codex mcp list --json` and inspect output.'
-        });
-      }
-    } else {
-      checks.push({
-        id: 'codex.mcp_list',
-        ok: false,
-        details: codexMcpList.stderr?.trim() || 'codex mcp list failed',
-        remediation: 'Verify Codex CLI install and MCP support (`codex mcp --help`).'
-      });
-    }
-
-    for (const profileName of profileNames) {
-      const status = await serviceManager.status(profileName);
-      const registration = serviceManager.codexRegistration(profileName);
-      const registered = registration ? codexMcpNames.has(registration.codexName) : true;
-      const healthy = status.healthy !== false;
-      const ok = status.running && healthy && registered;
-
-      let details = `running=${status.running} healthy=${status.healthy === null ? 'n/a' : status.healthy} registered=${registered}`;
-      if (status.diagnostics.length) {
-        details += ` diagnostics=${status.diagnostics.join(' | ')}`;
-      }
-
-      const remediationParts: string[] = [];
-      if (!status.running || !healthy) {
-        remediationParts.push(`codex-synaptic env up ${profileName}`);
-      }
-      if (registration && !registered) {
-        remediationParts.push(`codex-synaptic env codex-register ${profileName}`);
-      }
-
-      checks.push({
-        id: `mcp.${profileName}`,
-        ok,
-        details,
-        remediation: remediationParts.length ? remediationParts.join(' && ') : undefined,
-        metadata: {
-          codexName: registration?.codexName,
-          url: registration?.url
-        }
-      });
-    }
-
-    const passed = checks.filter((check) => check.ok).length;
-    const failed = checks.length - passed;
 
     if (options.json) {
-      console.log(JSON.stringify({
-        ok: failed === 0,
-        summary: { passed, failed, total: checks.length },
-        checks
-      }, null, 2));
+      console.log(JSON.stringify(report, null, 2));
     } else {
       console.log(chalk.blue('🩺 Codex-Synaptic Doctor'));
-      console.log(chalk.gray(`  Passed: ${passed}`));
-      console.log(chalk.gray(`  Failed: ${failed}`));
+      console.log(chalk.gray(`  Passed: ${report.summary.passed}`));
+      console.log(chalk.gray(`  Failed: ${report.summary.failed}`));
 
-      checks.forEach((check) => {
+      report.checks.forEach((check) => {
         const marker = check.ok ? chalk.green('✓') : chalk.red('✗');
         console.log(`${marker} ${check.id}: ${check.details}`);
         if (!check.ok && check.remediation) {
@@ -4649,8 +4655,8 @@ doctorCmd
       });
     }
 
-    if (options.strict && failed > 0) {
-      throw new Error(`Doctor found ${failed} failing check(s).`);
+    if (options.strict && !report.ok) {
+      throw new Error(`Doctor found ${report.summary.failed} failing check(s).`);
     }
   }));
 

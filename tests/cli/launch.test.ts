@@ -1,0 +1,138 @@
+import { describe, expect, it } from 'vitest';
+import { runLaunch, type LaunchDependencies } from '../../src/cli/launch';
+import type { DoctorReport } from '../../src/cli/doctor';
+
+const passingDoctorReport: DoctorReport = {
+  ok: true,
+  summary: { passed: 6, failed: 0, total: 6 },
+  checks: []
+};
+
+describe('runLaunch', () => {
+  it('returns ready=true when all launch gates pass', async () => {
+    const ensuredProfiles: string[] = [];
+    const spawnCalls: string[] = [];
+
+    const deps: LaunchDependencies = {
+      fileExists: () => true,
+      spawnCommand: (command, args) => {
+        spawnCalls.push(`${command} ${args.join(' ')}`);
+
+        if (command === 'node' && args.includes('--help')) {
+          return { status: 0, stdout: 'ok', stderr: '' };
+        }
+
+        if (command === 'codex' && args.join(' ') === 'login status') {
+          return { status: 0, stdout: 'Logged in as test-user', stderr: '' };
+        }
+
+        if (command === 'codex' && args[0] === 'mcp' && args[1] === 'remove') {
+          return { status: 0, stdout: '', stderr: '' };
+        }
+
+        if (command === 'codex' && args[0] === 'mcp' && args[1] === 'add') {
+          return { status: 0, stdout: '', stderr: '' };
+        }
+
+        throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
+      },
+      getBackgroundStatus: () => ({ running: false }),
+      startBackground: async () => ({ running: true, pid: 43210 }),
+      ensureService: async (name) => {
+        ensuredProfiles.push(name);
+      },
+      getCodexRegistration: (name) => {
+        if (name === 'mcp-filesystem') {
+          return { codexName: 'filesystem-local', url: 'http://localhost:7040' };
+        }
+        if (name === 'mcp-playwright') {
+          return { codexName: 'playwright-local', url: 'http://localhost:7030' };
+        }
+        return null;
+      },
+      runDoctor: async () => passingDoctorReport
+    };
+
+    const report = await runLaunch(
+      {
+        cwd: '/tmp/codex-synaptic',
+        strict: true,
+        mcpProfiles: ['mcp-filesystem', 'mcp-playwright']
+      },
+      deps
+    );
+
+    expect(report.ok).toBe(true);
+    expect(report.nextAction).toBe('continue');
+    expect(report.steps.map((step) => step.id)).toEqual([
+      'repo.preflight',
+      'codex.auth',
+      'runtime.daemon',
+      'mcp.up',
+      'mcp.codex_register',
+      'doctor.strict'
+    ]);
+    expect(ensuredProfiles).toEqual(['mcp-filesystem', 'mcp-playwright']);
+    expect(spawnCalls).toContain('codex mcp add filesystem-local --url http://localhost:7040');
+    expect(spawnCalls).toContain('codex mcp add playwright-local --url http://localhost:7030');
+  });
+
+  it('fail-fast stops immediately on the first failing gate in strict mode', async () => {
+    let doctorCalled = false;
+
+    const report = await runLaunch(
+      {
+        cwd: '/tmp/codex-synaptic',
+        strict: true,
+        mcpProfiles: ['mcp-filesystem']
+      },
+      {
+        fileExists: () => false,
+        runDoctor: async () => {
+          doctorCalled = true;
+          return passingDoctorReport;
+        }
+      }
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.nextAction).toBe('stop');
+    expect(report.steps).toHaveLength(1);
+    expect(report.steps[0].id).toBe('repo.preflight');
+    expect(report.doctor.summary.total).toBe(0);
+    expect(doctorCalled).toBe(false);
+  });
+
+  it('returns remediation commands when MCP startup fails', async () => {
+    const report = await runLaunch(
+      {
+        cwd: '/tmp/codex-synaptic',
+        strict: true,
+        skipCodexAuth: true,
+        mcpProfiles: ['mcp-filesystem']
+      },
+      {
+        fileExists: () => true,
+        spawnCommand: (command, args) => {
+          if (command === 'node' && args.includes('--help')) {
+            return { status: 0, stdout: 'ok', stderr: '' };
+          }
+          throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
+        },
+        getBackgroundStatus: () => ({ running: true, pid: 999 }),
+        ensureService: async () => {
+          throw new Error('docker compose timeout');
+        },
+        runDoctor: async () => passingDoctorReport
+      }
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.nextAction).toBe('stop');
+    const mcpStep = report.steps.find((step) => step.id === 'mcp.up');
+    expect(mcpStep?.ok).toBe(false);
+    expect(mcpStep?.remediation).toContain('codex-synaptic env docker-login mcp-filesystem');
+    expect(mcpStep?.remediation).toContain('codex-synaptic env up mcp-filesystem');
+    expect(mcpStep?.remediation).toContain('codex-synaptic env codex-register mcp-filesystem --replace');
+  });
+});

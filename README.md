@@ -59,8 +59,10 @@ npm install
 npm run build
 
 # readiness
+node dist/cli/index.js launch --json
+node dist/cli/index.js launch --strict --json
 node dist/cli/index.js doctor
-node dist/cli/index.js doctor --strict
+node dist/cli/index.js doctor --strict --json
 
 # daemon lifecycle
 node dist/cli/index.js background start
@@ -76,6 +78,7 @@ node dist/cli/index.js tui --local --interval 1000
 
 # MCP profiles and registration
 node dist/cli/index.js env plan mcp-filesystem mcp-playwright mcp-desktop-commander
+node dist/cli/index.js env docker-login mcp-filesystem mcp-playwright mcp-desktop-commander
 node dist/cli/index.js env up mcp-filesystem mcp-playwright mcp-desktop-commander
 node dist/cli/index.js env status mcp-filesystem mcp-playwright mcp-desktop-commander
 node dist/cli/index.js env codex-register mcp-filesystem mcp-playwright mcp-desktop-commander --replace
@@ -86,6 +89,9 @@ node dist/cli/index.js env codex-register mcp-filesystem mcp-playwright mcp-desk
 ```bash
 # Local mode
 codex -C /absolute/path/to/codex-synaptic
+
+# first-launch gate in this repo
+codex-synaptic launch --json
 
 # Worktree mode
 git worktree add ../codex-synaptic-worktree -b codex/macos-ops

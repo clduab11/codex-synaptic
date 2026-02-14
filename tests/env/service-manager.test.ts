@@ -31,4 +31,13 @@ describe('serviceManager profiles', () => {
       url: 'http://localhost:7040'
     });
   });
+
+  it('derives docker registries for MCP profiles', () => {
+    const registries = serviceManager.registriesForProfiles([
+      'mcp-filesystem',
+      'mcp-playwright',
+      'mcp-desktop-commander'
+    ]);
+    expect(registries).toContain('ghcr.io');
+  });
 });

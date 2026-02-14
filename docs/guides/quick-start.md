@@ -1,6 +1,6 @@
 # Quick Start (Codex-Synaptic + Codex macOS)
 
-Last reviewed: 2026-02-10
+Last reviewed: 2026-02-14
 
 ## 1. Install and build
 
@@ -9,27 +9,33 @@ npm install
 npm run build
 ```
 
-## 2. Verify CLI health
+## 2. Run launch gate
+
+```bash
+npm run cli -- launch --strict --json
+```
+
+Expected success indicators:
+
+```text
+ok: true
+nextAction: continue
+```
+
+If launch fails, stop repository work and run the remediation commands returned in the report.
+For Docker registry-denied errors, run:
+
+```bash
+npm run cli -- env docker-login mcp-filesystem mcp-playwright mcp-desktop-commander
+```
+
+## 3. Optional direct runtime inspection
 
 ```bash
 npm run cli -- system status
 ```
 
-Expected output in a cold shell:
-
-```text
-System not started. Run `codex-synaptic system start` first.
-```
-
-Expected output after startup:
-
-```bash
-npm run cli -- system start
-```
-
-This command prints a telemetry snapshot and then exits cleanly in one-shot mode.
-
-## 3. Run a minimal local workflow
+## 4. Run a minimal local workflow
 
 ```bash
 npm run cli -- reasoning plan "Stabilize codex-synaptic release readiness" --require-consensus --json
@@ -37,13 +43,13 @@ npm run cli -- openai usage --json
 npm run cli -- hive-mind spawn "Verify macOS readiness smoke flow" --codex --dry-run
 ```
 
-## 4. Use Codex passthrough
+## 5. Use Codex passthrough
 
 ```bash
 codex-synaptic --codex --dry-run "Inspect current readiness blockers and propose bounded fixes"
 ```
 
-## 5. Run verification gates
+## 6. Run verification gates
 
 ```bash
 npm run lint
