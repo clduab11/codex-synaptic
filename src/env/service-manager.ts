@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { createConnection } from 'net';
 import { setTimeout as sleep } from 'timers/promises';
 import { Logger } from '../core/logger.js';
@@ -194,7 +194,7 @@ class ServiceManager {
 
     this.logger.info('env', `Starting service ${name}`, { command: cmd });
     try {
-      execSync(cmd, { stdio: 'pipe', env, encoding: 'utf8' });
+      await this.runComposeUp(cmd, env);
     } catch (error) {
       throw this.wrapComposeStartError(name, profile, cmd, error);
     }
@@ -353,6 +353,43 @@ class ServiceManager {
     }
 
     return null;
+  }
+
+  /**
+   * Runs `docker compose up -d` streaming stdout to the terminal (avoiding
+   * ENOBUFS on large image pulls) while capturing stderr for error
+   * classification by {@link wrapComposeStartError}.
+   */
+  private runComposeUp(cmd: string, env: NodeJS.ProcessEnv): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const proc = spawn(cmd, { shell: true, stdio: ['ignore', 'inherit', 'pipe'], env });
+      const stderrChunks: Buffer[] = [];
+
+      proc.stderr?.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          const stderr = Buffer.concat(stderrChunks).toString('utf8');
+          const err = Object.assign(new Error(`docker compose exited with code ${code}`), {
+            status: code,
+            stdout: '',
+            stderr,
+          });
+          reject(err);
+        }
+      });
+
+      proc.on('error', (spawnErr) => {
+        const err = Object.assign(spawnErr, {
+          status: null,
+          stdout: '',
+          stderr: spawnErr.message,
+        });
+        reject(err);
+      });
+    });
   }
 
   private wrapComposeStartError(name: string, profile: ServiceProfile, cmd: string, error: unknown): Error {
