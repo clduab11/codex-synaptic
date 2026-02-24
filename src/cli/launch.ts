@@ -1,5 +1,5 @@
-import { spawnSync, type SpawnSyncReturns } from 'child_process';
-import { existsSync } from 'fs';
+import { spawn } from 'child_process';
+import { access } from 'fs/promises';
 import { join } from 'path';
 import {
   getBackgroundStatus,
@@ -10,6 +10,7 @@ import { serviceManager, type EnsureServiceOptions } from '../env/service-manage
 import {
   collectDoctorRemediations,
   DEFAULT_MCP_PROFILES,
+  type SpawnCommandResult,
   runDoctor,
   type DoctorDependencies,
   type DoctorOptions,
@@ -30,7 +31,12 @@ export interface LaunchReport {
   ok: boolean;
   steps: LaunchStep[];
   doctor: DoctorReport;
-  nextAction: 'continue' | 'stop';
+  nextAction: LaunchNextAction;
+}
+
+export enum LaunchNextAction {
+  Continue = 'continue',
+  Stop = 'stop'
 }
 
 export interface LaunchOptions {
@@ -64,9 +70,39 @@ function normalizeSpawn(
     command: string,
     args: string[],
     options: { cwd: string; encoding: BufferEncoding }
-  ) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'> {
+  ) => Promise<SpawnCommandResult> {
   return deps.spawnCommand
-    ?? ((command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
+    ?? ((command, args, spawnOptions) => new Promise<SpawnCommandResult>((resolve) => {
+      const child = spawn(command, args, {
+        cwd: spawnOptions.cwd,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      if (child.stdout) {
+        child.stdout.setEncoding(spawnOptions.encoding);
+      }
+      if (child.stderr) {
+        child.stderr.setEncoding(spawnOptions.encoding);
+      }
+
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr?.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+      child.on('close', (status) => {
+        resolve({ status, stdout, stderr });
+      });
+      child.on('error', (error) => {
+        resolve({
+          status: 1,
+          stdout,
+          stderr: stderr || error.message
+        });
+      });
+    }));
 }
 
 function buildLaunchReport(steps: LaunchStep[], doctorReport: DoctorReport): LaunchReport {
@@ -75,7 +111,7 @@ function buildLaunchReport(steps: LaunchStep[], doctorReport: DoctorReport): Lau
     ok,
     steps,
     doctor: doctorReport,
-    nextAction: ok ? 'continue' : 'stop'
+    nextAction: ok ? LaunchNextAction.Continue : LaunchNextAction.Stop
   };
 }
 
@@ -146,7 +182,14 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
     ? [...options.mcpProfiles]
     : [...DEFAULT_MCP_PROFILES];
 
-  const fileExists = deps.fileExists ?? existsSync;
+  const fileExists = deps.fileExists ?? (async (path: string) => {
+    try {
+      await access(path);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   const spawnCommand = normalizeSpawn(deps);
   const startBackground = deps.startBackground ?? (() => startBackgroundSystem());
   const readBackgroundStatus = deps.getBackgroundStatus ?? (() => getBackgroundStatus());
@@ -166,32 +209,32 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
   };
 
   const distCliPath = join(cwd, 'dist', 'cli', 'index.js');
-  const distExists = fileExists(distCliPath);
+  const distExists = await fileExists(distCliPath);
 
-  const preflightStep: LaunchStep = distExists
-    ? (() => {
-      const cliHelp = spawnCommand('node', [distCliPath, '--help'], {
-        cwd,
-        encoding: 'utf8'
-      });
-
-      return {
-        id: 'repo.preflight',
-        ok: cliHelp.status === 0,
-        details: cliHelp.status === 0
-          ? `Found ${distCliPath}; CLI executable check passed.`
-          : `CLI executable check failed: ${cliHelp.stderr?.trim() || 'unknown error'}`,
-        remediation: cliHelp.status === 0
-          ? undefined
-          : 'Run `npm run build` and then `node dist/cli/index.js --help`.'
-      };
-    })()
-    : {
+  let preflightStep: LaunchStep;
+  if (distExists) {
+    const cliHelp = await spawnCommand('node', [distCliPath, '--help'], {
+      cwd,
+      encoding: 'utf8'
+    });
+    preflightStep = {
+      id: 'repo.preflight',
+      ok: cliHelp.status === 0,
+      details: cliHelp.status === 0
+        ? `Found ${distCliPath}; CLI executable check passed.`
+        : `CLI executable check failed: ${cliHelp.stderr?.trim() || 'unknown error'}`,
+      remediation: cliHelp.status === 0
+        ? undefined
+        : 'Run `npm run build` and then `node dist/cli/index.js --help`.'
+    };
+  } else {
+    preflightStep = {
       id: 'repo.preflight',
       ok: false,
       details: `Missing ${distCliPath}`,
       remediation: 'Run `npm run build`.'
     };
+  }
 
   {
     const stop = appendStep(preflightStep);
@@ -200,26 +243,27 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
     }
   }
 
-  const codexAuthStep: LaunchStep = options.skipCodexAuth
-    ? {
+  let codexAuthStep: LaunchStep;
+  if (options.skipCodexAuth) {
+    codexAuthStep = {
       id: 'codex.auth',
       ok: true,
       details: 'Skipped codex auth check (--skip-codex-auth).'
-    }
-    : (() => {
-      const loginStatus = spawnCommand('codex', ['login', 'status'], {
-        cwd,
-        encoding: 'utf8'
-      });
-      const stdout = loginStatus.stdout?.trim() || '';
-      const ok = loginStatus.status === 0 && !/not logged in/i.test(stdout);
-      return {
-        id: 'codex.auth',
-        ok,
-        details: stdout || loginStatus.stderr?.trim() || 'No output',
-        remediation: ok ? undefined : 'Run `codex login` then re-run `codex login status`.'
-      };
-    })();
+    };
+  } else {
+    const loginStatus = await spawnCommand('codex', ['login', 'status'], {
+      cwd,
+      encoding: 'utf8'
+    });
+    const stdout = loginStatus.stdout?.trim() || '';
+    const ok = loginStatus.status === 0 && !/not logged in/i.test(stdout);
+    codexAuthStep = {
+      id: 'codex.auth',
+      ok,
+      details: stdout || loginStatus.stderr?.trim() || 'No output',
+      remediation: ok ? undefined : 'Run `codex login` then re-run `codex login status`.'
+    };
+  }
 
   {
     const stop = appendStep(codexAuthStep);
@@ -340,7 +384,7 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
           continue;
         }
 
-        const remove = spawnCommand('codex', ['mcp', 'remove', registration.codexName], {
+        const remove = await spawnCommand('codex', ['mcp', 'remove', registration.codexName], {
           cwd,
           encoding: 'utf8'
         });
@@ -352,7 +396,7 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
           );
         }
 
-        const add = spawnCommand('codex', ['mcp', 'add', registration.codexName, '--url', registration.url], {
+        const add = await spawnCommand('codex', ['mcp', 'add', registration.codexName, '--url', registration.url], {
           cwd,
           encoding: 'utf8'
         });
@@ -419,7 +463,8 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
       fileExists,
       spawnCommand,
       getServiceStatus: deps.getServiceStatus,
-      getCodexRegistration: deps.getCodexRegistration
+      getCodexRegistration: deps.getCodexRegistration,
+      registriesForProfiles: deps.registriesForProfiles
     }
   );
 

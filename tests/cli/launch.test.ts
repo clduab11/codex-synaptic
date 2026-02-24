@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runLaunch, type LaunchDependencies } from '../../src/cli/launch';
+import { LaunchNextAction, runLaunch, type LaunchDependencies } from '../../src/cli/launch';
 import type { DoctorReport } from '../../src/cli/doctor';
 import { Logger } from '../../src/core/logger';
 
 const passingDoctorReport: DoctorReport = {
   ok: true,
-  summary: { passed: 6, failed: 0, total: 6 },
+  summary: { passed: 0, failed: 0, total: 0 },
   checks: []
 };
 
@@ -16,7 +16,7 @@ describe('runLaunch', () => {
 
     const deps: LaunchDependencies = {
       fileExists: () => true,
-      spawnCommand: (command, args) => {
+      spawnCommand: async (command, args) => {
         spawnCalls.push(`${command} ${args.join(' ')}`);
 
         if (command === 'node' && args.includes('--help')) {
@@ -64,7 +64,7 @@ describe('runLaunch', () => {
     );
 
     expect(report.ok).toBe(true);
-    expect(report.nextAction).toBe('continue');
+    expect(report.nextAction).toBe(LaunchNextAction.Continue);
     expect(report.steps.map((step) => step.id)).toEqual([
       'repo.preflight',
       'codex.auth',
@@ -97,7 +97,7 @@ describe('runLaunch', () => {
     );
 
     expect(report.ok).toBe(false);
-    expect(report.nextAction).toBe('stop');
+    expect(report.nextAction).toBe(LaunchNextAction.Stop);
     expect(report.steps).toHaveLength(1);
     expect(report.steps[0].id).toBe('repo.preflight');
     expect(report.doctor.summary.total).toBe(0);
@@ -114,13 +114,14 @@ describe('runLaunch', () => {
       },
       {
         fileExists: () => true,
-        spawnCommand: (command, args) => {
+        spawnCommand: async (command, args) => {
           if (command === 'node' && args.includes('--help')) {
             return { status: 0, stdout: 'ok', stderr: '' };
           }
           throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
         },
         getBackgroundStatus: () => ({ running: true, pid: 999 }),
+        registriesForProfiles: () => ['ghcr.io'],
         ensureService: async () => {
           throw new Error('docker compose timeout');
         },
@@ -129,7 +130,7 @@ describe('runLaunch', () => {
     );
 
     expect(report.ok).toBe(false);
-    expect(report.nextAction).toBe('stop');
+    expect(report.nextAction).toBe(LaunchNextAction.Stop);
     const mcpStep = report.steps.find((step) => step.id === 'mcp.up');
     expect(mcpStep?.ok).toBe(false);
     expect(mcpStep?.details).toContain('mcp-filesystem');
@@ -152,7 +153,7 @@ describe('runLaunch', () => {
       },
       {
         fileExists: () => true,
-        spawnCommand: (command, args) => {
+        spawnCommand: async (command, args) => {
           if (command === 'node' && args.includes('--help')) {
             return { status: 0, stdout: 'ok', stderr: '' };
           }
@@ -175,7 +176,7 @@ describe('runLaunch', () => {
     );
 
     expect(report.ok).toBe(false);
-    expect(report.nextAction).toBe('stop');
+    expect(report.nextAction).toBe(LaunchNextAction.Stop);
     expect(doctorCalled).toBe(false);
     const registrationStep = report.steps.find((step) => step.id === 'mcp.codex_register');
     expect(registrationStep?.ok).toBe(false);
@@ -200,7 +201,7 @@ describe('runLaunch', () => {
         },
         {
           fileExists: () => true,
-          spawnCommand: (command, args) => {
+          spawnCommand: async (command, args) => {
             if (command === 'node' && args.includes('--help')) {
               return { status: 0, stdout: 'ok', stderr: '' };
             }

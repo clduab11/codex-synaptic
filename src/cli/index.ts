@@ -87,9 +87,7 @@ import {
   shouldShowCliEnvBanner
 } from './env-bootstrap.js';
 
-const loadedEnvSources = shouldAutoLoadCliEnv(process.env)
-  ? bootstrapCliEnv({ cwd: process.cwd(), env: process.env })
-  : [];
+let loadedEnvSources: string[] = [];
 
 const program = new Command();
 const session = CliSession.getInstance();
@@ -103,14 +101,6 @@ let envBootstrapLogged = false;
 
 if (cliSilent) {
   rootLogger.setConsoleLevel(LogLevel.ERROR);
-}
-
-if (loadedEnvSources.length && shouldShowCliEnvBanner({ env: process.env, cliSilent, argv: process.argv })) {
-  const lines = buildCliEnvBootstrapMessages(loadedEnvSources, { cwd: process.cwd(), env: process.env });
-  for (const line of lines) {
-    const colorize = line.startsWith('🔒') ? chalk.yellow : chalk.gray;
-    process.stderr.write(`${colorize(line)}\n`);
-  }
 }
 
 type BackgroundJob = {
@@ -4396,7 +4386,7 @@ envCmd
     }
 
     for (const registry of registries) {
-      serviceManager.dockerLogin(registry);
+      await serviceManager.dockerLogin(registry);
       console.log(chalk.green(`✅ Docker auth completed for ${registry}`));
     }
   }));
@@ -5095,6 +5085,18 @@ program.exitOverride();
 // Intercept commands with --codex flag and pass through to Codex CLI
 // Similar to claude-flow's --claude flag
 (async () => {
+  if (shouldAutoLoadCliEnv(process.env)) {
+    loadedEnvSources = await bootstrapCliEnv({ cwd: process.cwd(), env: process.env });
+  }
+
+  if (loadedEnvSources.length && shouldShowCliEnvBanner({ env: process.env, cliSilent, argv: process.argv })) {
+    const lines = buildCliEnvBootstrapMessages(loadedEnvSources, { cwd: process.cwd(), env: process.env });
+    for (const line of lines) {
+      const colorize = line.startsWith('🔒') ? chalk.yellow : chalk.gray;
+      process.stderr.write(`${colorize(line)}\n`);
+    }
+  }
+
   const args = process.argv.slice(2);
   
   // Check if --codex flag is present (but not in hive-mind spawn or cheat which have their own --codex handling)

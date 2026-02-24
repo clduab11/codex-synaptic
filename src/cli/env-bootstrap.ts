@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { promises as fs } from "fs";
 import { relative, resolve } from "path";
 
 function parseBooleanFlag(
@@ -57,16 +57,18 @@ export function shouldShowCliEnvBanner(
   return parseBooleanFlag(env.CODEX_CLI_ENV_BANNER, true);
 }
 
-export function loadEnvFile(
+export async function loadEnvFile(
   filePath: string,
   env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (!existsSync(filePath)) {
+): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+  } catch {
     return false;
   }
 
   try {
-    const content = readFileSync(filePath, "utf8");
+    const content = await fs.readFile(filePath, "utf8");
     const lines = content.split(/\r?\n/);
     let applied = false;
 
@@ -114,12 +116,12 @@ export function loadEnvFile(
   }
 }
 
-export function bootstrapCliEnv(
+export async function bootstrapCliEnv(
   options: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
   } = {},
-): string[] {
+): Promise<string[]> {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
   const sources: string[] = [];
@@ -136,7 +138,7 @@ export function bootstrapCliEnv(
       continue;
     }
     seen.add(candidate);
-    if (loadEnvFile(candidate, env)) {
+    if (await loadEnvFile(candidate, env)) {
       sources.push(candidate);
     }
   }
