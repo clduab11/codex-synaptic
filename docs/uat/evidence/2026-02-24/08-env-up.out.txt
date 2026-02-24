@@ -1,0 +1,9 @@
+⚙️  Environment variables loaded from local .env file(s) (1).
+🔒 `src/cli/.env` is local-sensitive state. Avoid sharing logs/screenshots with local env details; set CODEX_CLI_ENV_AUTOLOAD=0 to disable auto-loading.
+2026-02-24T14:27:01.165Z ✨ INFO [env] Starting service mcp-filesystem ~ all green—smooth sailing ✨ | data: command=docker compose -f docker/mcp/docker-c…
+❌ env.up failed: Docker image pull/auth denied for mcp-filesystem (ghcr.io/context-labs/filesystem-mcp:latest) (exit=1, compose=docker compose -f docker/mcp/docker-compose.filesystem.yml up -d mcp-filesystem). Run `codex-synaptic env docker-login mcp-filesystem` and retry `codex-synaptic env up mcp-filesystem`. Raw docker output: time="2026-02-24T08:27:01-06:00" level=warning msg="/Users/chrisdukes/LocalProjects/codex-synaptic/docker/mcp/docker-compose.filesystem.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Image ghcr.io/context-labs/filesystem-mcp:latest Pulling 
+ Image ghcr.io/context-labs/filesystem-mcp:latest Error error from registry: denied
+denied
+Error response from daemon: error from registry: denied
+denied

@@ -1,0 +1,1 @@
+Redacted 1 secret-like value in codex.mcp.list.json (bearer_token_env_var field) on 2026-02-24 rerun capture.

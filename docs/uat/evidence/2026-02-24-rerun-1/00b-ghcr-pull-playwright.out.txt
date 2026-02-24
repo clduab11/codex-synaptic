@@ -1,0 +1,1 @@
+Error response from daemon: failed to resolve reference "ghcr.io/context-labs/playwright-mcp:latest": ghcr.io/context-labs/playwright-mcp:latest: not found

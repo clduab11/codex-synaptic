@@ -1,0 +1,1 @@
+node dist/cli/index.js env status mcp-filesystem mcp-playwright mcp-desktop-commander

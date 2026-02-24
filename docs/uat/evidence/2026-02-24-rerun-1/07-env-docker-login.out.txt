@@ -1,0 +1,10 @@
+⚙️  Environment variables loaded from local .env file(s) (1).
+🔒 `src/cli/.env` is local-sensitive state. Avoid sharing logs/screenshots with local env details; set CODEX_CLI_ENV_AUTOLOAD=0 to disable auto-loading.
+2026-02-24T15:02:53.043Z ✨ INFO [env] Authenticating Docker registry ~ all green—smooth sailing ✨ | data: registry=ghcr.io
+Authenticating with existing credentials... [Username: clduab11]
+
+ Info -> To login with a different account, run 'docker logout' followed by 'docker login'
+
+
+Login Succeeded
+✅ Docker auth completed for ghcr.io

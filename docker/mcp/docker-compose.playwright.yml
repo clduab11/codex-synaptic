@@ -1,10 +1,10 @@
 version: '3.8'
 services:
   mcp-playwright:
-    image: ghcr.io/context-labs/playwright-mcp:latest
+    image: mcp/playwright:latest
     container_name: codex-mcp-playwright
     restart: unless-stopped
     ports:
       - "7030:7030"
     shm_size: '1gb'
-    command: ["--port", "7030"]
+    command: ["--port", "7030", "--host", "0.0.0.0"]

@@ -1,0 +1,20 @@
+⚙️  Environment variables loaded from local .env file(s) (1).
+🔒 `src/cli/.env` is local-sensitive state. Avoid sharing logs/screenshots with local env details; set CODEX_CLI_ENV_AUTOLOAD=0 to disable auto-loading.
+
+mcp-filesystem
+  running: no
+  healthy: no
+  checkedAt: 2026-02-24T14:27:03.403Z
+NAME      IMAGE     COMMAND   SERVICE   CREATED   STATUS    PORTS
+
+mcp-playwright
+  running: no
+  healthy: no
+  checkedAt: 2026-02-24T14:27:03.478Z
+NAME      IMAGE     COMMAND   SERVICE   CREATED   STATUS    PORTS
+
+mcp-desktop-commander
+  running: no
+  healthy: no
+  checkedAt: 2026-02-24T14:27:03.549Z
+NAME      IMAGE     COMMAND   SERVICE   CREATED   STATUS    PORTS

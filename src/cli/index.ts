@@ -4483,7 +4483,8 @@ launchCmd
       cwd: process.cwd(),
       strict,
       skipCodexAuth: Boolean(options.skipCodexAuth),
-      mcpProfiles: profileNames
+      mcpProfiles: profileNames,
+      suppressInfoConsoleLogs: Boolean(options.json)
     });
 
     if (options.json) {

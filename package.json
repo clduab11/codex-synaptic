@@ -6,6 +6,18 @@
   "bin": {
     "codex-synaptic": "dist/cli/index.js"
   },
+  "files": [
+    "dist/",
+    "docker/",
+    "config/",
+    ".env.example",
+    "README.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs/codex-synaptic-cheat-codes.md",
+    ".codex-improvement/SCHEMA_MASTER.yaml"
+  ],
   "scripts": {
     "build": "tsc && node scripts/dev-cli-link.mjs",
     "dev": "ts-node src/index.ts",
@@ -54,13 +66,13 @@
     "vitest": "^1.6.1"
   },
   "dependencies": {
-    "@openai/agents": "^0.1.10",
+    "@openai/agents": "^0.1.11",
     "chalk": "^5.6.2",
     "commander": "^14.0.0",
     "crypto-js": "^4.2.0",
     "ink": "^5.1.0",
     "inquirer": "^12.9.4",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "^4.1.1",
     "openai": "^6.5.0",
     "react": "^18.2.0",
     "sqlite3": "^5.1.7",

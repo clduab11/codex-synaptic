@@ -1,0 +1,60 @@
+{
+  "ok": false,
+  "summary": {
+    "passed": 4,
+    "failed": 3,
+    "total": 7
+  },
+  "checks": [
+    {
+      "id": "repo.cli_build_artifact",
+      "ok": true,
+      "details": "Found /Users/chrisdukes/LocalProjects/codex-synaptic/dist/cli/index.js"
+    },
+    {
+      "id": "repo.cli_exec",
+      "ok": true,
+      "details": "CLI help command succeeded."
+    },
+    {
+      "id": "codex.auth",
+      "ok": true,
+      "details": "Logged in using ChatGPT"
+    },
+    {
+      "id": "codex.mcp_list",
+      "ok": true,
+      "details": "Loaded 8 Codex MCP registration(s)."
+    },
+    {
+      "id": "mcp.mcp-filesystem",
+      "ok": false,
+      "details": "running=false healthy=false registered=true",
+      "remediation": "codex-synaptic env docker-login mcp-filesystem && codex-synaptic env up mcp-filesystem",
+      "metadata": {
+        "codexName": "filesystem-local",
+        "url": "http://localhost:7040"
+      }
+    },
+    {
+      "id": "mcp.mcp-playwright",
+      "ok": false,
+      "details": "running=false healthy=false registered=true",
+      "remediation": "codex-synaptic env docker-login mcp-playwright && codex-synaptic env up mcp-playwright",
+      "metadata": {
+        "codexName": "playwright-local",
+        "url": "http://localhost:7030"
+      }
+    },
+    {
+      "id": "mcp.mcp-desktop-commander",
+      "ok": false,
+      "details": "running=false healthy=false registered=true",
+      "remediation": "codex-synaptic env docker-login mcp-desktop-commander && codex-synaptic env up mcp-desktop-commander",
+      "metadata": {
+        "codexName": "desktop-commander",
+        "url": "http://localhost:7070"
+      }
+    }
+  ]
+}

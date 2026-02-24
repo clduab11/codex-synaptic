@@ -1,6 +1,6 @@
 # Codex for macOS UAT Runbook (Launch/Doctor MCP Readiness)
 
-Last updated: 2026-02-23  
+Last updated: 2026-02-24  
 Audience: UAT operators validating Codex for macOS + `codex-synaptic` launch readiness.  
 Scope: UAT readiness only (not PRD release readiness).
 
@@ -42,7 +42,7 @@ Do not start the run until these are confirmed:
 - Codex CLI installed and on `PATH` (`codex --help`)
 - Codex CLI authenticated (`codex login status`)
 - Network access to pull MCP images
-- Docker registry credentials with access to required images (GHCR-backed images are used by default MCP profiles)
+- Docker registry credentials for any private registries still referenced by the active MCP profile images
 
 Notes:
 
@@ -50,6 +50,22 @@ Notes:
 - For non-JSON commands, the CLI may emit an env bootstrap banner to `stderr` (not `stdout`). Treat local env source details as sensitive operational context.
 - Set `CODEX_CLI_ENV_BANNER_VERBOSE=1` only when debugging env source paths; avoid using it in shared logs/screenshots.
 - Do not capture or paste secrets from `codex login`, Docker login prompts, or local `.env` files.
+
+### Upstream Image Migration Note (2026-02-24)
+
+Verified against upstream project documentation and live registry pulls:
+
+- `mcp-playwright` canonical image is now the Docker Hub MCP image `mcp/playwright:latest` (also mirrored from official Playwright MCP Docker guidance).
+- `mcp-filesystem` canonical image is `mcp/filesystem:latest`, but it is a stdio-oriented MCP server image (not a drop-in HTTP/`--port` replacement for this repo's current `env up` + `codex mcp add --url` flow).
+- `mcp-desktop-commander` canonical image is `mcp/desktop-commander:latest`, but it is also stdio-oriented and does not accept `--port`.
+- Legacy GHCR wrapper images previously used by this repo (for example `ghcr.io/context-labs/*-mcp` and `ghcr.io/wonderwhy-er/desktop-commander`) now return registry `404` (not found), even with authenticated GHCR access.
+
+Implication for UAT:
+
+- Updating image references alone only cleanly unblocks `mcp-playwright`.
+- `mcp-filesystem` and `mcp-desktop-commander` require either:
+  - replacement HTTP-capable wrapper images, or
+  - a profile/registration redesign to use stdio MCP registration instead of HTTP URL registration.
 
 ## Recommended Evidence Capture (Optional but Strongly Recommended)
 
@@ -125,13 +141,15 @@ node dist/cli/index.js env docker-login mcp-filesystem mcp-playwright mcp-deskto
 Pass criteria:
 
 - Command exits `0`
-- Docker login succeeds for required registries (typically `ghcr.io`)
+- Docker login succeeds for required private registries (if any are required by the active profile images)
+- Public Docker Hub `mcp/*` images generally do not require `docker login`
 
 Common failure indicators (blockers):
 
 - `error from registry: denied`
 - `pull access denied`
 - `unauthorized`
+- `failed to resolve reference ... : not found` (image/repository/tag drift or deprecation)
 
 ### 5) Start default MCP profiles (read-only filesystem mode by default)
 

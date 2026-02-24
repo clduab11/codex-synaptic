@@ -93,7 +93,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.playwright.yml',
     services: ['mcp-playwright'],
     port: 7030,
-    dockerImages: ['ghcr.io/context-labs/playwright-mcp:latest'],
+    dockerImages: ['mcp/playwright:latest'],
     codexName: 'playwright-local'
   },
   'mcp-filesystem': {

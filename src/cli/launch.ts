@@ -16,6 +16,7 @@ import {
   type DoctorReport
 } from './doctor.js';
 import { BridgeError, ErrorCode } from '../core/errors.js';
+import { Logger, LogLevel } from '../core/logger.js';
 
 export interface LaunchStep {
   id: string;
@@ -37,6 +38,7 @@ export interface LaunchOptions {
   strict?: boolean;
   skipCodexAuth?: boolean;
   mcpProfiles?: string[];
+  suppressInfoConsoleLogs?: boolean;
 }
 
 export interface LaunchDependencies extends DoctorDependencies {
@@ -96,6 +98,25 @@ function buildMcpBootstrapRemediation(profileNames: string[]): string {
   commands.push(`codex-synaptic env codex-register ${profileNames.join(' ')} --replace`);
 
   return commands.join(' && ');
+}
+
+async function withSuppressedInfoConsoleLogs<T>(enabled: boolean, work: () => Promise<T>): Promise<T> {
+  if (!enabled) {
+    return work();
+  }
+
+  const logger = Logger.getInstance();
+  const previousConsoleLevel = logger.getConsoleLevel();
+  if (previousConsoleLevel >= LogLevel.WARN) {
+    return work();
+  }
+
+  logger.setConsoleLevel(LogLevel.WARN);
+  try {
+    return await work();
+  } finally {
+    logger.setConsoleLevel(previousConsoleLevel);
+  }
 }
 
 export function collectLaunchRemediations(report: LaunchReport): string[] {
@@ -259,7 +280,9 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
 
     for (const profileName of profileNames) {
       try {
-        await ensureService(profileName, { waitForHealth: true });
+        await withSuppressedInfoConsoleLogs(Boolean(options.suppressInfoConsoleLogs), async () => (
+          ensureService(profileName, { waitForHealth: true })
+        ));
         startedProfiles.push(profileName);
       } catch (error) {
         failedProfile = profileName;

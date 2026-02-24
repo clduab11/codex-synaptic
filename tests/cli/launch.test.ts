@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runLaunch, type LaunchDependencies } from '../../src/cli/launch';
 import type { DoctorReport } from '../../src/cli/doctor';
+import { Logger } from '../../src/core/logger';
 
 const passingDoctorReport: DoctorReport = {
   ok: true,
@@ -181,5 +182,51 @@ describe('runLaunch', () => {
     expect(registrationStep?.details).toContain('codex mcp add failed for filesystem-local');
     expect(registrationStep?.remediation).toContain('codex-synaptic env codex-register mcp-filesystem --replace');
     expect((registrationStep?.metadata as { code?: string } | undefined)?.code).toBe('MCP_ERROR');
+  });
+
+  it('suppresses info-level console logs during MCP startup when configured', async () => {
+    const logger = Logger.getInstance();
+    const previousConsoleLevel = logger.getConsoleLevel();
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    try {
+      const report = await runLaunch(
+        {
+          cwd: '/tmp/codex-synaptic',
+          strict: true,
+          skipCodexAuth: true,
+          mcpProfiles: ['mcp-filesystem'],
+          suppressInfoConsoleLogs: true
+        },
+        {
+          fileExists: () => true,
+          spawnCommand: (command, args) => {
+            if (command === 'node' && args.includes('--help')) {
+              return { status: 0, stdout: 'ok', stderr: '' };
+            }
+            if (command === 'codex' && args[0] === 'mcp' && args[1] === 'remove') {
+              return { status: 0, stdout: '', stderr: '' };
+            }
+            if (command === 'codex' && args[0] === 'mcp' && args[1] === 'add') {
+              return { status: 0, stdout: '', stderr: '' };
+            }
+            throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
+          },
+          getBackgroundStatus: () => ({ running: true, pid: 999 }),
+          ensureService: async (name) => {
+            logger.info('env', `Starting service ${name}`, { command: 'docker compose up -d' });
+          },
+          getCodexRegistration: () => ({ codexName: 'filesystem-local', url: 'http://localhost:7040' }),
+          runDoctor: async () => passingDoctorReport
+        }
+      );
+
+      expect(report.ok).toBe(true);
+      expect(infoSpy).not.toHaveBeenCalled();
+      expect(logger.getConsoleLevel()).toBe(previousConsoleLevel);
+    } finally {
+      infoSpy.mockRestore();
+      logger.setConsoleLevel(previousConsoleLevel);
+    }
   });
 });

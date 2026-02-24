@@ -1,0 +1,5 @@
+⚙️  Environment variables loaded from local .env file(s) (1).
+🔒 `src/cli/.env` is local-sensitive state. Avoid sharing logs/screenshots with local env details; set CODEX_CLI_ENV_AUTOLOAD=0 to disable auto-loading.
+2026-02-24T14:27:00.682Z ✨ INFO [env] Authenticating Docker registry ~ all green—smooth sailing ✨ | data: registry=ghcr.io
+error: cannot perform an interactive login from a non-TTY device
+❌ env.docker-login failed: Command failed: docker login ghcr.io
