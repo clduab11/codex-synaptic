@@ -99,7 +99,7 @@ function normalizeSpawn(
         resolve({
           status: 1,
           stdout,
-          stderr: stderr || error.message
+          stderr: stderr || `${error.name}: ${error.message}`
         });
       });
     }));
