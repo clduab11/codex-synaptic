@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncReturns } from 'child_process';
+import { spawn, spawnSync, type SpawnSyncReturns } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import {
@@ -16,6 +16,51 @@ import {
   type DoctorReport
 } from './doctor.js';
 import { BridgeError, ErrorCode } from '../core/errors.js';
+
+/**
+ * Promisified spawn wrapper that collects stdout/stderr and resolves with status code.
+ * Note: This function always resolves (never rejects) to match spawnSync behavior.
+ * Errors are communicated via status code and stderr, not via Promise rejection.
+ */
+function spawnAsync(
+  command: string,
+  args: string[],
+  options: { cwd: string; encoding: BufferEncoding }
+): Promise<Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data) => {
+      stdout += data.toString(options.encoding);
+    });
+
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString(options.encoding);
+    });
+
+    child.on('close', (code) => {
+      resolve({
+        status: code ?? 0,
+        stdout,
+        stderr
+      });
+    });
+
+    child.on('error', (error) => {
+      resolve({
+        status: 1,
+        stdout,
+        stderr: stderr || error.message
+      });
+    });
+  });
+}
 
 export interface LaunchStep {
   id: string;
@@ -62,9 +107,8 @@ function normalizeSpawn(
     command: string,
     args: string[],
     options: { cwd: string; encoding: BufferEncoding }
-  ) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'> {
-  return deps.spawnCommand
-    ?? ((command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
+  ) => Promise<Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>> {
+  return deps.spawnCommand ?? spawnAsync;
 }
 
 function buildLaunchReport(steps: LaunchStep[], doctorReport: DoctorReport): LaunchReport {
@@ -148,8 +192,8 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
   const distExists = fileExists(distCliPath);
 
   const preflightStep: LaunchStep = distExists
-    ? (() => {
-      const cliHelp = spawnCommand('node', [distCliPath, '--help'], {
+    ? await (async () => {
+      const cliHelp = await spawnCommand('node', [distCliPath, '--help'], {
         cwd,
         encoding: 'utf8'
       });
@@ -185,8 +229,8 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
       ok: true,
       details: 'Skipped codex auth check (--skip-codex-auth).'
     }
-    : (() => {
-      const loginStatus = spawnCommand('codex', ['login', 'status'], {
+    : await (async () => {
+      const loginStatus = await spawnCommand('codex', ['login', 'status'], {
         cwd,
         encoding: 'utf8'
       });
@@ -295,7 +339,7 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
           continue;
         }
 
-        const remove = spawnCommand('codex', ['mcp', 'remove', registration.codexName], {
+        const remove = await spawnCommand('codex', ['mcp', 'remove', registration.codexName], {
           cwd,
           encoding: 'utf8'
         });
@@ -307,7 +351,7 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
           );
         }
 
-        const add = spawnCommand('codex', ['mcp', 'add', registration.codexName, '--url', registration.url], {
+        const add = await spawnCommand('codex', ['mcp', 'add', registration.codexName, '--url', registration.url], {
           cwd,
           encoding: 'utf8'
         });

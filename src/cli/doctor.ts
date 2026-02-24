@@ -1,7 +1,52 @@
-import { spawnSync, type SpawnSyncReturns } from 'child_process';
+import { spawn, spawnSync, type SpawnSyncReturns } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { serviceManager, type ServiceStatus } from '../env/service-manager.js';
+
+/**
+ * Promisified spawn wrapper that collects stdout/stderr and resolves with status code.
+ * Note: This function always resolves (never rejects) to match spawnSync behavior.
+ * Errors are communicated via status code and stderr, not via Promise rejection.
+ */
+function spawnAsync(
+  command: string,
+  args: string[],
+  options: { cwd: string; encoding: BufferEncoding }
+): Promise<Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data) => {
+      stdout += data.toString(options.encoding);
+    });
+
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString(options.encoding);
+    });
+
+    child.on('close', (code) => {
+      resolve({
+        status: code ?? 0,
+        stdout,
+        stderr
+      });
+    });
+
+    child.on('error', (error) => {
+      resolve({
+        status: 1,
+        stdout,
+        stderr: stderr || error.message
+      });
+    });
+  });
+}
 
 export const DEFAULT_MCP_PROFILES = [
   'mcp-filesystem',
@@ -41,7 +86,7 @@ export interface DoctorDependencies {
     command: string,
     args: string[],
     options: { cwd: string; encoding: BufferEncoding }
-  ) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>;
+  ) => Promise<Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>>;
   getServiceStatus?: (name: string) => Promise<ServiceStatus>;
   getCodexRegistration?: (name: string) => { codexName: string; url: string } | null;
 }
@@ -128,8 +173,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   const cwd = options.cwd ?? process.cwd();
   const profileNames = parseProfileList(options.mcpProfiles);
   const fileExists = deps.fileExists ?? existsSync;
-  const spawnCommand = deps.spawnCommand
-    ?? ((command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
+  const spawnCommand = deps.spawnCommand ?? spawnAsync;
   const getServiceStatus = deps.getServiceStatus ?? ((name: string) => serviceManager.status(name));
   const getCodexRegistration = deps.getCodexRegistration
     ?? ((name: string) => serviceManager.codexRegistration(name));
@@ -146,7 +190,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   });
 
   if (distExists) {
-    const cliHelp = spawnCommand('node', [distCliPath, '--help'], {
+    const cliHelp = await spawnCommand('node', [distCliPath, '--help'], {
       cwd,
       encoding: 'utf8'
     });
@@ -164,7 +208,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   }
 
   if (!options.skipCodexAuth) {
-    const loginStatus = spawnCommand('codex', ['login', 'status'], {
+    const loginStatus = await spawnCommand('codex', ['login', 'status'], {
       cwd,
       encoding: 'utf8'
     });
@@ -180,7 +224,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
     });
   }
 
-  const codexMcpList = spawnCommand('codex', ['mcp', 'list', '--json'], {
+  const codexMcpList = await spawnCommand('codex', ['mcp', 'list', '--json'], {
     cwd,
     encoding: 'utf8'
   });
