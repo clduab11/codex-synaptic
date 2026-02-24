@@ -37,7 +37,10 @@ export enum ErrorCode {
   // Bridge errors
   BRIDGE_ERROR = 'BRIDGE_ERROR',
   MCP_ERROR = 'MCP_ERROR',
-  A2A_ERROR = 'A2A_ERROR'
+  A2A_ERROR = 'A2A_ERROR',
+  
+  // CLI/Daemon errors
+  DAEMON_CONFLICT = 'DAEMON_CONFLICT'
 }
 
 export class CodexSynapticError extends Error {
@@ -121,6 +124,16 @@ export class BridgeError extends CodexSynapticError {
   constructor(code: ErrorCode, message: string, context?: Record<string, any>) {
     super(code, message, context, true);
     this.name = 'BridgeError';
+  }
+}
+
+/**
+ * Error thrown when a daemon conflict is detected (split-brain prevention)
+ */
+export class DaemonConflictError extends CodexSynapticError {
+  constructor(message: string, context?: Record<string, any>) {
+    super(ErrorCode.DAEMON_CONFLICT, message, context, false);
+    this.name = 'DaemonConflictError';
   }
 }
 

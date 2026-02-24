@@ -17,7 +17,7 @@ Codex for macOS is now the default frontend path for this repo's operator workfl
 
 ### Verified alignment with official OpenAI docs (February 2026)
 
-- Codex app setup is macOS (Apple Silicon) and recommended for mac users.
+- Codex app setup is macOS (Apple Silicon) and recommended for Mac users.
 - App feature model includes Local / Worktree / Cloud modes, built-in Git, integrated terminal, automations, and MCP support.
 - Codex CLI supports interactive mode, `resume`, `cloud`, `exec`, and `mcp` operations.
 - Security defaults recommend workspace-write + on-request approvals for version-controlled repos.
@@ -83,6 +83,8 @@ node dist/cli/index.js env up mcp-filesystem mcp-playwright mcp-desktop-commande
 node dist/cli/index.js env status mcp-filesystem mcp-playwright mcp-desktop-commander
 node dist/cli/index.js env codex-register mcp-filesystem mcp-playwright mcp-desktop-commander --replace
 ```
+
+Non-interactive CLI commands run in one-shot mode by default (the process exits after command completion). Set `CODEX_CLI_AUTO_SHUTDOWN=0` only when you explicitly want to keep the in-process foreground session alive for debugging.
 
 ## Codex for macOS Workflow
 
