@@ -1,4 +1,4 @@
-import { execSync, spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import { createConnection } from 'net';
 import { setTimeout as sleep } from 'timers/promises';
 import { CodexSynapticError, ErrorCode } from '../core/errors.js';
@@ -36,6 +36,14 @@ export interface EnsureServiceOptions {
   filesystemMode?: FilesystemAccessMode;
   allowFilesystemWrite?: boolean;
 }
+
+interface ComposeCommand {
+  bin: string;
+  args: string[];
+}
+
+/** Maximum time (ms) to wait for `docker compose up -d` before killing the process. */
+const COMPOSE_UP_TIMEOUT_MS = 300_000; // 5 minutes
 
 const PROFILES: Record<string, ServiceProfile> = {
   observability: {
@@ -76,7 +84,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.github.yml',
     services: ['mcp-github'],
     port: 7010,
-    dockerImages: ['ghcr.io/context-labs/github-mcp:latest'],
+    dockerImages: ['ghcr.io/context-labs/github-mcp:v1.0.0'],
     requiredEnv: ['GITHUB_TOKEN'],
     codexName: 'github'
   },
@@ -85,7 +93,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.context7.yml',
     services: ['mcp-context7'],
     port: 7020,
-    dockerImages: ['ghcr.io/context-labs/context7-mcp:latest'],
+    dockerImages: ['ghcr.io/context-labs/context7-mcp:v1.0.0'],
     requiredEnv: ['CONTEXT7_API_KEY'],
     codexName: 'context7'
   },
@@ -94,7 +102,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.playwright.yml',
     services: ['mcp-playwright'],
     port: 7030,
-    dockerImages: ['mcp/playwright:latest'],
+    dockerImages: ['mcp/playwright:v1.0.0'],
     codexName: 'playwright-local'
   },
   'mcp-filesystem': {
@@ -102,7 +110,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.filesystem.yml',
     services: ['mcp-filesystem'],
     port: 7040,
-    dockerImages: ['ghcr.io/context-labs/filesystem-mcp:latest'],
+    dockerImages: ['ghcr.io/context-labs/filesystem-mcp:v1.0.0'],
     codexName: 'filesystem-local'
   },
   'mcp-desktop-commander': {
@@ -110,7 +118,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.desktop-commander.yml',
     services: ['mcp-desktop-commander'],
     port: 7070,
-    dockerImages: ['ghcr.io/wonderwhy-er/desktop-commander:latest'],
+    dockerImages: ['ghcr.io/wonderwhy-er/desktop-commander:v1.0.0'],
     codexName: 'desktop-commander'
   },
   'mcp-tavily': {
@@ -118,7 +126,7 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.tavily.yml',
     services: ['mcp-tavily'],
     port: 7050,
-    dockerImages: ['ghcr.io/context-labs/tavily-mcp:latest'],
+    dockerImages: ['ghcr.io/context-labs/tavily-mcp:v1.0.0'],
     requiredEnv: ['TAVILY_API_KEY'],
     codexName: 'tavily'
   },
@@ -127,15 +135,26 @@ const PROFILES: Record<string, ServiceProfile> = {
     composeFile: 'docker/mcp/docker-compose.firecrawl.yml',
     services: ['mcp-firecrawl'],
     port: 7060,
-    dockerImages: ['ghcr.io/firecrawl/firecrawl-mcp:latest'],
+    dockerImages: ['ghcr.io/firecrawl/firecrawl-mcp:v1.0.0'],
     requiredEnv: ['FIRECRAWL_API_KEY'],
     codexName: 'firecrawl'
   }
 };
 
-function composeCommand(profile: ServiceProfile, command: string, services?: string[]): string {
-  const serviceArgs = services && services.length ? ` ${services.join(' ')}` : '';
-  return `docker compose -f ${profile.composeFile} ${command}${serviceArgs}`;
+/**
+ * Builds a structured {@link ComposeCommand} for the given profile and compose sub-command.
+ *
+ * @param command - A simple space-separated compose command string (e.g. `'up -d'`, `'down'`, `'ps'`).
+ *   Arguments containing spaces or special characters are not supported; all current callers pass
+ *   literal, shell-safe strings.
+ */
+function composeCommand(profile: ServiceProfile, command: string, services?: string[]): ComposeCommand {
+  const cmdArgs = command.trim().split(/\s+/);
+  const serviceArgs = services && services.length ? services : [];
+  return {
+    bin: 'docker',
+    args: ['compose', '-f', profile.composeFile, ...cmdArgs, ...serviceArgs]
+  };
 }
 
 class ServiceManager {
@@ -190,14 +209,15 @@ class ServiceManager {
 
   async ensureService(name: string, options?: EnsureServiceOptions): Promise<void> {
     const profile = this.getProfile(name);
-    const cmd = composeCommand(profile, 'up -d', profile.services);
+    const composed = composeCommand(profile, 'up -d', profile.services);
+    const cmdString = [composed.bin, ...composed.args].join(' ');
     const env = this.resolveExecEnv(name, options);
 
-    this.logger.info('env', `Starting service ${name}`, { command: cmd });
+    this.logger.info('env', `Starting service ${name}`, { command: cmdString });
     try {
-      await this.runComposeUp(cmd, env);
+      await this.runComposeUp(composed, env);
     } catch (error) {
-      throw this.wrapComposeStartError(name, profile, cmd, error);
+      throw this.wrapComposeStartError(name, profile, cmdString, error);
     }
 
     if (options?.waitForHealth !== false) {
@@ -207,14 +227,14 @@ class ServiceManager {
 
   stopService(name: string): void {
     const profile = this.getProfile(name);
-    const cmd = composeCommand(profile, 'down', profile.services);
-    this.logger.info('env', `Stopping service ${name}`, { command: cmd });
-    execSync(cmd, { stdio: 'inherit' });
+    const { bin, args } = composeCommand(profile, 'down', profile.services);
+    this.logger.info('env', `Stopping service ${name}`, { command: [bin, ...args].join(' ') });
+    execFileSync(bin, args, { stdio: 'inherit' });
   }
 
   async status(name: string): Promise<ServiceStatus> {
     const profile = this.getProfile(name);
-    const cmd = composeCommand(profile, 'ps');
+    const { bin, args } = composeCommand(profile, 'ps');
     const diagnostics: string[] = [];
 
     for (const required of profile.requiredEnv ?? []) {
@@ -224,7 +244,7 @@ class ServiceManager {
     }
 
     try {
-      const output = execSync(cmd, { stdio: 'pipe' }).toString();
+      const output = execFileSync(bin, args, { stdio: 'pipe' }).toString();
       const running = /\bUp\b/.test(output);
 
       if (!running) {
@@ -371,35 +391,65 @@ class ServiceManager {
    * Runs `docker compose up -d` streaming stdout to the terminal (avoiding
    * ENOBUFS on large image pulls) while capturing stderr for error
    * classification by {@link wrapComposeStartError}.
+   *
+   * A process-level timeout of {@link COMPOSE_UP_TIMEOUT_MS} is applied: if
+   * the child process does not exit within that window it is killed and the
+   * returned Promise is rejected with a descriptive timeout error.
    */
-  private runComposeUp(cmd: string, env: NodeJS.ProcessEnv): Promise<void> {
+  private runComposeUp(composed: ComposeCommand, env: NodeJS.ProcessEnv): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const proc = spawn(cmd, { shell: true, stdio: ['ignore', 'inherit', 'pipe'], env });
+      const proc = spawn(composed.bin, composed.args, { shell: false, stdio: ['ignore', 'inherit', 'pipe'], env });
       const stderrChunks: Buffer[] = [];
+      let settled = false;
+
+      const settle = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+
+      const timer = setTimeout(() => {
+        proc.kill();
+        settle(() => {
+          reject(
+            Object.assign(
+              new Error(`docker compose timed out after ${COMPOSE_UP_TIMEOUT_MS}ms`),
+              { status: null, stdout: '', stderr: `Process timed out after ${COMPOSE_UP_TIMEOUT_MS}ms` },
+            ),
+          );
+        });
+      }, COMPOSE_UP_TIMEOUT_MS);
 
       proc.stderr?.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
       proc.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          const stderr = Buffer.concat(stderrChunks).toString('utf8');
-          const err = Object.assign(new Error(`docker compose exited with code ${code}`), {
-            status: code,
-            stdout: '',
-            stderr,
-          });
-          reject(err);
-        }
+        settle(() => {
+          if (code === 0) {
+            resolve();
+          } else {
+            const stderr = Buffer.concat(stderrChunks).toString('utf8');
+            reject(
+              Object.assign(new Error(`docker compose exited with code ${code}`), {
+                status: code,
+                stdout: '',
+                stderr,
+              }),
+            );
+          }
+        });
       });
 
       proc.on('error', (spawnErr) => {
-        const err = Object.assign(spawnErr, {
-          status: null,
-          stdout: '',
-          stderr: spawnErr.message,
+        settle(() => {
+          reject(
+            Object.assign(spawnErr, {
+              status: null,
+              stdout: '',
+              stderr: spawnErr.message,
+            }),
+          );
         });
-        reject(err);
       });
     });
   }
