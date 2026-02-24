@@ -1,0 +1,1 @@
+docker pull ghcr.io/context-labs/filesystem-mcp:latest

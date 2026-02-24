@@ -1,0 +1,1 @@
+docker pull ghcr.io/wonderwhy-er/desktop-commander:latest

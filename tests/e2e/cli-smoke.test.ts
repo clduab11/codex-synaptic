@@ -127,10 +127,22 @@ describe('codex-synaptic CLI smoke suite', () => {
     expect(stdout).toContain('repo.cli_build_artifact');
   });
 
+  it('exposes launch command gating options', () => {
+    const { stdout } = runCli(['launch', '--help']);
+    expect(stdout).toContain('--mcp-profiles');
+    expect(stdout).toContain('--no-strict');
+    expect(stdout).toContain('--skip-codex-auth');
+  });
+
   it('includes desktop commander profile in env planning', () => {
     const { stdout } = runCli(['env', 'plan', 'mcp-desktop-commander']);
     expect(stdout).toContain('mcp-desktop-commander');
     expect(stdout).toContain('codex mcp name');
+  });
+
+  it('exposes docker-login helper under env command surface', () => {
+    const { stdout } = runCli(['env', '--help']);
+    expect(stdout).toContain('docker-login');
   });
 
   it('exposes the tui command surface', () => {

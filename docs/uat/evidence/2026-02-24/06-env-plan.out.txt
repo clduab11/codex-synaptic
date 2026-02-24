@@ -1,0 +1,24 @@
+⚙️  Environment variables loaded from local .env file(s) (1).
+🔒 `src/cli/.env` is local-sensitive state. Avoid sharing logs/screenshots with local env details; set CODEX_CLI_ENV_AUTOLOAD=0 to disable auto-loading.
+
+mcp-filesystem
+  description: Local filesystem MCP server (read-only by default)
+  compose: docker/mcp/docker-compose.filesystem.yml
+  services: mcp-filesystem
+  port: 7040
+  codex mcp name: filesystem-local
+  filesystem mode: read-only (default) or controlled-write with explicit approval
+
+mcp-playwright
+  description: Playwright automation MCP server
+  compose: docker/mcp/docker-compose.playwright.yml
+  services: mcp-playwright
+  port: 7030
+  codex mcp name: playwright-local
+
+mcp-desktop-commander
+  description: Desktop Commander MCP server for desktop/tooling automation
+  compose: docker/mcp/docker-compose.desktop-commander.yml
+  services: mcp-desktop-commander
+  port: 7070
+  codex mcp name: desktop-commander

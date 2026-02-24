@@ -1,0 +1,40 @@
+{
+  "ok": false,
+  "steps": [
+    {
+      "id": "repo.preflight",
+      "ok": true,
+      "details": "Found /Users/chrisdukes/LocalProjects/codex-synaptic/dist/cli/index.js; CLI executable check passed."
+    },
+    {
+      "id": "codex.auth",
+      "ok": true,
+      "details": "Logged in using ChatGPT"
+    },
+    {
+      "id": "runtime.daemon",
+      "ok": true,
+      "details": "Background daemon already running (pid 64145)."
+    },
+    {
+      "id": "mcp.up",
+      "ok": false,
+      "details": "Failed to start MCP profile mcp-filesystem after starting 0/3: Docker compose startup failed for mcp-filesystem (exit=1, compose=docker compose -f docker/mcp/docker-compose.filesystem.yml up -d mcp-filesystem). Verify Docker is running, then retry. Raw docker output: time=\"2026-02-24T09:03:04-06:00\" level=warning msg=\"/Users/chrisdukes/LocalProjects/codex-synaptic/docker/mcp/docker-compose.filesystem.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion\"\n Image ghcr.io/context-labs/filesystem-mcp:latest Pulling \n Image ghcr.io/context-labs/filesystem-mcp:latest Error failed to resolve reference \"ghcr.io/context-labs/filesystem-mcp:latest\": ghcr.io/context-labs/filesystem-mcp:latest: not found\nError respon…",
+      "remediation": "codex-synaptic env docker-login mcp-filesystem && codex-synaptic env up mcp-filesystem && codex-synaptic env codex-register mcp-filesystem --replace && codex-synaptic env status mcp-filesystem",
+      "metadata": {
+        "failedProfile": "mcp-filesystem",
+        "startedProfiles": []
+      }
+    }
+  ],
+  "doctor": {
+    "ok": false,
+    "summary": {
+      "passed": 0,
+      "failed": 0,
+      "total": 0
+    },
+    "checks": []
+  },
+  "nextAction": "stop"
+}

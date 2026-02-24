@@ -1,6 +1,6 @@
 # Codex macOS Workflows (Local, Worktree, Cloud + MCP)
 
-Last reviewed: 2026-02-13  
+Last reviewed: 2026-02-14  
 Audience: contributors using Codex app/CLI on macOS (Apple Silicon) with Codex-Synaptic.
 
 ## Source Of Truth
@@ -17,7 +17,7 @@ This guide is aligned with:
   - `https://developers.openai.com/codex/cli/features/`
   - `https://developers.openai.com/codex/security/`
 
-## Bootstrap And Doctor (Run First)
+## Bootstrap And Launch Gate (Run First)
 
 ```bash
 cd /absolute/path/to/codex-synaptic
@@ -29,11 +29,40 @@ codex --help
 codex mcp --help
 codex mcp add --help
 
-# one-shot readiness checks (auth + mcp + repo cli)
-node dist/cli/index.js doctor
+# one-command bootstrap + strict readiness gate
+node dist/cli/index.js launch --json
 
-# enforce failure in CI/automation
-node dist/cli/index.js doctor --strict --json
+# explicit strict form for CI/automation
+node dist/cli/index.js launch --strict --json
+```
+
+Launch defaults:
+
+- Detached runtime authority (`background start`) that remains running after success.
+- Required MCP gate set: `mcp-filesystem`, `mcp-playwright`, `mcp-desktop-commander`.
+- Hard-stop behavior in strict mode: first failing gate exits non-zero with remediation commands.
+
+Typical first Codex app prompt in this repo:
+
+```text
+Launch codex-synaptic and determine health/status prior to beginning repository work.
+```
+
+### Launch Failure Remediation Examples
+
+```bash
+# Codex auth missing
+codex login
+
+# Docker registry auth for MCP images
+node dist/cli/index.js env docker-login mcp-filesystem mcp-playwright mcp-desktop-commander
+
+# MCP runtime or registration drift
+node dist/cli/index.js env up mcp-filesystem mcp-playwright mcp-desktop-commander
+node dist/cli/index.js env codex-register mcp-filesystem mcp-playwright mcp-desktop-commander --replace
+
+# Re-run hard gate
+node dist/cli/index.js launch --strict --json
 ```
 
 ## Runtime Model (Deterministic)
@@ -130,6 +159,9 @@ codex cloud apply <task-id>
 # inspect profiles and codex registration targets
 node dist/cli/index.js env plan mcp-filesystem mcp-playwright mcp-desktop-commander
 
+# authenticate required Docker registries (for private GHCR images)
+node dist/cli/index.js env docker-login mcp-filesystem mcp-playwright mcp-desktop-commander
+
 # safest default: filesystem read-only
 node dist/cli/index.js env up mcp-filesystem mcp-playwright mcp-desktop-commander
 
@@ -147,6 +179,7 @@ codex mcp list --json
 Expected indicators:
 
 - `env status` returns `running: yes` and `healthy: yes` for active profiles.
+- `launch --json` returns `ok: true` and `nextAction: "continue"`.
 - `doctor` reports MCP profile checks passing and registration present.
 
 ## Sandbox And Approval Recommendations
@@ -169,7 +202,7 @@ codex --sandbox read-only --ask-for-approval on-request
 ```bash
 # 1) refresh build + readiness
 npm run build
-node dist/cli/index.js doctor --strict
+node dist/cli/index.js launch --strict --json
 
 # 2) run focused work
 codex exec "Implement one bounded fix with tests"

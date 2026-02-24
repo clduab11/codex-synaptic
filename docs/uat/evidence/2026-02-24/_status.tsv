@@ -1,0 +1,14 @@
+step	exit	artifact
+01-build	0	01-build.out.txt
+02-codex-help	0	02-codex-help.out.txt
+03-codex-mcp-help	0	03-codex-mcp-help.out.txt
+04-codex-mcp-add-help	0	04-codex-mcp-add-help.out.txt
+05-codex-login-status	0	05-codex-login-status.out.txt
+06-env-plan	0	06-env-plan.out.txt
+07-env-docker-login	1	07-env-docker-login.out.txt
+08-env-up	1	08-env-up.out.txt
+09-env-status	0	09-env-status.out.txt
+10-env-codex-register	0	10-env-codex-register.out.txt
+11-codex-mcp-list	0	codex.mcp.list.json
+12-doctor-strict-json	1	doctor.strict.json
+13-launch-strict-json	1	launch.strict.json

@@ -1,0 +1,125 @@
+[
+  {
+    "name": "desktop-commander",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "streamable_http",
+      "url": "http://localhost:7070",
+      "bearer_token_env_var": null,
+      "http_headers": null,
+      "env_http_headers": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  },
+  {
+    "name": "figma",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "streamable_http",
+      "url": "https://mcp.figma.com/mcp",
+      "bearer_token_env_var": null,
+      "http_headers": null,
+      "env_http_headers": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "o_auth"
+  },
+  {
+    "name": "filesystem-local",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "streamable_http",
+      "url": "http://localhost:7040",
+      "bearer_token_env_var": null,
+      "http_headers": null,
+      "env_http_headers": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  },
+  {
+    "name": "linear",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "streamable_http",
+      "url": "https://mcp.linear.app/mcp",
+      "bearer_token_env_var": "REDACTED_LOCAL_SECRET",
+      "http_headers": null,
+      "env_http_headers": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "bearer_token"
+  },
+  {
+    "name": "notion",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "streamable_http",
+      "url": "https://mcp.notion.com/mcp",
+      "bearer_token_env_var": null,
+      "http_headers": null,
+      "env_http_headers": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "o_auth"
+  },
+  {
+    "name": "openaiDeveloperDocs",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "streamable_http",
+      "url": "https://developers.openai.com/mcp",
+      "bearer_token_env_var": null,
+      "http_headers": null,
+      "env_http_headers": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  },
+  {
+    "name": "playwright",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ],
+      "env": null,
+      "env_vars": [],
+      "cwd": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  },
+  {
+    "name": "playwright-local",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "streamable_http",
+      "url": "http://localhost:7030",
+      "bearer_token_env_var": null,
+      "http_headers": null,
+      "env_http_headers": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  }
+]

@@ -1,0 +1,1 @@
+CODEX_AUTO_LINK=false npm run build

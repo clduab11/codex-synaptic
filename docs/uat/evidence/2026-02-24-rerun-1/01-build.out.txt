@@ -1,0 +1,4 @@
+
+> codex-synaptic@1.0.0 build
+> tsc && node scripts/dev-cli-link.mjs
+

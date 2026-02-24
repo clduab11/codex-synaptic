@@ -10,6 +10,13 @@ The Codex-Synaptic system enhances OpenAI's Codex with advanced multi-agent capa
 - **Autoscaler behaviour:** With the background daemon disabled, idle worker retirement requests cannot execute. Expect scale-down warnings in logs and manually right-size replicas after experiments. See `docs/runbooks/autoscaler-daemon-coordination.md` for operational guidance.
 - **Repository hygiene:** Active development is running from the local `codex-synaptic-clone` directory, but upstream pushes must target `github.com/clduab11/codex-synaptic`. Align the folder/remote names before release packaging so automation recipes resolve assets correctly. See `docs/runbooks/workspace-rename-guide.md` for the step-by-step procedure.
 
+## Startup Gate (Codex For macOS)
+
+- Run `codex-synaptic launch --json` before repository work whenever the user asks to launch or verify readiness first.
+- Treat launch as a hard gate: if `ok` is `false` (or the command exits non-zero), stop and only return remediation commands.
+- Proceed with repository changes only when launch returns `ok=true` and `nextAction="continue"`.
+- Default launch gate profiles are `mcp-filesystem`, `mcp-playwright`, and `mcp-desktop-commander`.
+
 ## Core Agent Types
 
 ### 1. Worker Agents

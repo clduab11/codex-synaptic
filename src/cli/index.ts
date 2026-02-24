@@ -32,6 +32,7 @@ import type {
   CodexPromptEnvelope,
   ContextLogEntry
 } from '../types/codex-context.js';
+import { CliGateError, ErrorCode, RetryManager } from '../core/errors.js';
 import { RetryManager, DaemonConflictError } from '../core/errors.js';
 import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 import { parseFileContent, parseJsonInput, loadFileThroughFeedforward } from './feedforward.js';
@@ -77,6 +78,19 @@ import {
   type QuotaOptions
 } from './tenant-quota-helpers.js';
 import {
+  DEFAULT_MCP_PROFILES,
+  parseProfileList,
+  runDoctor
+} from './doctor.js';
+import { collectLaunchRemediations, runLaunch } from './launch.js';
+import {
+  bootstrapCliEnv,
+  buildCliEnvBootstrapMessages,
+  shouldAutoLoadCliEnv,
+  shouldShowCliEnvBanner
+} from './env-bootstrap.js';
+
+let loadedEnvSources: string[] = [];
   executeGoapWorkflow,
   executeTaskWithConsensus,
   collectExecutionResults,
@@ -227,16 +241,6 @@ let envBootstrapLogged = false;
 
 if (cliSilent) {
   rootLogger.setConsoleLevel(LogLevel.ERROR);
-}
-
-if (!cliSilent && loadedEnvSources.length) {
-  console.log(
-    chalk.gray(
-      `⚙️  Environment variables loaded from ${loadedEnvSources
-        .map((source) => relative(process.cwd(), source) || source)
-        .join(', ')}`
-    )
-  );
 }
 
 type BackgroundJob = {
@@ -5173,6 +5177,34 @@ async function execCodexCommand(args: string[], timeoutMs = 10000): Promise<{ st
 }
 
 envCmd
+  .command('docker-login')
+  .description('Authenticate Docker registries required by one or more service profiles')
+  .argument('[names...]', 'Service profile names (defaults to launch gate profiles)')
+  .option('--dry-run', 'Print docker login commands without executing them')
+  .action(handleCommand('env.docker-login', async (names: string[] = [], options) => {
+    const targets = names.length ? names : [...DEFAULT_MCP_PROFILES];
+    const registries = serviceManager.registriesForProfiles(targets);
+
+    if (!registries.length) {
+      console.log(chalk.gray(`No registry authentication required for profiles: ${targets.join(', ')}`));
+      return;
+    }
+
+    if (options.dryRun) {
+      console.log(chalk.blue('Docker registry login commands (dry-run):'));
+      registries.forEach((registry) => {
+        console.log(chalk.gray(`  docker login ${registry}`));
+      });
+      return;
+    }
+
+    for (const registry of registries) {
+      await serviceManager.dockerLogin(registry);
+      console.log(chalk.green(`✅ Docker auth completed for ${registry}`));
+    }
+  }));
+
+envCmd
   .command('codex-register')
   .description('Register MCP HTTP profiles in Codex CLI MCP config')
   .argument('<names...>', 'Service profile names to register')
@@ -5203,6 +5235,96 @@ envCmd
       }
 
       console.log(chalk.green(`✅ Registered Codex MCP server ${registration.codexName} -> ${registration.url}`));
+    }
+  }));
+
+const launchCmd = decorateCommandHelp(
+  program
+    .command('launch')
+    .description('Start detached runtime and hard-gate readiness before repository work'),
+  {
+    title: 'Launch Gate',
+    subtitle: 'Boot daemon + MCP dependencies and fail-fast if the repo is not work-ready.',
+    context: [
+      'Launch is the single-command bootstrap for Codex for macOS first prompts.',
+      'In strict mode, launch stops on the first failing gate and exits non-zero.'
+    ],
+    skills: [
+      'Guarantee daemon, MCP profile, and doctor readiness before edits start.',
+      'Emit machine-readable launch reports for automation and handoffs.'
+    ],
+    actions: [
+      { command: 'codex-synaptic launch --json', description: 'Run the full bootstrap gate and emit structured output.' },
+      { command: 'codex-synaptic launch --no-strict --json', description: 'Collect gate results without immediate fail-fast exit.' }
+    ],
+    docs: [
+      { label: 'docs/guides/codex-macos-workflows.md', description: 'Single-command first-launch flow for Codex for macOS.' }
+    ]
+  }
+);
+
+launchCmd
+  .option('--json', 'Output launch report as JSON')
+  .option('--strict', 'Exit with an error when any launch gate fails', true)
+  .option('--no-strict', 'Report failing gates without exiting non-zero')
+  .option('--skip-codex-auth', 'Skip codex login status check')
+  .option(
+    '--mcp-profiles <profiles>',
+    'Comma-separated MCP service profiles to verify',
+    DEFAULT_MCP_PROFILES.join(',')
+  )
+  .action(handleCommand('launch', async (options) => {
+    const strict = options.strict !== false;
+    const profileNames = parseProfileList(options.mcpProfiles, [...DEFAULT_MCP_PROFILES]);
+    const report = await runLaunch({
+      cwd: process.cwd(),
+      strict,
+      skipCodexAuth: Boolean(options.skipCodexAuth),
+      mcpProfiles: profileNames,
+      suppressInfoConsoleLogs: Boolean(options.json)
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(chalk.blue('🚀 Codex-Synaptic Launch'));
+      console.log(chalk.gray(`  Status: ${report.ok ? 'ready' : 'blocked'}`));
+      console.log(chalk.gray(`  Next action: ${report.nextAction}`));
+
+      report.steps.forEach((step) => {
+        const marker = step.ok ? chalk.green('✓') : chalk.red('✗');
+        console.log(`${marker} ${step.id}: ${step.details}`);
+        if (!step.ok && step.remediation) {
+          console.log(chalk.yellow(`  remediation: ${step.remediation}`));
+        }
+      });
+
+      if (report.doctor.summary.total > 0) {
+        console.log(chalk.gray(`  Doctor summary: passed=${report.doctor.summary.passed} failed=${report.doctor.summary.failed}`));
+      } else {
+        console.log(chalk.gray('  Doctor summary: skipped (launch exited before strict doctor run).'));
+      }
+
+      if (report.ok) {
+        console.log(chalk.green('✅ Launch gate passed. Safe to begin repository work.'));
+      } else {
+        console.log(chalk.red('🛑 Launch gate failed. Stop repository work until remediations pass.'));
+        const remediation = collectLaunchRemediations(report);
+        if (remediation.length) {
+          console.log(chalk.yellow('  Suggested commands:'));
+          remediation.forEach((command) => {
+            console.log(chalk.yellow(`    - ${command}`));
+          });
+        }
+      }
+    }
+
+    if (strict && !report.ok) {
+      throw new CliGateError(
+        ErrorCode.LAUNCH_GATE_FAILURE,
+        'Launch failed one or more readiness gates.',
+        { strict, report }
+      );
     }
   }));
 
@@ -5241,9 +5363,11 @@ doctorCmd
   .option(
     '--mcp-profiles <profiles>',
     'Comma-separated MCP service profiles to verify',
-    'mcp-filesystem,mcp-playwright,mcp-desktop-commander'
+    DEFAULT_MCP_PROFILES.join(',')
   )
   .action(handleCommand('doctor', async (options) => {
+    const profileNames = parseProfileList(options.mcpProfiles, [...DEFAULT_MCP_PROFILES]);
+    const report = await runDoctor({
     const profileNames = String(options.mcpProfiles)
       .split(',')
       .map((item) => item.trim())
@@ -5273,8 +5397,33 @@ doctorCmd
     let codexMcpNames = new Set<string>();
     const codexMcpList = spawnSync('codex', ['mcp', 'list', '--json'], {
       cwd: process.cwd(),
-      encoding: 'utf8'
+      mcpProfiles: profileNames,
+      skipCodexAuth: Boolean(options.skipCodexAuth)
     });
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(chalk.blue('🩺 Codex-Synaptic Doctor'));
+      console.log(chalk.gray(`  Passed: ${report.summary.passed}`));
+      console.log(chalk.gray(`  Failed: ${report.summary.failed}`));
+
+      report.checks.forEach((check) => {
+        const marker = check.ok ? chalk.green('✓') : chalk.red('✗');
+        console.log(`${marker} ${check.id}: ${check.details}`);
+        if (!check.ok && check.remediation) {
+          console.log(chalk.yellow(`  remediation: ${check.remediation}`));
+        }
+      });
+    }
+
+    if (options.strict && !report.ok) {
+      throw new CliGateError(
+        ErrorCode.DOCTOR_CHECKS_FAILED,
+        `Doctor found ${report.summary.failed} failing check(s).`,
+        { summary: report.summary, report }
+      );
+    }
     if (codexMcpList.status === 0) {
       try {
         const parsed = JSON.parse(codexMcpList.stdout || '[]') as Array<{ name?: string }>;
@@ -5831,6 +5980,18 @@ program.exitOverride();
 // Intercept commands with --codex flag and pass through to Codex CLI
 // Similar to claude-flow's --claude flag
 (async () => {
+  if (shouldAutoLoadCliEnv(process.env)) {
+    loadedEnvSources = await bootstrapCliEnv({ cwd: process.cwd(), env: process.env });
+  }
+
+  if (loadedEnvSources.length && shouldShowCliEnvBanner({ env: process.env, cliSilent, argv: process.argv })) {
+    const lines = buildCliEnvBootstrapMessages(loadedEnvSources, { cwd: process.cwd(), env: process.env });
+    for (const line of lines) {
+      const colorize = line.startsWith('🔒') ? chalk.yellow : chalk.gray;
+      process.stderr.write(`${colorize(line)}\n`);
+    }
+  }
+
   const args = process.argv.slice(2);
   
   // Check if --codex flag is present (but not in hive-mind spawn or cheat which have their own --codex handling)

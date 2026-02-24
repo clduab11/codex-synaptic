@@ -1,0 +1,1 @@
+Error response from daemon: failed to resolve reference "ghcr.io/wonderwhy-er/desktop-commander:latest": ghcr.io/wonderwhy-er/desktop-commander:latest: not found

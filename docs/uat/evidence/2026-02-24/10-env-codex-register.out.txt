@@ -1,0 +1,8 @@
+⚙️  Environment variables loaded from local .env file(s) (1).
+🔒 `src/cli/.env` is local-sensitive state. Avoid sharing logs/screenshots with local env details; set CODEX_CLI_ENV_AUTOLOAD=0 to disable auto-loading.
+Removed existing Codex MCP entry: filesystem-local
+✅ Registered Codex MCP server filesystem-local -> http://localhost:7040
+Removed existing Codex MCP entry: playwright-local
+✅ Registered Codex MCP server playwright-local -> http://localhost:7030
+Removed existing Codex MCP entry: desktop-commander
+✅ Registered Codex MCP server desktop-commander -> http://localhost:7070
