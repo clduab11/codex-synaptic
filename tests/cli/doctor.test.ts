@@ -169,6 +169,7 @@ describe('runDoctor', () => {
 
     const mcpCheck = report.checks.find((check) => check.id === 'mcp.mcp-filesystem');
     expect(mcpCheck?.ok).toBe(false);
+    expect(mcpCheck?.remediation).toContain('codex-synaptic env docker-login mcp-filesystem');
     expect(mcpCheck?.remediation).toContain('codex-synaptic env up mcp-filesystem');
     expect(mcpCheck?.remediation).toContain('codex-synaptic env codex-register mcp-filesystem');
   });

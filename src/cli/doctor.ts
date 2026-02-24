@@ -44,6 +44,7 @@ export interface DoctorDependencies {
   ) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>;
   getServiceStatus?: (name: string) => Promise<ServiceStatus>;
   getCodexRegistration?: (name: string) => { codexName: string; url: string } | null;
+  registriesForProfiles?: (names: string[]) => string[];
 }
 
 function parseCodexMcpNames(payload: unknown): string[] {
@@ -133,6 +134,8 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   const getServiceStatus = deps.getServiceStatus ?? ((name: string) => serviceManager.status(name));
   const getCodexRegistration = deps.getCodexRegistration
     ?? ((name: string) => serviceManager.codexRegistration(name));
+  const registriesForProfiles = deps.registriesForProfiles
+    ?? ((names: string[]) => serviceManager.registriesForProfiles(names));
 
   const checks: DoctorCheck[] = [];
 
@@ -227,6 +230,9 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
 
     const remediationParts: string[] = [];
     if (!status.running || !healthy) {
+      if (registriesForProfiles([profileName]).length > 0) {
+        remediationParts.push(`codex-synaptic env docker-login ${profileName}`);
+      }
       remediationParts.push(`codex-synaptic env up ${profileName}`);
     }
     if (registration && !registered) {

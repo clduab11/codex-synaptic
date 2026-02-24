@@ -193,7 +193,11 @@ class ServiceManager {
     const env = this.resolveExecEnv(name, options);
 
     this.logger.info('env', `Starting service ${name}`, { command: cmd });
-    execSync(cmd, { stdio: 'inherit', env });
+    try {
+      execSync(cmd, { stdio: 'pipe', env, encoding: 'utf8' });
+    } catch (error) {
+      throw this.wrapComposeStartError(name, profile, cmd, error);
+    }
 
     if (options?.waitForHealth !== false) {
       await this.waitForServiceHealth(name, profile);
@@ -349,6 +353,58 @@ class ServiceManager {
     }
 
     return null;
+  }
+
+  private wrapComposeStartError(name: string, profile: ServiceProfile, cmd: string, error: unknown): Error {
+    const execError = error as {
+      status?: number | null;
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+      message?: string;
+    };
+
+    const stdout = this.toText(execError.stdout);
+    const stderr = this.toText(execError.stderr);
+    const combined = [stderr, stdout]
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    const output = combined || (execError.message?.trim() ?? 'Unknown docker compose error');
+    const exitStatus = typeof execError.status === 'number' ? execError.status : null;
+    const images = profile.dockerImages?.join(', ') || 'unknown image';
+
+    let diagnosis = `Docker compose startup failed for ${name}`;
+    let remediation = 'Verify Docker is running, then retry.';
+
+    if (/pull access denied|requested access to the resource is denied|insufficient_scope|unauthorized|authentication required|error from registry:\s*denied/i.test(output)) {
+      diagnosis = `Docker image pull/auth denied for ${name} (${images})`;
+      remediation = `Run \`codex-synaptic env docker-login ${name}\` and retry \`codex-synaptic env up ${name}\`.`;
+    } else if (/Cannot connect to the Docker daemon|Is the docker daemon running/i.test(output)) {
+      diagnosis = `Docker daemon unavailable while starting ${name}`;
+      remediation = 'Start Docker Desktop (or the Docker daemon) and retry.';
+    } else if (/command not found|ENOENT/i.test(output)) {
+      diagnosis = `Docker CLI unavailable while starting ${name}`;
+      remediation = 'Install Docker with the Compose plugin and ensure `docker compose` works.';
+    }
+
+    const truncatedOutput = output.length > 500 ? `${output.slice(0, 500)}…` : output;
+    const exitLabel = exitStatus === null ? 'unknown' : String(exitStatus);
+
+    return new Error(
+      `${diagnosis} (exit=${exitLabel}, compose=${cmd}). ${remediation} Raw docker output: ${truncatedOutput}`
+    );
+  }
+
+  private toText(value: unknown): string {
+    if (typeof value === 'string') {
+      return value.trim();
+    }
+
+    if (Buffer.isBuffer(value)) {
+      return value.toString('utf8').trim();
+    }
+
+    return '';
   }
 
   private async probeService(profile: ServiceProfile): Promise<boolean | null> {

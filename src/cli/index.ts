@@ -80,82 +80,16 @@ import {
   runDoctor
 } from './doctor.js';
 import { collectLaunchRemediations, runLaunch } from './launch.js';
+import {
+  bootstrapCliEnv,
+  buildCliEnvBootstrapMessages,
+  shouldAutoLoadCliEnv,
+  shouldShowCliEnvBanner
+} from './env-bootstrap.js';
 
-function loadEnvFile(filePath: string): boolean {
-  if (!existsSync(filePath)) {
-    return false;
-  }
-
-  try {
-    const content = readFileSync(filePath, 'utf8');
-    const lines = content.split(/\r?\n/);
-    let applied = false;
-
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith('#')) {
-        continue;
-      }
-
-      const separatorIndex = line.indexOf('=');
-      if (separatorIndex === -1) {
-        continue;
-      }
-
-      const key = line.slice(0, separatorIndex).trim();
-      if (!key) {
-        continue;
-      }
-
-      let value = line.slice(separatorIndex + 1).trim();
-      if (!value) {
-        value = '';
-      }
-
-      const startsWithQuote = value.startsWith('"') || value.startsWith("'");
-      const endsWithQuote = value.endsWith('"') || value.endsWith("'");
-      if (startsWithQuote && endsWithQuote && value.length >= 2) {
-        value = value.slice(1, -1);
-      }
-
-      value = value.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
-
-      if (process.env[key] === undefined) {
-        process.env[key] = value;
-        applied = true;
-      }
-    }
-
-    return applied;
-  } catch {
-    return false;
-  }
-}
-
-function bootstrapCliEnv(): string[] {
-  const sources: string[] = [];
-  const cwd = process.cwd();
-  const candidates = [
-    resolve(cwd, '.env'),
-    resolve(cwd, '.env.local'),
-    resolve(cwd, 'src/cli/.env')
-  ];
-
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    if (seen.has(candidate)) {
-      continue;
-    }
-    seen.add(candidate);
-    if (loadEnvFile(candidate)) {
-      sources.push(candidate);
-    }
-  }
-
-  return sources;
-}
-
-const loadedEnvSources = bootstrapCliEnv();
+const loadedEnvSources = shouldAutoLoadCliEnv(process.env)
+  ? bootstrapCliEnv({ cwd: process.cwd(), env: process.env })
+  : [];
 
 const program = new Command();
 const session = CliSession.getInstance();
@@ -171,14 +105,12 @@ if (cliSilent) {
   rootLogger.setConsoleLevel(LogLevel.ERROR);
 }
 
-if (!cliSilent && loadedEnvSources.length) {
-  console.log(
-    chalk.gray(
-      `⚙️  Environment variables loaded from ${loadedEnvSources
-        .map((source) => relative(process.cwd(), source) || source)
-        .join(', ')}`
-    )
-  );
+if (loadedEnvSources.length && shouldShowCliEnvBanner({ env: process.env, cliSilent, argv: process.argv })) {
+  const lines = buildCliEnvBootstrapMessages(loadedEnvSources, { cwd: process.cwd(), env: process.env });
+  for (const line of lines) {
+    const colorize = line.startsWith('🔒') ? chalk.yellow : chalk.gray;
+    process.stderr.write(`${colorize(line)}\n`);
+  }
 }
 
 type BackgroundJob = {

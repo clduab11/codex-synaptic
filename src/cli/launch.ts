@@ -253,21 +253,43 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
       details: 'No MCP profiles requested for launch gating.'
     };
   } else {
-    try {
-      for (const profileName of profileNames) {
+    const startedProfiles: string[] = [];
+    let failedProfile: string | null = null;
+    let startupError: Error | null = null;
+
+    for (const profileName of profileNames) {
+      try {
         await ensureService(profileName, { waitForHealth: true });
+        startedProfiles.push(profileName);
+      } catch (error) {
+        failedProfile = profileName;
+        startupError = error as Error;
+        break;
       }
+    }
+
+    if (!startupError) {
       mcpUpStep = {
         id: 'mcp.up',
         ok: true,
         details: `Started ${profileNames.length} MCP profile(s): ${profileNames.join(', ')}`
       };
-    } catch (error) {
+    } else {
+      const targetedProfiles = failedProfile ? [failedProfile] : profileNames;
+      const remediationParts = [
+        buildMcpBootstrapRemediation(targetedProfiles),
+        `codex-synaptic env status ${targetedProfiles.join(' ')}`
+      ];
+
       mcpUpStep = {
         id: 'mcp.up',
         ok: false,
-        details: `Failed to start required MCP profile(s): ${(error as Error).message}`,
-        remediation: buildMcpBootstrapRemediation(profileNames)
+        details: `Failed to start MCP profile ${failedProfile ?? 'unknown'} after starting ${startedProfiles.length}/${profileNames.length}: ${startupError.message}`,
+        remediation: remediationParts.join(' && '),
+        metadata: {
+          failedProfile: failedProfile ?? undefined,
+          startedProfiles
+        }
       };
     }
   }

@@ -131,9 +131,13 @@ describe('runLaunch', () => {
     expect(report.nextAction).toBe('stop');
     const mcpStep = report.steps.find((step) => step.id === 'mcp.up');
     expect(mcpStep?.ok).toBe(false);
+    expect(mcpStep?.details).toContain('mcp-filesystem');
+    expect(mcpStep?.details).toContain('after starting 0/1');
     expect(mcpStep?.remediation).toContain('codex-synaptic env docker-login mcp-filesystem');
     expect(mcpStep?.remediation).toContain('codex-synaptic env up mcp-filesystem');
     expect(mcpStep?.remediation).toContain('codex-synaptic env codex-register mcp-filesystem --replace');
+    expect(mcpStep?.remediation).toContain('codex-synaptic env status mcp-filesystem');
+    expect((mcpStep?.metadata as { failedProfile?: string } | undefined)?.failedProfile).toBe('mcp-filesystem');
   });
 
   it('captures MCP bridge error classification when codex registration add fails', async () => {
