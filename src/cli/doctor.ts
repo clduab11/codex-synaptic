@@ -1,13 +1,22 @@
-import { spawnSync, type SpawnSyncReturns } from 'child_process';
+import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { serviceManager, type ServiceStatus } from '../env/service-manager.js';
+import { BridgeError, ErrorCode } from '../core/errors.js';
 
-export const DEFAULT_MCP_PROFILES = [
-  'mcp-filesystem',
-  'mcp-playwright',
-  'mcp-desktop-commander'
-] as const;
+export enum MCPProfile {
+  Filesystem = 'mcp-filesystem',
+  Playwright = 'mcp-playwright',
+  DesktopCommander = 'mcp-desktop-commander'
+}
+
+export const DEFAULT_MCP_PROFILES = Object.values(MCPProfile);
+
+export type SpawnCommandResult = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+};
 
 export interface DoctorCheck {
   id: string;
@@ -36,12 +45,12 @@ export interface DoctorOptions {
 }
 
 export interface DoctorDependencies {
-  fileExists?: (path: string) => boolean;
+  fileExists?: (path: string) => boolean | Promise<boolean>;
   spawnCommand?: (
     command: string,
     args: string[],
     options: { cwd: string; encoding: BufferEncoding }
-  ) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'>;
+  ) => Promise<SpawnCommandResult>;
   getServiceStatus?: (name: string) => Promise<ServiceStatus>;
   getCodexRegistration?: (name: string) => { codexName: string; url: string } | null;
   registriesForProfiles?: (names: string[]) => string[];
@@ -82,7 +91,11 @@ function parseCodexMcpNames(payload: unknown): string[] {
     }
   }
 
-  throw new Error('Unsupported JSON format returned by `codex mcp list --json`.');
+  throw new BridgeError(
+    ErrorCode.MCP_ERROR,
+    'Unsupported JSON format returned by `codex mcp list --json`.',
+    { retryable: false }
+  );
 }
 
 export function parseProfileList(input: string | string[] | undefined, fallback = [...DEFAULT_MCP_PROFILES]): string[] {
@@ -130,7 +143,37 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   const profileNames = parseProfileList(options.mcpProfiles);
   const fileExists = deps.fileExists ?? existsSync;
   const spawnCommand = deps.spawnCommand
-    ?? ((command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
+    ?? ((command, args, spawnOptions) => new Promise<SpawnCommandResult>((resolve) => {
+      const child = spawn(command, args, {
+        cwd: spawnOptions.cwd,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      if (child.stdout) {
+        child.stdout.setEncoding(spawnOptions.encoding);
+      }
+      if (child.stderr) {
+        child.stderr.setEncoding(spawnOptions.encoding);
+      }
+
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr?.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+      child.on('close', (status) => {
+        resolve({ status, stdout, stderr });
+      });
+      child.on('error', (error) => {
+        resolve({
+          status: 1,
+          stdout,
+          stderr: stderr || `${error.name}: ${error.message}`
+        });
+      });
+    }));
   const getServiceStatus = deps.getServiceStatus ?? ((name: string) => serviceManager.status(name));
   const getCodexRegistration = deps.getCodexRegistration
     ?? ((name: string) => serviceManager.codexRegistration(name));
@@ -140,7 +183,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   const checks: DoctorCheck[] = [];
 
   const distCliPath = join(cwd, 'dist', 'cli', 'index.js');
-  const distExists = fileExists(distCliPath);
+  const distExists = await fileExists(distCliPath);
   checks.push({
     id: 'repo.cli_build_artifact',
     ok: distExists,
@@ -149,7 +192,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   });
 
   if (distExists) {
-    const cliHelp = spawnCommand('node', [distCliPath, '--help'], {
+    const cliHelp = await spawnCommand('node', [distCliPath, '--help'], {
       cwd,
       encoding: 'utf8'
     });
@@ -167,7 +210,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   }
 
   if (!options.skipCodexAuth) {
-    const loginStatus = spawnCommand('codex', ['login', 'status'], {
+    const loginStatus = await spawnCommand('codex', ['login', 'status'], {
       cwd,
       encoding: 'utf8'
     });
@@ -183,7 +226,7 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
     });
   }
 
-  const codexMcpList = spawnCommand('codex', ['mcp', 'list', '--json'], {
+  const codexMcpList = await spawnCommand('codex', ['mcp', 'list', '--json'], {
     cwd,
     encoding: 'utf8'
   });
@@ -217,38 +260,47 @@ export async function runDoctor(options: DoctorOptions = {}, deps: DoctorDepende
   }
 
   for (const profileName of profileNames) {
-    const status = await getServiceStatus(profileName);
-    const registration = getCodexRegistration(profileName);
-    const registered = registration ? codexMcpNames.has(registration.codexName) : true;
-    const healthy = status.healthy !== false;
-    const ok = status.running && healthy && registered;
+    try {
+      const status = await getServiceStatus(profileName);
+      const registration = getCodexRegistration(profileName);
+      const registered = registration ? codexMcpNames.has(registration.codexName) : true;
+      const healthy = status.healthy !== false;
+      const ok = status.running && healthy && registered;
 
-    let details = `running=${status.running} healthy=${status.healthy === null ? 'n/a' : status.healthy} registered=${registered}`;
-    if (status.diagnostics.length) {
-      details += ` diagnostics=${status.diagnostics.join(' | ')}`;
-    }
-
-    const remediationParts: string[] = [];
-    if (!status.running || !healthy) {
-      if (registriesForProfiles([profileName]).length > 0) {
-        remediationParts.push(`codex-synaptic env docker-login ${profileName}`);
+      let details = `running=${status.running} healthy=${status.healthy === null ? 'n/a' : status.healthy} registered=${registered}`;
+      if (status.diagnostics.length) {
+        details += ` diagnostics=${status.diagnostics.join(' | ')}`;
       }
-      remediationParts.push(`codex-synaptic env up ${profileName}`);
-    }
-    if (registration && !registered) {
-      remediationParts.push(`codex-synaptic env codex-register ${profileName}`);
-    }
 
-    checks.push({
-      id: `mcp.${profileName}`,
-      ok,
-      details,
-      remediation: remediationParts.length ? remediationParts.join(' && ') : undefined,
-      metadata: {
-        codexName: registration?.codexName,
-        url: registration?.url
+      const remediationParts: string[] = [];
+      if (!status.running || !healthy) {
+        if (registriesForProfiles([profileName]).length > 0) {
+          remediationParts.push(`codex-synaptic env docker-login ${profileName}`);
+        }
+        remediationParts.push(`codex-synaptic env up ${profileName}`);
       }
-    });
+      if (registration && !registered) {
+        remediationParts.push(`codex-synaptic env codex-register ${profileName}`);
+      }
+
+      checks.push({
+        id: `mcp.${profileName}`,
+        ok,
+        details,
+        remediation: remediationParts.length ? remediationParts.join(' && ') : undefined,
+        metadata: {
+          codexName: registration?.codexName,
+          url: registration?.url
+        }
+      });
+    } catch (error) {
+      checks.push({
+        id: `mcp.${profileName}`,
+        ok: false,
+        details: `invalid profile: ${(error as Error).message}`,
+        remediation: `Verify MCP profile name "${profileName}" and retry.`
+      });
+    }
   }
 
   const passed = checks.filter((check) => check.ok).length;

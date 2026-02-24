@@ -17,9 +17,11 @@ npm run cli -- launch --strict --json
 
 Expected success indicators:
 
-```text
-ok: true
-nextAction: continue
+```json
+{
+  "ok": true,
+  "nextAction": "continue"
+}
 ```
 
 If launch fails, stop repository work and run the remediation commands returned in the report.

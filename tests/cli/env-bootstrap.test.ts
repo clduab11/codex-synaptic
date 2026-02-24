@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import {
   bootstrapCliEnv,
   buildCliEnvBootstrapMessages,
@@ -11,8 +11,9 @@ import {
 } from "../../src/cli/env-bootstrap";
 
 describe("cli env bootstrap helper", () => {
-  it("does not override existing environment variables", () => {
+  it("does not override existing environment variables", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-env-bootstrap-"));
+    onTestFinished(() => rmSync(tempDir, { recursive: true, force: true }));
     const envPath = join(tempDir, ".env");
     writeFileSync(envPath, "EXISTING_KEY=from-file\nNEW_KEY=from-file\n");
 
@@ -20,12 +21,10 @@ describe("cli env bootstrap helper", () => {
       EXISTING_KEY: "from-env",
     };
 
-    const applied = loadEnvFile(envPath, env);
+    const applied = await loadEnvFile(envPath, env);
     expect(applied).toBe(true);
     expect(env.EXISTING_KEY).toBe("from-env");
     expect(env.NEW_KEY).toBe("from-file");
-
-    rmSync(tempDir, { recursive: true, force: true });
   });
 
   it("autoload is enabled by default and can be disabled explicitly", () => {
@@ -81,8 +80,9 @@ describe("cli env bootstrap helper", () => {
     expect(verboseMessages[0]).toContain("src/cli/.env");
   });
 
-  it("bootstraps candidate env files in precedence order without duplicates", () => {
+  it("bootstraps candidate env files in precedence order without duplicates", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-env-bootstrap-"));
+    onTestFinished(() => rmSync(tempDir, { recursive: true, force: true }));
     writeFileSync(join(tempDir, ".env"), "BASE_KEY=base\n");
     writeFileSync(
       join(tempDir, ".env.local"),
@@ -95,7 +95,7 @@ describe("cli env bootstrap helper", () => {
     });
 
     const env: NodeJS.ProcessEnv = {};
-    const sources = bootstrapCliEnv({ cwd: tempDir, env });
+    const sources = await bootstrapCliEnv({ cwd: tempDir, env });
 
     expect(sources.map((source) => source.replace(`${tempDir}/`, ""))).toEqual([
       ".env",
@@ -105,7 +105,5 @@ describe("cli env bootstrap helper", () => {
     expect(env.BASE_KEY).toBe("base");
     expect(env.LOCAL_KEY).toBe("local");
     expect(env.CLI_KEY).toBe("cli");
-
-    rmSync(tempDir, { recursive: true, force: true });
   });
 });

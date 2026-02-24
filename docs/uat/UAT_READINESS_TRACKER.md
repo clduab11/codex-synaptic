@@ -88,7 +88,7 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Added `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/CODEX_MACOS_UAT_RUNBOOK.md`
+- Added `docs/uat/CODEX_MACOS_UAT_RUNBOOK.md`
   - Exact bootstrap and readiness commands (`build`, `env plan`, `env docker-login`, `env up`, `env status`, `env codex-register`, `doctor --strict --json`, `launch --strict --json`)
   - Explicit pass/fail JSON criteria for `doctor` and `launch`
   - Deterministic fail/block conditions for UAT status
@@ -124,7 +124,7 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Added `/Users/chrisdukes/LocalProjects/codex-synaptic/.github/workflows/ci-non-mcp-gates.yml`
+- Added `.github/workflows/ci-non-mcp-gates.yml`
   - Triggers: `push`, `pull_request`, `workflow_dispatch`
   - Single Ubuntu/Node 20 job with pinned `actions/checkout` and `actions/setup-node`
   - Runs `npm ci`, `npm run build`, `npm test`, `npm run lint`
@@ -173,7 +173,7 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Added `/Users/chrisdukes/LocalProjects/codex-synaptic/src/cli/env-bootstrap.ts`
+- Added `src/cli/env-bootstrap.ts`
   - Extracted CLI env bootstrap logic into a testable helper module
   - Added `CODEX_CLI_ENV_AUTOLOAD=0` support to disable CLI env auto-loading
   - Added banner controls:
@@ -181,16 +181,16 @@ Primary objectives (priority order):
     - `CODEX_CLI_ENV_BANNER_VERBOSE=1` to show env source paths
     - JSON-mode (`--json`) banner suppression by default (override with `CODEX_CLI_ENV_BANNER_FORCE=1`)
   - Default banner is now sanitized (generic local `.env` count, no file paths) and includes a local-sensitive note when `src/cli/.env` is loaded
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/src/cli/index.ts`
+- Updated `src/cli/index.ts`
   - Uses helper module for env bootstrap and banner decisions
   - Moves env bootstrap banner output to `stderr` (not `stdout`) to avoid contaminating command output streams
-- Added tests in `/Users/chrisdukes/LocalProjects/codex-synaptic/tests/cli/env-bootstrap.test.ts`
+- Added tests in `tests/cli/env-bootstrap.test.ts`
   - env parser no-override behavior
   - autoload toggle behavior
   - JSON-mode banner suppression / forced banner override
   - sanitized vs verbose banner formatting
   - bootstrap file precedence/order semantics
-- Updated UAT runbook notes in `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/CODEX_MACOS_UAT_RUNBOOK.md`
+- Updated UAT runbook notes in `docs/uat/CODEX_MACOS_UAT_RUNBOOK.md`
   - documents `CODEX_CLI_ENV_AUTOLOAD=0`, stderr banner behavior, and `CODEX_CLI_ENV_BANNER_VERBOSE=1` caution
 
 #### Verification evidence
@@ -226,7 +226,7 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/package.json`
+- Updated `package.json`
   - Added a `files` whitelist to explicitly control package contents instead of relying on `.gitignore` fallback behavior.
   - Kept compiled/runtime assets and key metadata:
     - `dist/`
@@ -277,10 +277,10 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Updated direct dependencies in `/Users/chrisdukes/LocalProjects/codex-synaptic/package.json`
+- Updated direct dependencies in `package.json`
   - `@openai/agents`: `^0.1.10 -> ^0.1.11` (safe patch upgrade)
   - `js-yaml`: `^4.1.0 -> ^4.1.1` (safe patch upgrade; resolves direct moderate advisory)
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/package-lock.json`
+- Updated `package-lock.json`
   - Pulled patched transitive chain under `@openai/agents`, including:
     - `@modelcontextprotocol/sdk@1.27.0`
     - `express@5.2.1`
@@ -359,7 +359,7 @@ Primary objectives (priority order):
 
 #### Next exact step
 
-- Chunk 7: execute the full UAT smoke from `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/CODEX_MACOS_UAT_RUNBOOK.md`, capture dated evidence artifacts, and produce a final UAT PASS/FAIL/BLOCKED report (likely `BLOCKED` if GHCR auth remains unavailable).
+- Chunk 7: execute the full UAT smoke from `docs/uat/CODEX_MACOS_UAT_RUNBOOK.md`, capture dated evidence artifacts, and produce a final UAT PASS/FAIL/BLOCKED report (likely `BLOCKED` if GHCR auth remains unavailable).
 
 ### Chunk 7 — Full UAT Smoke + Final Report
 
@@ -368,10 +368,10 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Captured UAT smoke evidence under `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/evidence/2026-02-24/`
+- Captured UAT smoke evidence under `docs/uat/evidence/2026-02-24/`
   - Includes step command/output/exit artifacts, `doctor.strict.json`, `launch.strict.json`, `codex.mcp.list.json`, and status matrix `_status.tsv`
 - Added final UAT report:
-  - `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/UAT_FINAL_REPORT.md`
+  - `docs/uat/UAT_FINAL_REPORT.md`
 - Secret hygiene remediation during evidence capture:
   - Redacted 1 secret-like value in `codex.mcp.list.json` (`bearer_token_env_var` field contained a token-looking value for an unrelated MCP entry)
   - Original secret value was not copied into tracker/report/chat
@@ -419,7 +419,7 @@ Primary objectives (priority order):
 - Unblock + rerun:
   1. Perform interactive `docker login ghcr.io` (or configure Docker credential helper) with access to required MCP images.
   2. Fix `launch --strict --json` stdout purity (logger output should not precede JSON on stdout).
-  3. Re-run Chunk 7 smoke (runbook steps 4-9 minimum, preferably full run) with a fresh dated evidence folder and update `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/UAT_FINAL_REPORT.md`.
+  3. Re-run Chunk 7 smoke (runbook steps 4-9 minimum, preferably full run) with a fresh dated evidence folder and update `docs/uat/UAT_FINAL_REPORT.md`.
 
 ### Chunk 7 Follow-up A — GHCR Access Recheck (Post Interactive Login)
 
@@ -460,12 +460,12 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/src/cli/launch.ts`
+- Updated `src/cli/launch.ts`
   - Added an internal launch option (`suppressInfoConsoleLogs`) and a scoped helper that temporarily raises logger console threshold to `WARN` while MCP services are started.
   - This suppresses info-level `Logger` console output (for example `Starting service mcp-filesystem`) during JSON launch execution while preserving warnings/errors to stderr and retaining file logging.
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/src/cli/index.ts`
+- Updated `src/cli/index.ts`
   - `launch` command now enables the scoped suppression automatically when `--json` is used.
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/tests/cli/launch.test.ts`
+- Updated `tests/cli/launch.test.ts`
   - Added a targeted regression test that simulates an info-level logger emission during MCP startup and asserts no `console.info` leakage when JSON-safe suppression is enabled.
 
 #### Verification evidence
@@ -502,13 +502,13 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Captured a fresh rerun evidence set under `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/evidence/2026-02-24-rerun-1/`
+- Captured a fresh rerun evidence set under `docs/uat/evidence/2026-02-24-rerun-1/`
   - Reproduced the full runbook step set (`01-13`) with command/output/exit artifacts and JSON outputs.
 - Added explicit post-login GHCR pull verification artifacts in the same evidence folder:
   - `00a-ghcr-pull-filesystem.*`
   - `00b-ghcr-pull-playwright.*`
   - `00c-ghcr-pull-desktop-commander.*`
-- Refreshed `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/UAT_FINAL_REPORT.md`
+- Refreshed `docs/uat/UAT_FINAL_REPORT.md`
   - Updated verdict remains `BLOCKED`
   - `env docker-login` now recorded as `PASS`
   - primary blocker updated to image `not found`
@@ -554,13 +554,13 @@ Primary objectives (priority order):
 
 #### What changed
 
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/src/env/service-manager.ts`
+- Updated `src/env/service-manager.ts`
   - `mcp-playwright` image reference changed from legacy GHCR wrapper to canonical Docker Hub MCP image:
     - `ghcr.io/context-labs/playwright-mcp:latest` -> `mcp/playwright:latest`
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/docker/mcp/docker-compose.playwright.yml`
+- Updated `docker/mcp/docker-compose.playwright.yml`
   - Image changed to `mcp/playwright:latest`
   - Added `--host 0.0.0.0` to the container command so the HTTP/SSE server binds to the container interface (required for compose port publishing)
-- Updated `/Users/chrisdukes/LocalProjects/codex-synaptic/docs/uat/CODEX_MACOS_UAT_RUNBOOK.md`
+- Updated `docs/uat/CODEX_MACOS_UAT_RUNBOOK.md`
   - Added a dated upstream image migration note documenting current canonical images and the transport compatibility constraint
   - Updated Docker-login step guidance to distinguish private registry auth from public Docker Hub `mcp/*` images
   - Added `not found` as a first-class image drift/deprecation blocker indicator

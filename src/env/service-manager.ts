@@ -1,6 +1,7 @@
 import { execSync, spawn } from 'child_process';
 import { createConnection } from 'net';
 import { setTimeout as sleep } from 'timers/promises';
+import { CodexSynapticError, ErrorCode } from '../core/errors.js';
 import { Logger } from '../core/logger.js';
 
 export type FilesystemAccessMode = 'read-only' | 'controlled-write';
@@ -322,14 +323,25 @@ class ServiceManager {
     return Array.from(registries);
   }
 
-  dockerLogin(registry: string): void {
+  async dockerLogin(registry: string): Promise<void> {
     const normalized = registry.trim();
     if (!normalized) {
       throw new Error('Docker registry is required for docker login.');
     }
-    const cmd = `docker login ${normalized}`;
     this.logger.info('env', 'Authenticating Docker registry', { registry: normalized });
-    execSync(cmd, { stdio: 'inherit' });
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('docker', ['login', normalized], { stdio: 'inherit' });
+      child.on('error', (error) => {
+        reject(error);
+      });
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(new Error(`docker login exited with status ${code ?? 'unknown'}`));
+      });
+    });
   }
 
   private registryForImage(image: string): string | null {
@@ -427,8 +439,21 @@ class ServiceManager {
     const truncatedOutput = output.length > 500 ? `${output.slice(0, 500)}…` : output;
     const exitLabel = exitStatus === null ? 'unknown' : String(exitStatus);
 
-    return new Error(
-      `${diagnosis} (exit=${exitLabel}, compose=${cmd}). ${remediation} Raw docker output: ${truncatedOutput}`
+    return new CodexSynapticError(
+      ErrorCode.BRIDGE_ERROR,
+      `${diagnosis} (exit=${exitLabel}, compose=${cmd}). ${remediation} Raw docker output: ${truncatedOutput}`,
+      {
+        code: 'COMPOSE_START_FAILED',
+        diagnosis,
+        remediation,
+        exitStatus,
+        composeCmd: cmd,
+        output: truncatedOutput,
+        images,
+        serviceName: name,
+        profile: profile.composeFile
+      },
+      false
     );
   }
 
