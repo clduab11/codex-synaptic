@@ -58,83 +58,48 @@ const EMPTY_DOCTOR_REPORT: DoctorReport = {
   checks: []
 };
 
-function normalizeSpawn(
-  deps: LaunchDependencies
-): (
-    command: string,
-    args: string[],
-    options: { cwd: string; encoding: BufferEncoding }
-  ) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'stderr'> {
-  return deps.spawnCommand
-    ?? ((command, args, spawnOptions) => spawnSync(command, args, spawnOptions));
+function normalizeSpawn(deps: LaunchDependencies) {
+  return deps.spawnCommand ?? spawnSync;
 }
 
 function buildLaunchReport(steps: LaunchStep[], doctorReport: DoctorReport): LaunchReport {
   const ok = steps.every((step) => step.ok) && doctorReport.ok;
-  return {
-    ok,
-    steps,
-    doctor: doctorReport,
-    nextAction: ok ? 'continue' : 'stop'
-  };
+  return { ok, steps, doctor: doctorReport, nextAction: ok ? 'continue' : 'stop' };
 }
 
 function collectLaunchRemediationsFromStep(step: LaunchStep): string[] {
-  if (!step.remediation) {
-    return [];
-  }
-
-  return step.remediation
-    .split('&&')
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return step.remediation?.split('&&').map((s) => s.trim()).filter(Boolean) ?? [];
 }
 
 function buildMcpBootstrapRemediation(profileNames: string[]): string {
-  const commands: string[] = [];
-
-  commands.push(`codex-synaptic env docker-login ${profileNames.join(' ')}`);
-  commands.push(`codex-synaptic env up ${profileNames.join(' ')}`);
-  commands.push(`codex-synaptic env codex-register ${profileNames.join(' ')} --replace`);
-
-  return commands.join(' && ');
+  const profiles = profileNames.join(' ');
+  return `codex-synaptic env docker-login ${profiles} && codex-synaptic env up ${profiles} && codex-synaptic env codex-register ${profiles} --replace`;
 }
 
 async function withSuppressedInfoConsoleLogs<T>(enabled: boolean, work: () => Promise<T>): Promise<T> {
-  if (!enabled) {
-    return work();
-  }
+  if (!enabled) return work();
 
   const logger = Logger.getInstance();
-  const previousConsoleLevel = logger.getConsoleLevel();
-  if (previousConsoleLevel >= LogLevel.WARN) {
-    return work();
-  }
+  const level = logger.getConsoleLevel();
+  if (level >= LogLevel.WARN) return work();
 
   logger.setConsoleLevel(LogLevel.WARN);
   try {
     return await work();
   } finally {
-    logger.setConsoleLevel(previousConsoleLevel);
+    logger.setConsoleLevel(level);
   }
 }
 
 export function collectLaunchRemediations(report: LaunchReport): string[] {
   const unique = new Set<string>();
 
-  for (const step of report.steps) {
-    if (step.ok) {
-      continue;
-    }
-    const commands = collectLaunchRemediationsFromStep(step);
-    for (const command of commands) {
-      unique.add(command);
-    }
-  }
+  report.steps
+    .filter((step) => !step.ok)
+    .flatMap(collectLaunchRemediationsFromStep)
+    .forEach((cmd) => unique.add(cmd));
 
-  for (const command of collectDoctorRemediations(report.doctor)) {
-    unique.add(command);
-  }
+  collectDoctorRemediations(report.doctor).forEach((cmd) => unique.add(cmd));
 
   return Array.from(unique);
 }
@@ -168,30 +133,25 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
   const distCliPath = join(cwd, 'dist', 'cli', 'index.js');
   const distExists = fileExists(distCliPath);
 
-  const preflightStep: LaunchStep = distExists
-    ? (() => {
-      const cliHelp = spawnCommand('node', [distCliPath, '--help'], {
-        cwd,
-        encoding: 'utf8'
-      });
-
-      return {
-        id: 'repo.preflight',
-        ok: cliHelp.status === 0,
-        details: cliHelp.status === 0
-          ? `Found ${distCliPath}; CLI executable check passed.`
-          : `CLI executable check failed: ${cliHelp.stderr?.trim() || 'unknown error'}`,
-        remediation: cliHelp.status === 0
-          ? undefined
-          : 'Run `npm run build` and then `node dist/cli/index.js --help`.'
-      };
-    })()
-    : {
+  let preflightStep: LaunchStep;
+  if (distExists) {
+    const cliHelp = spawnCommand('node', [distCliPath, '--help'], { cwd, encoding: 'utf8' });
+    preflightStep = {
+      id: 'repo.preflight',
+      ok: cliHelp.status === 0,
+      details: cliHelp.status === 0
+        ? `Found ${distCliPath}; CLI executable check passed.`
+        : `CLI executable check failed: ${cliHelp.stderr?.trim() || 'unknown error'}`,
+      remediation: cliHelp.status === 0 ? undefined : 'Run `npm run build` and then `node dist/cli/index.js --help`.'
+    };
+  } else {
+    preflightStep = {
       id: 'repo.preflight',
       ok: false,
       details: `Missing ${distCliPath}`,
       remediation: 'Run `npm run build`.'
     };
+  }
 
   {
     const stop = appendStep(preflightStep);
@@ -200,26 +160,24 @@ export async function runLaunch(options: LaunchOptions = {}, deps: LaunchDepende
     }
   }
 
-  const codexAuthStep: LaunchStep = options.skipCodexAuth
-    ? {
+  let codexAuthStep: LaunchStep;
+  if (options.skipCodexAuth) {
+    codexAuthStep = {
       id: 'codex.auth',
       ok: true,
       details: 'Skipped codex auth check (--skip-codex-auth).'
-    }
-    : (() => {
-      const loginStatus = spawnCommand('codex', ['login', 'status'], {
-        cwd,
-        encoding: 'utf8'
-      });
-      const stdout = loginStatus.stdout?.trim() || '';
-      const ok = loginStatus.status === 0 && !/not logged in/i.test(stdout);
-      return {
-        id: 'codex.auth',
-        ok,
-        details: stdout || loginStatus.stderr?.trim() || 'No output',
-        remediation: ok ? undefined : 'Run `codex login` then re-run `codex login status`.'
-      };
-    })();
+    };
+  } else {
+    const loginStatus = spawnCommand('codex', ['login', 'status'], { cwd, encoding: 'utf8' });
+    const stdout = loginStatus.stdout?.trim() || '';
+    const ok = loginStatus.status === 0 && !/not logged in/i.test(stdout);
+    codexAuthStep = {
+      id: 'codex.auth',
+      ok,
+      details: stdout || loginStatus.stderr?.trim() || 'No output',
+      remediation: ok ? undefined : 'Run `codex login` then re-run `codex login status`.'
+    };
+  }
 
   {
     const stop = appendStep(codexAuthStep);
