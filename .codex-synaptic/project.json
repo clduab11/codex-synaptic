@@ -1,0 +1,16 @@
+{
+  "$schema": "./project.schema.json",
+  "projectId": "codex-synaptic",
+  "launchGate": {
+    "required": true,
+    "strictJsonCommand": "codex-synaptic launch --strict --json"
+  },
+  "daemon": {
+    "stateDir": "~/.codex-synaptic",
+    "allowStateInsideRepo": false
+  },
+  "optionalEngines": {
+    "ruflo": true,
+    "ruvFann": true
+  }
+}

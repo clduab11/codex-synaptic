@@ -32,15 +32,14 @@ import type {
   CodexPromptEnvelope,
   ContextLogEntry
 } from '../types/codex-context.js';
-import { CliGateError, ErrorCode, RetryManager } from '../core/errors.js';
-import { RetryManager, DaemonConflictError } from '../core/errors.js';
+import { CliGateError, ErrorCode, RetryManager, DaemonConflictError } from '../core/errors.js';
 import { HiveMindYamlFormatter } from '../utils/yaml-output.js';
 import { parseFileContent, parseJsonInput, loadFileThroughFeedforward } from './feedforward.js';
 import { InstructionParser } from '../instructions/index.js';
 import { RoutingPolicyService, type RoutingRequest } from '../router/index.js';
 import { readFileSync, existsSync } from 'fs';
 import { join, resolve, relative } from 'path';
-import { spawnSync, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { ToolOptimizer, type ToolCandidate } from '../tools/optimizer/index.js';
 import { type ToolUsageRecord, type ReasoningRunRecord } from '../memory/memory-system.js';
@@ -82,129 +81,23 @@ import {
   parseProfileList,
   runDoctor
 } from './doctor.js';
-import { collectLaunchRemediations, runLaunch } from './launch.js';
+import { buildLaunchStrictJsonReport, collectLaunchRemediations, runLaunch } from './launch.js';
 import {
   bootstrapCliEnv,
   buildCliEnvBootstrapMessages,
   shouldAutoLoadCliEnv,
   shouldShowCliEnvBanner
 } from './env-bootstrap.js';
-
-let loadedEnvSources: string[] = [];
+import { attachProject, listAttachedProjects } from './project-attach.js';
+import {
   executeGoapWorkflow,
   executeTaskWithConsensus,
   collectExecutionResults,
   renderExecutionSummary,
   setupWorkflowEventHandlers
 } from './hive-mind-helpers.js';
-import {
-  checkCliBuildArtifact,
-  checkCliExecution,
-  checkCodexAuth,
-  renderHealthCheckResults,
-  type HealthCheck
-} from './doctor-helpers.js';
 
-/**
- * Loads environment variables from a file into process.env.
- * 
- * @param filePath - Path to the environment file to load
- * @returns true if any variables were loaded, false otherwise
- * 
- * @remarks
- * - Skips variables that are already defined in process.env
- * - Handles quoted values and escape sequences (\n, \r, \t)
- * - Ignores comments (lines starting with #) and empty lines
- * - Returns false if file doesn't exist or can't be read
- */
-function loadEnvFile(filePath: string): boolean {
-  if (!existsSync(filePath)) {
-    return false;
-  }
-
-  try {
-    const content = readFileSync(filePath, 'utf8');
-    const lines = content.split(/\r?\n/);
-    let applied = false;
-
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith('#')) {
-        continue;
-      }
-
-      const separatorIndex = line.indexOf('=');
-      if (separatorIndex === -1) {
-        continue;
-      }
-
-      const key = line.slice(0, separatorIndex).trim();
-      if (!key) {
-        continue;
-      }
-
-      let value = line.slice(separatorIndex + 1).trim();
-      if (!value) {
-        value = '';
-      }
-
-      const startsWithQuote = value.startsWith('"') || value.startsWith("'");
-      const endsWithQuote = value.endsWith('"') || value.endsWith("'");
-      if (startsWithQuote && endsWithQuote && value.length >= 2) {
-        value = value.slice(1, -1);
-      }
-
-      value = value.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
-
-      if (process.env[key] === undefined) {
-        process.env[key] = value;
-        applied = true;
-      }
-    }
-
-    return applied;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Bootstraps CLI environment by loading environment files from standard locations.
- * 
- * @returns Array of successfully loaded environment file sources
- * 
- * @remarks
- * Attempts to load environment variables from the following files in order:
- * - .env in current directory
- * - .env.local in current directory
- * - ~/.codex-synaptic/.env
- * - .env in package root directory
- * Only loads variables that aren't already set in process.env
- */
-function bootstrapCliEnv(): string[] {
-  const sources: string[] = [];
-  const cwd = process.cwd();
-  const candidates = [
-    resolve(cwd, '.env'),
-    resolve(cwd, '.env.local'),
-    resolve(cwd, 'src/cli/.env')
-  ];
-
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    if (seen.has(candidate)) {
-      continue;
-    }
-    seen.add(candidate);
-    if (loadEnvFile(candidate)) {
-      sources.push(candidate);
-    }
-  }
-
-  return sources;
-}
-
-const loadedEnvSources = bootstrapCliEnv();
+let loadedEnvSources: string[] = [];
 
 /**
  * Resolves whether CLI should auto-shutdown after command execution by 
@@ -3172,6 +3065,68 @@ backgroundCmd
     selected.forEach((line) => console.log(line));
   }));
 
+const projectCmd = decorateCommandHelp(
+  program
+    .command('project')
+    .description('Attach Codex-Synaptic global daemon context to any repository path'),
+  {
+    title: 'Project Attach',
+    subtitle: 'Register arbitrary repositories so global daemon workflows can hydrate local Codex context.',
+    context: [
+      'Attachment keeps global daemon metadata outside worktrees while preserving project-specific instructions.',
+      'Use this before launch gate when you switch repositories.'
+    ],
+    skills: [
+      'Discover AGENTS.md, Codex config, and Synaptic project config for each repository.',
+      'Keep repository attachment deterministic for automation workflows.'
+    ],
+    actions: [
+      { command: 'codex-synaptic project attach /path/to/repo', description: 'Attach a repository and discover AGENTS/Codex config files.' },
+      { command: 'codex-synaptic project list --json', description: 'List attached repositories from global daemon state.' }
+    ]
+  }
+);
+
+projectCmd
+  .command('attach')
+  .argument('<path>', 'Repository path to attach')
+  .description('Attach a repository path for daemon-backed workflows')
+  .option('--json', 'Output attachment metadata as JSON')
+  .action(handleCommand('project.attach', async (path, options) => {
+    const record = attachProject(path);
+    if (options.json) {
+      console.log(JSON.stringify(record, null, 2));
+      return;
+    }
+
+    console.log(chalk.green(`✅ Attached project: ${record.path}`));
+    console.log(chalk.gray(`  AGENTS.md: ${record.agentsFile ?? 'missing'}`));
+    console.log(chalk.gray(`  .codex/config.toml: ${record.codexConfig ?? 'missing'}`));
+    console.log(chalk.gray(`  .codex-synaptic/project.json: ${record.synapticConfig ?? 'missing'}`));
+  }));
+
+projectCmd
+  .command('list')
+  .description('List repositories attached to global daemon state')
+  .option('--json', 'Output list as JSON')
+  .action(handleCommand('project.list', async (options) => {
+    const projects = listAttachedProjects();
+    if (options.json) {
+      console.log(JSON.stringify({ projects }, null, 2));
+      return;
+    }
+
+    if (!projects.length) {
+      console.log(chalk.gray('No attached projects yet. Use `codex-synaptic project attach <path>`.'));
+      return;
+    }
+
+    console.log(chalk.blue('Attached projects'));
+    for (const project of projects) {
+      console.log(`- ${project.path} (${project.attachedAt})`);
+    }
+  }));
+
 // Instructions commands
 const instructionsCmd = decorateCommandHelp(
   program
@@ -5278,14 +5233,30 @@ launchCmd
     const profileNames = parseProfileList(options.mcpProfiles, [...DEFAULT_MCP_PROFILES]);
     const report = await runLaunch({
       cwd: process.cwd(),
-      strict,
+      strict: options.json ? false : strict,
       skipCodexAuth: Boolean(options.skipCodexAuth),
       mcpProfiles: profileNames,
       suppressInfoConsoleLogs: Boolean(options.json)
     });
 
     if (options.json) {
-      console.log(JSON.stringify(report, null, 2));
+      const strictJsonReport = await buildLaunchStrictJsonReport(report, {
+        cwd: process.cwd(),
+        strict,
+        skipCodexAuth: Boolean(options.skipCodexAuth),
+        mcpProfiles: profileNames,
+        suppressInfoConsoleLogs: true
+      });
+      console.log(JSON.stringify(strictJsonReport, null, 2));
+
+      if (strict && !strictJsonReport.ok) {
+        throw new CliGateError(
+          ErrorCode.LAUNCH_GATE_FAILURE,
+          'Launch failed one or more readiness gates.',
+          { strict, report: strictJsonReport }
+        );
+      }
+      return;
     } else {
       console.log(chalk.blue('🚀 Codex-Synaptic Launch'));
       console.log(chalk.gray(`  Status: ${report.ok ? 'ready' : 'blocked'}`));
@@ -5368,35 +5339,6 @@ doctorCmd
   .action(handleCommand('doctor', async (options) => {
     const profileNames = parseProfileList(options.mcpProfiles, [...DEFAULT_MCP_PROFILES]);
     const report = await runDoctor({
-    const profileNames = String(options.mcpProfiles)
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    const checks: HealthCheck[] = [];
-
-    // Check CLI build artifact
-    const buildCheck = checkCliBuildArtifact();
-    checks.push(buildCheck);
-
-    // Check CLI execution if build exists
-    if (buildCheck.ok) {
-      const distCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
-      const execCheck = checkCliExecution(distCliPath);
-      if (execCheck) {
-        checks.push(execCheck);
-      }
-    }
-
-    // Check Codex authentication
-    if (!options.skipCodexAuth) {
-      checks.push(checkCodexAuth());
-    }
-
-    // Check Codex MCP list
-    let codexMcpNames = new Set<string>();
-    const codexMcpList = spawnSync('codex', ['mcp', 'list', '--json'], {
-      cwd: process.cwd(),
       mcpProfiles: profileNames,
       skipCodexAuth: Boolean(options.skipCodexAuth)
     });
@@ -5424,66 +5366,6 @@ doctorCmd
         { summary: report.summary, report }
       );
     }
-    if (codexMcpList.status === 0) {
-      try {
-        const parsed = JSON.parse(codexMcpList.stdout || '[]') as Array<{ name?: string }>;
-        codexMcpNames = new Set(parsed.map((entry) => String(entry.name)).filter(Boolean));
-        checks.push({
-          id: 'codex.mcp_list',
-          ok: true,
-          details: `Loaded ${codexMcpNames.size} Codex MCP registration(s).`
-        });
-      } catch (error) {
-        checks.push({
-          id: 'codex.mcp_list',
-          ok: false,
-          details: `Failed to parse codex mcp list output: ${(error as Error).message}`,
-          remediation: 'Run `codex mcp list --json` and inspect output.'
-        });
-      }
-    } else {
-      checks.push({
-        id: 'codex.mcp_list',
-        ok: false,
-        details: codexMcpList.stderr?.trim() || 'codex mcp list failed',
-        remediation: 'Verify Codex CLI install and MCP support (`codex mcp --help`).'
-      });
-    }
-
-    // Check MCP profiles using service manager
-    for (const profileName of profileNames) {
-      const status = await serviceManager.status(profileName);
-      const registration = serviceManager.codexRegistration(profileName);
-      const registered = registration ? codexMcpNames.has(registration.codexName) : true;
-      const healthy = status.healthy !== false;
-      const ok = status.running && healthy && registered;
-
-      let details = `running=${status.running} healthy=${status.healthy === null ? 'n/a' : status.healthy} registered=${registered}`;
-      if (status.diagnostics.length) {
-        details += ` diagnostics=${status.diagnostics.join(' | ')}`;
-      }
-
-      const remediationParts: string[] = [];
-      if (!status.running || !healthy) {
-        remediationParts.push(`codex-synaptic env up ${profileName}`);
-      }
-      if (registration && !registered) {
-        remediationParts.push(`codex-synaptic env codex-register ${profileName}`);
-      }
-
-      checks.push({
-        id: `mcp.${profileName}`,
-        ok,
-        details,
-        remediation: remediationParts.length ? remediationParts.join(' && ') : undefined,
-        metadata: {
-          codexName: registration?.codexName,
-          url: registration?.url
-        }
-      });
-    }
-
-    renderHealthCheckResults(checks, { json: options.json, strict: options.strict });
   }));
 
 const memoryCmd = decorateCommandHelp(

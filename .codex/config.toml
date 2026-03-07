@@ -1,0 +1,20 @@
+[project]
+root = "."
+trusted = true
+sandbox = "workspace-write"
+approvals = "on-request"
+
+[paths]
+restrict_to_project_root = true
+
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+
+[mcp_servers.desktop_commander]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-desktop-commander"]
