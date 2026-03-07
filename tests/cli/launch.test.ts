@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LaunchNextAction, runLaunch, type LaunchDependencies } from '../../src/cli/launch';
+import {
+  LaunchNextAction,
+  runLaunch,
+  buildLaunchStrictJsonReport,
+  type LaunchDependencies,
+  type LaunchReport
+} from '../../src/cli/launch';
 import type { DoctorReport } from '../../src/cli/doctor';
 import { Logger } from '../../src/core/logger';
 
@@ -229,5 +235,111 @@ describe('runLaunch', () => {
       infoSpy.mockRestore();
       logger.setConsoleLevel(previousConsoleLevel);
     }
+  });
+});
+
+describe('buildLaunchStrictJsonReport', () => {
+  const passingReport: LaunchReport = {
+    ok: true,
+    steps: [
+      { id: 'repo.preflight', ok: true, details: 'CLI executable check passed.' },
+      { id: 'codex.auth', ok: true, details: 'Logged in.' },
+      { id: 'runtime.daemon', ok: true, details: 'Daemon running (pid 123).' },
+      { id: 'mcp.codex_register', ok: true, details: 'Registered.' },
+      { id: 'doctor.strict', ok: true, details: 'Doctor passed.' }
+    ],
+    doctor: { ok: true, summary: { passed: 5, failed: 0, total: 5 }, checks: [] },
+    nextAction: LaunchNextAction.Continue
+  };
+
+  const noop = async () => ({ status: 0, stdout: 'ok', stderr: '' });
+
+  it('includes a check entry for every failing step in report.steps', async () => {
+    const failingReport: LaunchReport = {
+      ok: false,
+      steps: [
+        {
+          id: 'repo.preflight',
+          ok: false,
+          details: 'Missing dist/cli/index.js',
+          remediation: 'Run `npm run build`.'
+        },
+        {
+          id: 'codex.auth',
+          ok: false,
+          details: 'Not logged in.',
+          remediation: 'Run `codex login` then re-run `codex login status`.'
+        },
+        {
+          id: 'mcp.up',
+          ok: false,
+          details: 'Failed to start MCP profile mcp-filesystem',
+          remediation: 'codex-synaptic env docker-login mcp-filesystem && codex-synaptic env up mcp-filesystem'
+        },
+        {
+          id: 'doctor.strict',
+          ok: false,
+          details: 'Doctor check failed.',
+          remediation: undefined
+        }
+      ],
+      doctor: { ok: false, summary: { passed: 0, failed: 4, total: 4 }, checks: [] },
+      nextAction: LaunchNextAction.Stop
+    };
+
+    const result = await buildLaunchStrictJsonReport(failingReport, { cwd: '/tmp/test' }, { spawnCommand: noop });
+
+    const checkNames = result.checks.map((c) => c.name);
+    expect(checkNames).toContain('repo.preflight');
+    expect(checkNames).toContain('codex.auth');
+    expect(checkNames).toContain('mcp.up');
+    expect(checkNames).toContain('doctor.strict');
+
+    const preflightCheck = result.checks.find((c) => c.name === 'repo.preflight');
+    expect(preflightCheck?.status).toBe('fail');
+    expect(preflightCheck?.detail).toContain('npm run build');
+
+    const doctorCheck = result.checks.find((c) => c.name === 'doctor.strict');
+    expect(doctorCheck?.status).toBe('fail');
+  });
+
+  it('emits fixes for failing steps that have remediations and skips those without', async () => {
+    const failingReport: LaunchReport = {
+      ok: false,
+      steps: [
+        {
+          id: 'repo.preflight',
+          ok: false,
+          details: 'Missing dist/cli/index.js',
+          remediation: 'Run `npm run build`.'
+        },
+        {
+          id: 'doctor.strict',
+          ok: false,
+          details: 'Doctor check failed.',
+          remediation: undefined
+        }
+      ],
+      doctor: { ok: false, summary: { passed: 0, failed: 2, total: 2 }, checks: [] },
+      nextAction: LaunchNextAction.Stop
+    };
+
+    const result = await buildLaunchStrictJsonReport(failingReport, { cwd: '/tmp/test' }, { spawnCommand: noop });
+
+    const fixCommands = result.fixes.map((f) => f.command);
+    expect(fixCommands.some((cmd) => cmd.includes('npm run build'))).toBe(true);
+    // doctor.strict has no remediation; no fix should be emitted for it
+    expect(fixCommands.some((cmd) => cmd.toLowerCase().includes('doctor'))).toBe(false);
+  });
+
+  it('reports ok=true and includes no fail checks when all steps pass and runtime checks pass', async () => {
+    const result = await buildLaunchStrictJsonReport(passingReport, { cwd: '/tmp/test' }, { spawnCommand: noop });
+
+    const stepOnlyCheckNames = ['repo.preflight', 'codex.auth', 'mcp.up', 'doctor.strict'];
+    const stepCheckNames = result.checks.map((c) => c.name);
+    // Passing steps are never pushed into checks by the step-loop
+    expect(stepCheckNames.every((name) => !stepOnlyCheckNames.includes(name))).toBe(true);
+    expect(result.capabilities).toContain('launch-gate');
+    expect(result.nextActions[0]).toContain('Launch gate passed');
   });
 });
