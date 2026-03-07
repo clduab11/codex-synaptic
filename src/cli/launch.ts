@@ -205,22 +205,20 @@ async function runCheckCommand(
   };
 }
 
-export async function buildLaunchStrictJsonReport(
-  report: LaunchReport,
-  options: LaunchOptions = {},
-  deps: LaunchDependencies = {}
-): Promise<LaunchStrictJsonReport> {
-  const cwd = options.cwd ?? process.cwd();
-  const spawnCommand = normalizeSpawn(deps);
+/**
+ * Runs runtime environment checks: Node.js, npm, dependency integrity, and optional engine detection.
+ *
+ * @param spawnCommand - Normalised spawn helper to run subprocesses.
+ * @param cwd - Working directory for all checks.
+ * @returns Checks, fixes, and any capability tokens added by detected optional engines.
+ */
+async function runRuntimeChecks(
+  spawnCommand: ReturnType<typeof normalizeSpawn>,
+  cwd: string
+): Promise<{ checks: LaunchGateCheck[]; fixes: LaunchGateFix[]; capabilityAdditions: string[] }> {
   const checks: LaunchGateCheck[] = [];
   const fixes: LaunchGateFix[] = [];
-  const capabilities = [
-    'launch-gate',
-    'global-daemon',
-    'project-attach',
-    'codex-macos',
-    'codex-vscode'
-  ];
+  const capabilityAdditions: string[] = [];
 
   const nodeCheck = await runCheckCommand(
     spawnCommand,
@@ -254,6 +252,37 @@ export async function buildLaunchStrictJsonReport(
   );
   checks.push(depsCheck.check);
   if (depsCheck.fix) fixes.push(depsCheck.fix);
+
+  const optionalEngines = await detectOptionalEngines(spawnCommand, cwd);
+  for (const engine of optionalEngines) {
+    checks.push({
+      name: `optional.${engine.name}`,
+      status: engine.available ? 'pass' : 'warn',
+      detail: engine.available
+        ? `${engine.name} detected: ${engine.version || '--version returned success.'}`
+        : `${engine.name} not detected; continuing in core mode.`
+    });
+    if (engine.available) {
+      capabilityAdditions.push(`${engine.name}-adapter`);
+    }
+  }
+
+  return { checks, fixes, capabilityAdditions };
+}
+
+/**
+ * Runs repository-level checks: build, typecheck, and test scripts.
+ *
+ * @param spawnCommand - Normalised spawn helper to run subprocesses.
+ * @param cwd - Working directory for all checks.
+ * @returns Checks and fixes derived from the repo's npm scripts.
+ */
+async function runRepoChecks(
+  spawnCommand: ReturnType<typeof normalizeSpawn>,
+  cwd: string
+): Promise<{ checks: LaunchGateCheck[]; fixes: LaunchGateFix[] }> {
+  const checks: LaunchGateCheck[] = [];
+  const fixes: LaunchGateFix[] = [];
 
   const scripts = await readPackageScripts(cwd);
 
@@ -289,6 +318,23 @@ export async function buildLaunchStrictJsonReport(
   } else {
     checks.push({ name: 'repo.test', status: 'warn', detail: 'No test script declared in package.json.' });
   }
+
+  return { checks, fixes };
+}
+
+/**
+ * Runs infrastructure checks: daemon health, MCP configuration, and worktree-safe daemon state location.
+ *
+ * @param report - The current launch report whose steps are inspected for daemon and MCP status.
+ * @param cwd - Working directory used to validate daemon state is outside the repository.
+ * @returns Checks and fixes for daemon, MCP, and worktree state location.
+ */
+function runInfraChecks(
+  report: LaunchReport,
+  cwd: string
+): { checks: LaunchGateCheck[]; fixes: LaunchGateFix[] } {
+  const checks: LaunchGateCheck[] = [];
+  const fixes: LaunchGateFix[] = [];
 
   const daemonStep = report.steps.find((step) => step.id === 'runtime.daemon');
   checks.push({
@@ -327,22 +373,55 @@ export async function buildLaunchStrictJsonReport(
     });
   }
 
-  const optionalEngines = await detectOptionalEngines(spawnCommand, cwd);
-  for (const engine of optionalEngines) {
-    checks.push({
-      name: `optional.${engine.name}`,
-      status: engine.available ? 'pass' : 'warn',
-      detail: engine.available
-        ? `${engine.name} detected: ${engine.version || '--version returned success.'}`
-        : `${engine.name} not detected; continuing in core mode.`
-    });
-    if (engine.available) {
-      capabilities.push(`${engine.name}-adapter`);
-    }
-  }
+  return { checks, fixes };
+}
+
+/**
+ * Builds the strict JSON launch-gate report by composing runtime, repo, and infra check slices,
+ * then appending a check entry and any remediation fixes for every failing step in the launch report.
+ *
+ * @param report - The current launch report (steps + doctor results).
+ * @param options - Launch options including cwd and profile configuration.
+ * @param deps - Injectable dependencies (spawn, file existence, etc.) for testability.
+ * @returns A {@link LaunchStrictJsonReport} with `ok`, `capabilities`, `checks`, `fixes`, and `nextActions`.
+ */
+export async function buildLaunchStrictJsonReport(
+  report: LaunchReport,
+  options: LaunchOptions = {},
+  deps: LaunchDependencies = {}
+): Promise<LaunchStrictJsonReport> {
+  const cwd = options.cwd ?? process.cwd();
+  const spawnCommand = normalizeSpawn(deps);
+  const capabilities = [
+    'launch-gate',
+    'global-daemon',
+    'project-attach',
+    'codex-macos',
+    'codex-vscode'
+  ];
+
+  const runtimeResult = await runRuntimeChecks(spawnCommand, cwd);
+  const repoResult = await runRepoChecks(spawnCommand, cwd);
+  const infraResult = runInfraChecks(report, cwd);
+
+  const checks: LaunchGateCheck[] = [
+    ...runtimeResult.checks,
+    ...repoResult.checks,
+    ...infraResult.checks
+  ];
+  const fixes: LaunchGateFix[] = [
+    ...runtimeResult.fixes,
+    ...repoResult.fixes,
+    ...infraResult.fixes
+  ];
+  capabilities.push(...runtimeResult.capabilityAdditions);
 
   for (const step of report.steps) {
-    if (step.ok || !step.remediation) {
+    if (step.ok) {
+      continue;
+    }
+    checks.push({ name: step.id, status: 'fail', detail: step.remediation || step.details || `${step.id} failed` });
+    if (!step.remediation) {
       continue;
     }
     for (const command of splitRemediationCommands(step.remediation)) {
