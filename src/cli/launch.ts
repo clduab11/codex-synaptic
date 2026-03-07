@@ -1,7 +1,8 @@
 import { spawn } from 'child_process';
-import { access } from 'fs/promises';
+import { access, readFile } from 'fs/promises';
 import { join } from 'path';
 import {
+  getDaemonPaths,
   getBackgroundStatus,
   startBackgroundSystem,
   type BackgroundStatus
@@ -18,6 +19,7 @@ import {
 } from './doctor.js';
 import { BridgeError, ErrorCode } from '../core/errors.js';
 import { Logger, LogLevel } from '../core/logger.js';
+import { detectOptionalEngines } from '../adapters/optional-engines.js';
 
 export interface LaunchStep {
   id: string;
@@ -45,6 +47,26 @@ export interface LaunchOptions {
   skipCodexAuth?: boolean;
   mcpProfiles?: string[];
   suppressInfoConsoleLogs?: boolean;
+}
+
+export interface LaunchGateCheck {
+  name: string;
+  status: 'pass' | 'fail' | 'warn';
+  detail: string;
+}
+
+export interface LaunchGateFix {
+  why: string;
+  command: string;
+  safeUnderSandbox: boolean;
+}
+
+export interface LaunchStrictJsonReport {
+  ok: boolean;
+  capabilities: string[];
+  checks: LaunchGateCheck[];
+  fixes: LaunchGateFix[];
+  nextActions: string[];
 }
 
 export interface LaunchDependencies extends DoctorDependencies {
@@ -75,7 +97,11 @@ function normalizeSpawn(
     ?? ((command, args, spawnOptions) => new Promise<SpawnCommandResult>((resolve) => {
       const child = spawn(command, args, {
         cwd: spawnOptions.cwd,
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          CODEX_AUTO_LINK: process.env.CODEX_AUTO_LINK ?? '0'
+        }
       });
       if (child.stdout) {
         child.stdout.setEncoding(spawnOptions.encoding);
@@ -124,6 +150,218 @@ function collectLaunchRemediationsFromStep(step: LaunchStep): string[] {
     .split('&&')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function splitRemediationCommands(raw?: string): string[] {
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split('&&')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function remediationIsSafe(command: string): boolean {
+  return !/(docker-login|brew\s+install|npm\s+install(?!\s+--no-save))/i.test(command);
+}
+
+async function readPackageScripts(cwd: string): Promise<Record<string, string>> {
+  try {
+    const packageJsonPath = join(cwd, 'package.json');
+    const raw = await readFile(packageJsonPath, 'utf8');
+    const parsed = JSON.parse(raw) as { scripts?: Record<string, string> };
+    return parsed.scripts ?? {};
+  } catch {
+    return {};
+  }
+}
+
+async function runCheckCommand(
+  spawnCommand: ReturnType<typeof normalizeSpawn>,
+  cwd: string,
+  name: string,
+  command: string,
+  args: string[],
+  remediation: string,
+  warnOnFailure = false
+): Promise<{ check: LaunchGateCheck; fix?: LaunchGateFix }> {
+  const result = await spawnCommand(command, args, { cwd, encoding: 'utf8' });
+  const status = result.status === 0 ? 'pass' : (warnOnFailure ? 'warn' : 'fail');
+  const detail = result.status === 0
+    ? `${command} ${args.join(' ')} succeeded.`
+    : (result.stderr?.trim() || result.stdout?.trim() || `${command} ${args.join(' ')} failed.`);
+
+  return {
+    check: { name, status, detail },
+    fix: result.status === 0
+      ? undefined
+      : {
+        why: `${name} failed`,
+        command: remediation,
+        safeUnderSandbox: remediationIsSafe(remediation)
+      }
+  };
+}
+
+export async function buildLaunchStrictJsonReport(
+  report: LaunchReport,
+  options: LaunchOptions = {},
+  deps: LaunchDependencies = {}
+): Promise<LaunchStrictJsonReport> {
+  const cwd = options.cwd ?? process.cwd();
+  const spawnCommand = normalizeSpawn(deps);
+  const checks: LaunchGateCheck[] = [];
+  const fixes: LaunchGateFix[] = [];
+  const capabilities = [
+    'launch-gate',
+    'global-daemon',
+    'project-attach',
+    'codex-macos',
+    'codex-vscode'
+  ];
+
+  const nodeCheck = await runCheckCommand(
+    spawnCommand,
+    cwd,
+    'runtime.node',
+    'node',
+    ['--version'],
+    'Install Node.js 20+ and rerun `node --version`.'
+  );
+  checks.push(nodeCheck.check);
+  if (nodeCheck.fix) fixes.push(nodeCheck.fix);
+
+  const npmCheck = await runCheckCommand(
+    spawnCommand,
+    cwd,
+    'runtime.npm',
+    'npm',
+    ['--version'],
+    'Install npm and rerun `npm --version`.'
+  );
+  checks.push(npmCheck.check);
+  if (npmCheck.fix) fixes.push(npmCheck.fix);
+
+  const depsCheck = await runCheckCommand(
+    spawnCommand,
+    cwd,
+    'repo.dependencies',
+    'npm',
+    ['install', '--package-lock-only', '--ignore-scripts'],
+    'Run `npm install` to install dependencies.'
+  );
+  checks.push(depsCheck.check);
+  if (depsCheck.fix) fixes.push(depsCheck.fix);
+
+  const scripts = await readPackageScripts(cwd);
+
+  if (scripts.build) {
+    const buildCheck = await runCheckCommand(spawnCommand, cwd, 'repo.build', 'npm', ['run', 'build'], 'Run `npm run build`.');
+    checks.push(buildCheck.check);
+    if (buildCheck.fix) fixes.push(buildCheck.fix);
+  } else {
+    checks.push({ name: 'repo.build', status: 'warn', detail: 'No build script declared in package.json.' });
+  }
+
+  if (scripts.typecheck) {
+    const typeCheck = await runCheckCommand(spawnCommand, cwd, 'repo.typecheck', 'npm', ['run', 'typecheck'], 'Run `npm run typecheck`.');
+    checks.push(typeCheck.check);
+    if (typeCheck.fix) fixes.push(typeCheck.fix);
+  } else {
+    const tscCheck = await runCheckCommand(
+      spawnCommand,
+      cwd,
+      'repo.typecheck',
+      'npm',
+      ['exec', 'tsc', '--', '--noEmit'],
+      'Run `npm exec tsc -- --noEmit`.'
+    );
+    checks.push(tscCheck.check);
+    if (tscCheck.fix) fixes.push(tscCheck.fix);
+  }
+
+  if (scripts.test) {
+    const testCheck = await runCheckCommand(spawnCommand, cwd, 'repo.test', 'npm', ['run', 'test'], 'Run `npm run test`.');
+    checks.push(testCheck.check);
+    if (testCheck.fix) fixes.push(testCheck.fix);
+  } else {
+    checks.push({ name: 'repo.test', status: 'warn', detail: 'No test script declared in package.json.' });
+  }
+
+  const daemonStep = report.steps.find((step) => step.id === 'runtime.daemon');
+  checks.push({
+    name: 'daemon.health',
+    status: daemonStep?.ok ? 'pass' : 'fail',
+    detail: daemonStep?.details ?? 'Daemon health check was not executed.'
+  });
+  if (daemonStep && !daemonStep.ok && daemonStep.remediation) {
+    for (const command of splitRemediationCommands(daemonStep.remediation)) {
+      fixes.push({ why: 'Daemon is not healthy', command, safeUnderSandbox: remediationIsSafe(command) });
+    }
+  }
+
+  const mcpConfigStatus = report.steps.find((step) => step.id === 'mcp.codex_register');
+  checks.push({
+    name: 'mcp.config',
+    status: mcpConfigStatus?.ok ? 'pass' : 'fail',
+    detail: mcpConfigStatus?.details ?? 'MCP configuration check did not run.'
+  });
+
+  const daemonPaths = getDaemonPaths();
+  const cwdPrefix = `${cwd}/`;
+  const stateOutsideRepo = !daemonPaths.stateDir.startsWith(cwdPrefix) && daemonPaths.stateDir !== cwd;
+  checks.push({
+    name: 'worktree.state_location',
+    status: stateOutsideRepo ? 'pass' : 'fail',
+    detail: stateOutsideRepo
+      ? `Daemon state directory resolves outside repository: ${daemonPaths.stateDir}`
+      : `Daemon state directory must be outside repository/worktree. Current: ${daemonPaths.stateDir}`
+  });
+  if (!stateOutsideRepo) {
+    fixes.push({
+      why: 'Daemon state location is worktree-unsafe',
+      command: 'Export CODEX_SYNAPTIC_STATE_DIR to a stable path outside the repository (for example ~/.codex-synaptic).',
+      safeUnderSandbox: false
+    });
+  }
+
+  const optionalEngines = await detectOptionalEngines(spawnCommand, cwd);
+  for (const engine of optionalEngines) {
+    checks.push({
+      name: `optional.${engine.name}`,
+      status: engine.available ? 'pass' : 'warn',
+      detail: engine.available
+        ? `${engine.name} detected: ${engine.version || '--version returned success.'}`
+        : `${engine.name} not detected; continuing in core mode.`
+    });
+    if (engine.available) {
+      capabilities.push(`${engine.name}-adapter`);
+    }
+  }
+
+  for (const step of report.steps) {
+    if (step.ok || !step.remediation) {
+      continue;
+    }
+    for (const command of splitRemediationCommands(step.remediation)) {
+      fixes.push({ why: `${step.id} gate failed`, command, safeUnderSandbox: remediationIsSafe(command) });
+    }
+  }
+
+  const ok = checks.every((check) => check.status !== 'fail') && report.ok;
+  const nextActions = ok
+    ? ['Launch gate passed. Continue with bounded workflow execution and report generation.']
+    : ['Apply safe remediations in order, then rerun `codex-synaptic launch --strict --json`.'];
+
+  return {
+    ok,
+    capabilities,
+    checks,
+    fixes,
+    nextActions
+  };
 }
 
 function buildMcpBootstrapRemediation(profileNames: string[]): string {

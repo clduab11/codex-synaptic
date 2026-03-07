@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["projectId", "launchGate", "daemon"],
+  "properties": {
+    "projectId": { "type": "string", "minLength": 1 },
+    "launchGate": {
+      "type": "object",
+      "required": ["required", "strictJsonCommand"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "strictJsonCommand": { "type": "string" }
+      }
+    },
+    "daemon": {
+      "type": "object",
+      "required": ["stateDir", "allowStateInsideRepo"],
+      "properties": {
+        "stateDir": { "type": "string" },
+        "allowStateInsideRepo": { "type": "boolean" }
+      }
+    },
+    "optionalEngines": {
+      "type": "object",
+      "properties": {
+        "ruflo": { "type": "boolean" },
+        "ruvFann": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
