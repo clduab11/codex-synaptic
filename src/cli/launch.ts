@@ -249,7 +249,7 @@ export async function buildLaunchStrictJsonReport(
     cwd,
     'repo.dependencies',
     'npm',
-    ['install', '--package-lock-only', '--ignore-scripts'],
+    ['ci', '--dry-run'],
     'Run `npm install` to install dependencies.'
   );
   checks.push(depsCheck.check);
